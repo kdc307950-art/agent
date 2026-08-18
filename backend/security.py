@@ -53,6 +53,8 @@ class OIDCVerifier:
         required_scopes: frozenset[str],
         revocation_store=None,
         cache_seconds: int = 300,
+        require_jti: bool = False,
+        max_token_age_seconds: int = 0,
     ) -> None:
         self.issuer = issuer.rstrip("/")
         self.audience = audience
@@ -63,6 +65,8 @@ class OIDCVerifier:
         self.required_scopes = required_scopes
         self.revocation_store = revocation_store
         self.cache_seconds = cache_seconds
+        self.require_jti = require_jti
+        self.max_token_age_seconds = max_token_age_seconds
         self._jwks: dict[str, dict] = {}
         self._jwks_expires_at = 0.0
         self._client = httpx.AsyncClient(timeout=5.0)
@@ -111,6 +115,19 @@ class OIDCVerifier:
             raise ValueError("OIDC token 校验失败") from exc
 
         jti = str(claims.get("jti", ""))
+        now = int(time.time())
+        issued_at = claims.get("iat")
+        if issued_at is not None:
+            try:
+                issued_at = int(issued_at)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("OIDC token 的 iat 无效") from exc
+            if issued_at > now + self.clock_skew_seconds:
+                raise ValueError("OIDC token 尚未签发")
+            if self.max_token_age_seconds and now - issued_at > self.max_token_age_seconds + self.clock_skew_seconds:
+                raise ValueError("OIDC token 超过允许年龄")
+        if self.require_jti and not jti:
+            raise ValueError("OIDC token 缺少 jti")
         if self.revocation_store is not None and jti:
             try:
                 revoked = await self.revocation_store.is_revoked(jti)

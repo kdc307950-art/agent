@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from time import monotonic, perf_counter
 from typing import Literal
@@ -12,7 +13,7 @@ from uuid import uuid4
 import redis.asyncio as redis
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -73,6 +74,13 @@ class ChatRequest(BaseModel):
         return value
 
 
+class RevokeTokenRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    jti: str = Field(min_length=8, max_length=256, pattern=r"^[A-Za-z0-9._:-]+$")
+    expires_at: int = Field(gt=0)
+
+
 class AuditMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         request_id = request.headers.get("X-Request-ID") or uuid4().hex
@@ -98,6 +106,18 @@ class AuditMiddleware(BaseHTTPMiddleware):
             )
             if hasattr(request.app.state, "metrics"):
                 request.app.state.metrics.increment("http_requests_total")
+                route = request.url.path
+                if route.startswith("/audit/runs/"):
+                    route = "/audit/runs/{run_id}"
+                request.app.state.metrics.observe(
+                    "agent_http_duration_seconds",
+                    elapsed_ms / 1000,
+                    {
+                        "method": request.method,
+                        "route": route,
+                        "status_code": status_code,
+                    },
+                )
 
 
 @asynccontextmanager
@@ -106,6 +126,7 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.metrics = RuntimeMetrics()
     app.state.audit = NoopAuditRepository()
+    app.state.revocation_store = None
     redis_client = None
     auth_verifier = None
     try:
@@ -141,6 +162,7 @@ async def lifespan(app: FastAPI):
             revocation_store = RedisRevocationStore(redis_client) if settings.oidc_revocation_mode == "redis" and redis_client else None
             if settings.oidc_revocation_mode == "redis" and revocation_store is None:
                 raise RuntimeError("OIDC_REVOCATION_MODE=redis 但 Redis 不可用")
+            app.state.revocation_store = revocation_store
             auth_verifier = OIDCVerifier(
                 issuer=settings.oidc_issuer_url,
                 audience=settings.oidc_audience,
@@ -149,6 +171,9 @@ async def lifespan(app: FastAPI):
                 clock_skew_seconds=settings.oidc_clock_skew_seconds,
                 required_scopes=settings.oidc_required_scopes,
                 revocation_store=revocation_store,
+                cache_seconds=settings.oidc_jwks_cache_seconds,
+                require_jti=settings.oidc_require_jti,
+                max_token_age_seconds=settings.oidc_max_token_age_seconds,
             )
         app.state.auth_verifier = auth_verifier
         logger.info("正在初始化 LangGraph Agent runtime auth_mode=%s rate_limit_backend=%s", settings.auth_mode, settings.rate_limit_backend)
@@ -171,6 +196,9 @@ async def lifespan(app: FastAPI):
         app.state.agent = None
         app.state.runtime = None
         app.state.audit = NoopAuditRepository()
+        app.state.revocation_store = None
+        if hasattr(app.state, "metrics"):
+            app.state.metrics.shutdown()
 
 
 app = FastAPI(title="LangGraph Agent API", lifespan=lifespan)
@@ -310,9 +338,43 @@ async def get_audit_run(
         raise HTTPException(status_code=503, detail="运行审计服务暂时不可用") from exc
 
 
+@app.post("/admin/oidc/revoke")
+async def revoke_oidc_token(
+    payload: RevokeTokenRequest,
+    http_request: Request,
+    principal: Principal = Depends(authenticate),
+):
+    if "security:admin" not in principal.scopes:
+        raise HTTPException(status_code=403, detail="缺少 security:admin 权限")
+    store = getattr(http_request.app.state, "revocation_store", None)
+    if http_request.app.state.settings.auth_mode != "oidc" or store is None:
+        raise HTTPException(status_code=503, detail="OIDC 撤销服务尚未启用")
+    ttl_seconds = payload.expires_at - int(time.time())
+    if ttl_seconds < 1:
+        raise HTTPException(status_code=422, detail="expires_at 必须晚于当前时间")
+    try:
+        await store.revoke(payload.jti, ttl_seconds)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="OIDC 撤销服务暂时不可用") from exc
+    http_request.app.state.metrics.increment("oidc_token_revocations_total")
+    return {"status": "revoked", "jti": payload.jti}
+
+
 @app.get("/health")
 async def health_check(request: Request):
     return {"status": "ok", "agent_ready": request.app.state.agent is not None}
+
+
+@app.get("/metrics")
+async def metrics_endpoint(request: Request):
+    settings = request.app.state.settings
+    if not settings.metrics_enabled:
+        raise HTTPException(status_code=404, detail="metrics disabled")
+    expected = settings.metrics_auth_token
+    if expected and request.headers.get("X-Metrics-Token") != expected:
+        raise HTTPException(status_code=401, detail="metrics authentication required")
+    payload, content_type = request.app.state.metrics.prometheus_payload()
+    return Response(content=payload, media_type=content_type.split(";", 1)[0])
 
 
 if __name__ == "__main__":

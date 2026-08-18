@@ -48,6 +48,23 @@ CI 会使用 PostgreSQL 和 Redis service containers；当 `CI=true` 时，缺�
 
 每次 Agent run 都会在 PostgreSQL 的 `agent_runs` / `agent_events` 中记录运行状态和脱敏事件。部署或 CI 必须先执行 `uv run python -m backend.migrations`；应用启动只检查 schema 是否存在，不在多 Worker 中自动迁移。运行状态可通过带 `chat:read` scope 的令牌查询：`GET /audit/runs/{run_id}`。跨租户查询返回 404，不泄露其他租户记录。
 
+审计记录由独立 retention 任务按 `AUDIT_RETENTION_DAYS` 清理，默认关闭以避免误删。启用前先用 dry-run 评估范围，再由单独的 Cron/容器任务执行：
+
+```powershell
+$env:AUDIT_RETENTION_ENABLED="true"
+uv run python -m backend.retention --dry-run
+uv run python -m backend.retention
+```
+
+任务使用 PostgreSQL advisory lock，多个实例同时运行时只有一个会执行；每批最多删除 `AUDIT_RETENTION_BATCH_SIZE` 个已结束 run，并受 `AUDIT_RETENTION_MAX_RUNTIME_SECONDS` 限制。`status=running` 或没有 `finished_at` 的记录不会被删除。清理失败不会回退到内存，也不会影响 Agent 请求；调度器应对非零退出码告警。
+
+运行指标通过 OpenTelemetry SDK 生成，并提供 Prometheus scrape endpoint：`GET /metrics`。生产环境必须设置 `METRICS_AUTH_TOKEN`，OTLP 导出可通过 `OTEL_EXPORTER_OTLP_ENDPOINT` 开启。指标标签只包含 route、status、outcome、tool 等低基数字段，不包含 tenant、user、run_id、prompt 或 token。
+本地 Prometheus 可复用 `infra/prometheus.yml`，默认抓取宿主机上的 `127.0.0.1:8000/metrics` 映射地址。
+
+OIDC 生产模式要求 issuer、audience、JWKS、Redis 撤销、`jti` 和 token 年龄校验。具备 `security:admin` scope 的内部管理令牌可调用 `POST /admin/oidc/revoke`，提交 `jti` 和 `expires_at`；普通用户令牌不能调用该接口。公网上线前必须将 `AUTH_MODE=oidc`，禁止使用内部 dev token。
+
+真实 DeepSeek E2E 默认不运行，以免普通 CI 产生费用。手动 workflow `Live Agent E2E` 需要受保护环境中的 `DEEPSEEK_API_KEY`、`LIVE_AGENT_TOKEN` 和 `TENANT_TOKEN_SECRET`，覆盖文本 SSE、工具调用和同线程续聊。
+
 工具调用经过统一治理层：按服务端租户身份检查 scope 和工具白名单，限制输入长度，执行单工具超时，临时错误仅对无副作用工具重试。工具审计只保存工具名、状态、耗时和错误类型等摘要，不保存完整 prompt、Authorization、API key 或原始工具结果。
 
 需要限制租户工具集合时设置 `TOOL_TENANT_ALLOWLIST=tenant-a=calculate,get_weather;tenant-b=calculate`；启用该配置后，未列出的租户默认不能调用任何工具。

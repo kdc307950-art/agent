@@ -197,3 +197,18 @@ def test_chat_passes_server_context_and_finishes_audit(monkeypatch):
     assert captured["context"].tenant_id == "tenant-a"
     assert captured["context"].user_id == "user-1"
     assert captured["finish"][1] == "completed"
+
+
+def test_metrics_endpoint_uses_auth_token_when_configured(monkeypatch):
+    module = load_app(monkeypatch)
+    with TestClient(module.app) as client:
+        module.app.state.settings = replace(
+            module.app.state.settings,
+            metrics_auth_token="metrics-secret",
+        )
+        unauthorized = client.get("/metrics")
+        authorized = client.get("/metrics", headers={"X-Metrics-Token": "metrics-secret"})
+
+    assert unauthorized.status_code == 401
+    assert authorized.status_code == 200
+    assert "agent_" in authorized.text

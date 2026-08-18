@@ -50,6 +50,15 @@ def _choice_setting(name: str, default: str, choices: set[str]) -> str:
     return value
 
 
+def _bool_setting(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "true" if default else "false").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"环境变量 {name} 必须是 true/false")
+
+
 def _tool_allowlist_setting() -> dict[str, frozenset[str]] | None:
     """Parse tenant=tool1,tool2;tenant2=tool1 or leave unset for all tools."""
     raw = os.getenv("TOOL_TENANT_ALLOWLIST", "").strip()
@@ -86,6 +95,9 @@ class Settings:
     oidc_tenant_claim: str
     oidc_required_scopes: frozenset[str]
     oidc_clock_skew_seconds: int
+    oidc_jwks_cache_seconds: int
+    oidc_require_jti: bool
+    oidc_max_token_age_seconds: int
     oidc_revocation_mode: str
     database_url: str
     redis_url: str | None
@@ -99,7 +111,13 @@ class Settings:
     tool_retry_attempts: int
     tool_tenant_allowlist: dict[str, frozenset[str]] | None
     audit_write_timeout_seconds: float
+    metrics_enabled: bool
+    metrics_auth_token: str | None
     checkpoint_retention_days: int
+    audit_retention_days: int
+    audit_retention_batch_size: int
+    audit_retention_max_runtime_seconds: float
+    audit_retention_enabled: bool
     auto_setup: bool
 
     @classmethod
@@ -122,6 +140,14 @@ class Settings:
             raise RuntimeError("APP_ENV=production 禁止使用 AUTH_MODE=dev")
         if app_env == "production" and revocation_mode != "redis":
             raise RuntimeError("APP_ENV=production 必须启用 OIDC_REVOCATION_MODE=redis")
+        oidc_require_jti = _bool_setting("OIDC_REQUIRE_JTI", app_env == "production")
+        oidc_max_token_age_seconds = _int_setting("OIDC_MAX_TOKEN_AGE_SECONDS", 3600, 0)
+        if app_env == "production" and not oidc_require_jti:
+            raise RuntimeError("APP_ENV=production 必须要求 OIDC token 携带 jti")
+        metrics_enabled = _bool_setting("METRICS_ENABLED", True)
+        metrics_auth_token = os.getenv("METRICS_AUTH_TOKEN", "").strip() or None
+        if app_env == "production" and metrics_enabled and not metrics_auth_token:
+            raise RuntimeError("APP_ENV=production 启用 metrics 时必须配置 METRICS_AUTH_TOKEN")
         if (rate_limit_backend == "redis" or (auth_mode == "oidc" and revocation_mode == "redis")) and not redis_url:
             raise RuntimeError("当前配置需要 Redis，必须配置 REDIS_URL")
         refill_rate = float(os.getenv("RATE_LIMIT_REFILL_PER_SECOND", "1"))
@@ -143,6 +169,9 @@ class Settings:
             oidc_tenant_claim=os.getenv("OIDC_TENANT_CLAIM", "tenant_id").strip() or "tenant_id",
             oidc_required_scopes=required_scopes,
             oidc_clock_skew_seconds=_int_setting("OIDC_CLOCK_SKEW_SECONDS", 60, 0),
+            oidc_jwks_cache_seconds=_int_setting("OIDC_JWKS_CACHE_SECONDS", 300, 1),
+            oidc_require_jti=oidc_require_jti,
+            oidc_max_token_age_seconds=oidc_max_token_age_seconds,
             oidc_revocation_mode=revocation_mode,
             database_url=database_url_from_env(),
             redis_url=redis_url,
@@ -156,6 +185,14 @@ class Settings:
             tool_retry_attempts=_int_setting("TOOL_RETRY_ATTEMPTS", 1, 0),
             tool_tenant_allowlist=_tool_allowlist_setting(),
             audit_write_timeout_seconds=_float_setting("AUDIT_WRITE_TIMEOUT_SECONDS", 2.0, 0.1),
+            metrics_enabled=metrics_enabled,
+            metrics_auth_token=metrics_auth_token,
             checkpoint_retention_days=_int_setting("CHECKPOINT_RETENTION_DAYS", 30, 1),
+            audit_retention_days=_int_setting("AUDIT_RETENTION_DAYS", 30, 1),
+            audit_retention_batch_size=_int_setting("AUDIT_RETENTION_BATCH_SIZE", 1000, 1),
+            audit_retention_max_runtime_seconds=_float_setting(
+                "AUDIT_RETENTION_MAX_RUNTIME_SECONDS", 60.0, 0.1
+            ),
+            audit_retention_enabled=_bool_setting("AUDIT_RETENTION_ENABLED", False),
             auto_setup=auto_setup in {"1", "true", "yes"},
         )

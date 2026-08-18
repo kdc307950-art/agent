@@ -141,6 +141,45 @@ def test_oidc_verifier_rejects_expired_and_missing_scope():
     asyncio.run(run())
 
 
+def test_oidc_verifier_can_require_jti_and_token_age():
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_jwk = jwt.algorithms.RSAAlgorithm.to_jwk(private_key.public_key())
+    verifier = OIDCVerifier(
+        issuer="https://issuer.example",
+        audience="agent-api",
+        jwks_url="https://issuer.example/keys",
+        tenant_claim="tenant_id",
+        clock_skew_seconds=0,
+        required_scopes=frozenset({"chat:write"}),
+        require_jti=True,
+        max_token_age_seconds=60,
+    )
+    verifier._client = FakeClient({"keys": [{**json.loads(public_jwk), "kid": "key-1"}]})
+
+    def token(**extra):
+        claims = {
+            "iss": "https://issuer.example",
+            "aud": "agent-api",
+            "sub": "user-1",
+            "tenant_id": "tenant-a",
+            "scope": "chat:write",
+            "iat": int(time.time()),
+            "jti": "jti-1",
+            "exp": int(time.time()) + 60,
+        }
+        claims.update(extra)
+        return jwt.encode(claims, private_key, algorithm="RS256", headers={"kid": "key-1"})
+
+    async def run():
+        with pytest.raises(ValueError, match="jti"):
+            await verifier.verify(token(jti=""))
+        with pytest.raises(ValueError, match="年龄"):
+            await verifier.verify(token(iat=int(time.time()) - 120, exp=int(time.time()) + 60))
+        await verifier.aclose()
+
+    asyncio.run(run())
+
+
 def test_production_rejects_dev_auth(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("AUTH_MODE", "dev")
@@ -152,3 +191,29 @@ def test_production_rejects_dev_auth(monkeypatch):
     monkeypatch.delenv("OIDC_AUDIENCE", raising=False)
     with pytest.raises(RuntimeError, match="禁止使用 AUTH_MODE=dev"):
         Settings.from_env()
+
+
+def test_production_requires_jti_and_metrics_auth(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("AUTH_MODE", "oidc")
+    monkeypatch.setenv("OIDC_ISSUER_URL", "https://issuer.example")
+    monkeypatch.setenv("OIDC_AUDIENCE", "agent-api")
+    monkeypatch.setenv("OIDC_REVOCATION_MODE", "redis")
+    monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "model-key")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://test/test")
+    monkeypatch.setenv("RATE_LIMIT_BACKEND", "redis")
+    monkeypatch.setenv("OIDC_REQUIRE_JTI", "false")
+    monkeypatch.delenv("METRICS_AUTH_TOKEN", raising=False)
+
+    with pytest.raises(RuntimeError, match="jti"):
+        Settings.from_env()
+
+    monkeypatch.setenv("OIDC_REQUIRE_JTI", "true")
+    with pytest.raises(RuntimeError, match="METRICS_AUTH_TOKEN"):
+        Settings.from_env()
+
+    monkeypatch.setenv("METRICS_AUTH_TOKEN", "metrics-secret")
+    settings = Settings.from_env()
+    assert settings.oidc_require_jti is True
+    assert settings.metrics_auth_token == "metrics-secret"
