@@ -1,3 +1,4 @@
+import asyncio
 import os
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -36,7 +37,7 @@ def smart_summarize(messages, model):
         return messages[-MAX_MESSAGES_BEFORE_SUMMARY:]
 
 
-def main():
+async def main():
     print("🚀 LangGraph Agent (P1 + P2 智能摘要 + P5 追踪)")
     print(f"📌 超过 {MAX_MESSAGES_BEFORE_SUMMARY} 条消息时自动生成摘要")
     print("💡 输入 'exit' 退出，重启自动恢复")
@@ -72,7 +73,7 @@ def main():
         print("🤖 Agent: ", end="", flush=True)
 
         final_content = ""
-        for event in agent.stream(state, config=config, stream_mode="updates"):
+        async for event in agent.astream(state, config=config, stream_mode="updates"):
             for node_name, update in event.items():
                 if node_name == "agent":
                     if "messages" in update:
@@ -87,9 +88,9 @@ def main():
 
         print("\n")
 
-        # 同步完整状态
-        state = agent.invoke(state, config=config)
+        snapshot = await agent.aget_state(config)
+        state = dict(snapshot.values)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

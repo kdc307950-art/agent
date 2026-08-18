@@ -10,4 +10,6 @@ __pycache__/
 frontend/node_modules/
 frontend/dist/
 *.db
+*.db-shm
+*.db-wal
 chat_history.json

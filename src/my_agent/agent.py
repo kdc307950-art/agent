@@ -1,7 +1,8 @@
 
+import asyncio
 import logging
-import sqlite3
 import os
+import sqlite3
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END
@@ -25,8 +26,34 @@ load_dotenv()
 
 
 
-def build_agent():
-    """构建带有 SQLite 检查点持久化的 LangGraph Agent"""
+def _is_retryable(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+    return isinstance(exc, (TimeoutError, OSError)) or status_code in {
+        408,
+        409,
+        429,
+        500,
+        502,
+        503,
+        504,
+    }
+
+
+async def _ainvoke_with_retry(model, messages, max_retries: int):
+    for attempt in range(max_retries + 1):
+        try:
+            return await model.ainvoke(messages)
+        except Exception as exc:
+            if attempt >= max_retries or not _is_retryable(exc):
+                raise
+            await asyncio.sleep(min(2**attempt, 8) + 0.1 * attempt)
+
+
+def build_agent(*, checkpointer=None, store=None, model_retry_attempts: int = 2):
+    """Build the graph with a production checkpointer or local SQLite fallback."""
 
     # 模型初始化（DeepSeek）
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
@@ -41,8 +68,12 @@ def build_agent():
     model_with_tools = model.bind_tools(tools)
 
     # 节点
-    def agent_node(state: AgentState) -> dict:
-        response = model_with_tools.invoke(state["messages"])
+    async def agent_node(state: AgentState) -> dict:
+        response = await _ainvoke_with_retry(
+            model_with_tools,
+            state["messages"],
+            model_retry_attempts,
+        )
         return {"messages": [response]}
 
     tool_node = ToolNode(tools)
@@ -66,9 +97,8 @@ def build_agent():
     )
     workflow.add_edge("tools", "agent")
 
-    # 🆕 正确创建 SQLite 检查点（直接传入连接对象）
-    conn = sqlite3.connect("checkpoints.db", check_same_thread=False)
-    checkpointer = SqliteSaver(conn)
+    if checkpointer is None:
+        conn = sqlite3.connect("checkpoints.db", check_same_thread=False)
+        checkpointer = SqliteSaver(conn)
 
-    # 编译并返回
-    return workflow.compile(checkpointer=checkpointer)
+    return workflow.compile(checkpointer=checkpointer, store=store)

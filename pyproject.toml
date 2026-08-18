@@ -13,6 +13,8 @@ dependencies = [
     "fastapi>=0.141.1",
     "uvicorn>=0.52.3",
     "sse-starlette>=3.4.8",
+    "langgraph-checkpoint-postgres>=3.1.2",
+    "psycopg[binary,pool]>=3.3.4",
 ]
 
 [build-system]

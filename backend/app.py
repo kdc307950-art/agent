@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -8,7 +9,6 @@ from time import perf_counter
 from typing import Literal
 from uuid import uuid4
 
-from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -16,17 +16,16 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from langchain_core.messages import HumanMessage
-from src.my_agent.agent import build_agent
 
 from .security import (
     InMemoryRateLimiter,
     cors_origins,
     rate_limit_dependency,
-    required_setting,
 )
+from .runtime import runtime_context
+from .settings import Settings
 
 
-load_dotenv()
 logger = logging.getLogger("langgraph.api")
 
 
@@ -89,17 +88,20 @@ class AuditMiddleware(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    required_setting("DEEPSEEK_API_KEY")
-    required_setting("X_API_KEY")
+    settings = Settings.from_env()
+    app.state.settings = settings
     app.state.rate_limiter = InMemoryRateLimiter(
         limit=int(os.getenv("RATE_LIMIT_PER_MINUTE", "60")),
         window_seconds=60,
     )
-    logger.info("正在初始化 LangGraph Agent")
-    app.state.agent = build_agent()
-    logger.info("LangGraph Agent 初始化完成")
-    yield
+    logger.info("正在初始化 LangGraph Agent runtime")
+    async with runtime_context(settings) as runtime:
+        app.state.runtime = runtime
+        app.state.agent = runtime.graph
+        logger.info("LangGraph Agent runtime 初始化完成")
+        yield
     app.state.agent = None
+    app.state.runtime = None
 
 
 app = FastAPI(title="LangGraph Agent API", lifespan=lifespan)
@@ -120,8 +122,8 @@ async def chat_stream(
     _principal: str = Depends(rate_limit_dependency),
 ):
     """流式对话端点（Server-Sent Events）。"""
-    agent = http_request.app.state.agent
-    if agent is None:
+    graph = http_request.app.state.agent
+    if graph is None:
         raise HTTPException(status_code=503, detail="Agent 尚未初始化")
 
     config = {"configurable": {"thread_id": payload.thread_id}}
@@ -129,20 +131,32 @@ async def chat_stream(
 
     async def event_generator():
         try:
-            for event in agent.stream(inputs, config=config, stream_mode="updates"):
-                for node_name, update in event.items():
-                    if node_name == "agent" and "messages" in update:
-                        msg = update["messages"][0]
-                        if getattr(msg, "content", None):
-                            yield f"data: {json.dumps({'type': 'text', 'content': msg.content}, ensure_ascii=False)}\n\n"
-                        if getattr(msg, "tool_calls", None):
-                            yield f"data: {json.dumps({'type': 'tool', 'status': 'calling'}, ensure_ascii=False)}\n\n"
-                    elif node_name == "tools":
-                        yield f"data: {json.dumps({'type': 'tool', 'status': 'done'}, ensure_ascii=False)}\n\n"
-            yield "data: {\"type\": \"end\"}\n\n"
+            timeout_seconds = http_request.app.state.settings.agent_run_timeout_seconds
+            async with asyncio.timeout(timeout_seconds):
+                async for event in graph.astream(
+                    inputs,
+                    config=config,
+                    stream_mode="updates",
+                ):
+                    for node_name, update in event.items():
+                        if node_name == "agent" and "messages" in update:
+                            msg = update["messages"][0]
+                            if getattr(msg, "content", None):
+                                yield f"data: {json.dumps({'type': 'text', 'content': msg.content}, ensure_ascii=False)}\n\n"
+                            if getattr(msg, "tool_calls", None):
+                                yield f"data: {json.dumps({'type': 'tool', 'status': 'calling'}, ensure_ascii=False)}\n\n"
+                        elif node_name == "tools":
+                            yield f"data: {json.dumps({'type': 'tool', 'status': 'done'}, ensure_ascii=False)}\n\n"
+                yield "data: {\"type\": \"end\"}\n\n"
+        except asyncio.TimeoutError:
+            logger.warning("Agent stream timed out request_id=%s", http_request.state.request_id)
+            yield "data: {\"type\": \"error\", \"code\": \"agent_timeout\", \"content\": \"请求超时，请稍后重试\"}\n\n"
+        except asyncio.CancelledError:
+            logger.info("Agent stream cancelled request_id=%s", http_request.state.request_id)
+            raise
         except Exception:
             logger.exception("Agent stream failed request_id=%s", http_request.state.request_id)
-            yield "data: {\"type\": \"error\", \"content\": \"服务暂时不可用，请稍后重试\"}\n\n"
+            yield "data: {\"type\": \"error\", \"code\": \"agent_failed\", \"content\": \"服务暂时不可用，请稍后重试\"}\n\n"
 
     return StreamingResponse(
         event_generator(),
