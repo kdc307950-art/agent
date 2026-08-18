@@ -1,29 +1,28 @@
+from __future__ import annotations
 
 import asyncio
 import logging
 import os
 import sqlite3
+from typing import Any
+
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from langgraph.graph import StateGraph, START, END
-from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.prebuilt import ToolNode
+
 from .state import AgentState
 from .tools import tools
+
+
 load_dotenv()
-# ====== 🆕 P5: LangSmith 可观测性配置 ======
-# 如果 .env 中配置了 LANGCHAIN_API_KEY，自动启用追踪
+
+logger = logging.getLogger("langgraph.agent")
 if os.getenv("LANGCHAIN_API_KEY"):
     os.environ["LANGCHAIN_TRACING_V2"] = "true"
     os.environ["LANGCHAIN_PROJECT"] = os.getenv("LANGCHAIN_PROJECT", "LangGraph-Agent")
-    logging.getLogger("langgraph.agent").info("LangSmith tracing enabled")
-
-load_dotenv()
-
-# ... 后续代码保持不变 ...
-
-
-
+    logger.info("LangSmith tracing enabled")
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -42,7 +41,7 @@ def _is_retryable(exc: Exception) -> bool:
     }
 
 
-async def _ainvoke_with_retry(model, messages, max_retries: int):
+async def _ainvoke_with_retry(model: Any, messages: Any, max_retries: int):
     for attempt in range(max_retries + 1):
         try:
             return await model.ainvoke(messages)
@@ -52,23 +51,35 @@ async def _ainvoke_with_retry(model, messages, max_retries: int):
             await asyncio.sleep(min(2**attempt, 8) + 0.1 * attempt)
 
 
-def build_agent(*, checkpointer=None, store=None, model_retry_attempts: int = 2):
-    """Build the graph with a production checkpointer or local SQLite fallback."""
+def _should_continue(state: AgentState) -> str:
+    last_message = state["messages"][-1]
+    return "tools" if getattr(last_message, "tool_calls", None) else "end"
 
-    # 模型初始化（DeepSeek）
-    api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("缺少必需环境变量: DEEPSEEK_API_KEY")
-    model = ChatOpenAI(
-        api_key=api_key,
-        base_url="https://api.deepseek.com",
-        model="deepseek-chat",
-        temperature=0,
-    )
+
+def build_agent(
+    *,
+    checkpointer=None,
+    store=None,
+    model_retry_attempts: int = 2,
+    model: Any | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    model_name: str | None = None,
+):
+    """Build the graph with injectable model and persistence dependencies."""
+    if model is None:
+        resolved_api_key = (api_key or os.getenv("DEEPSEEK_API_KEY", "")).strip()
+        if not resolved_api_key:
+            raise RuntimeError("缺少必需环境变量: DEEPSEEK_API_KEY")
+        model = ChatOpenAI(
+            api_key=resolved_api_key,
+            base_url=base_url or "https://api.deepseek.com",
+            model=model_name or "deepseek-chat",
+            temperature=0,
+        )
     model_with_tools = model.bind_tools(tools)
 
-    # 节点
-    async def agent_node(state: AgentState) -> dict:
+    async def agent_node(state: AgentState) -> dict[str, list[Any]]:
         response = await _ainvoke_with_retry(
             model_with_tools,
             state["messages"],
@@ -76,24 +87,14 @@ def build_agent(*, checkpointer=None, store=None, model_retry_attempts: int = 2)
         )
         return {"messages": [response]}
 
-    tool_node = ToolNode(tools)
-
-    # 路由
-    def should_continue(state: AgentState) -> str:
-        last_msg = state["messages"][-1]
-        if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
-            return "tools"
-        return "end"
-
-    # 构建图
     workflow = StateGraph(AgentState)
     workflow.add_node("agent", agent_node)
-    workflow.add_node("tools", tool_node)
+    workflow.add_node("tools", ToolNode(tools))
     workflow.add_edge(START, "agent")
     workflow.add_conditional_edges(
         "agent",
-        should_continue,
-        {"tools": "tools", "end": END}
+        _should_continue,
+        {"tools": "tools", "end": END},
     )
     workflow.add_edge("tools", "agent")
 

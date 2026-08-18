@@ -42,6 +42,8 @@ def _choice_setting(name: str, default: str, choices: set[str]) -> str:
 class Settings:
     app_env: str
     deepseek_api_key: str
+    llm_base_url: str
+    llm_model: str
     auth_mode: str
     tenant_token_secret: str | None
     oidc_issuer_url: str | None
@@ -94,6 +96,8 @@ class Settings:
         return cls(
             app_env=app_env,
             deepseek_api_key=_required("DEEPSEEK_API_KEY"),
+            llm_base_url=os.getenv("LLM_BASE_URL", "https://api.deepseek.com").strip(),
+            llm_model=os.getenv("LLM_MODEL", "deepseek-chat").strip(),
             auth_mode=auth_mode,
             tenant_token_secret=tenant_token_secret,
             oidc_issuer_url=issuer,

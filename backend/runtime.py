@@ -37,6 +37,9 @@ async def runtime_context(settings: Settings) -> AsyncIterator[AgentRuntime]:
             checkpointer=checkpointer,
             store=store,
             model_retry_attempts=settings.model_retry_attempts,
+            api_key=settings.deepseek_api_key,
+            base_url=settings.llm_base_url,
+            model_name=settings.llm_model,
         )
         yield AgentRuntime(
             graph=graph,
