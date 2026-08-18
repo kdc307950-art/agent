@@ -1,0 +1,13 @@
+.venv/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+.pytest_cache/
+.idea/
+*.egg-info/
+frontend/node_modules/
+frontend/dist/
+*.db
+chat_history.json
