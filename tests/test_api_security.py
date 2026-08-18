@@ -4,11 +4,13 @@ import importlib
 from contextlib import asynccontextmanager
 
 from fastapi.testclient import TestClient
+from backend.security import make_tenant_token
 
 
 def load_app(monkeypatch, rate_limit="60"):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
     monkeypatch.setenv("X_API_KEY", "test-api-key")
+    monkeypatch.setenv("TENANT_TOKEN_SECRET", "test-tenant-secret")
     monkeypatch.setenv("DATABASE_URL", "postgresql://test/test")
     monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", rate_limit)
     module = importlib.import_module("backend.app")
@@ -58,7 +60,7 @@ def test_chat_rejects_wrong_bearer_token(monkeypatch):
 
 def test_chat_rejects_invalid_input(monkeypatch):
     module = load_app(monkeypatch)
-    headers = {"Authorization": "Bearer test-api-key"}
+    headers = {"Authorization": "Bearer " + make_tenant_token("tenant-a", "user-1", "test-tenant-secret")}
     with TestClient(module.app) as client:
         response = client.post(
             "/chat/stream",
@@ -86,7 +88,7 @@ def test_cors_rejects_unknown_origin(monkeypatch):
 
 def test_chat_rate_limit_returns_429(monkeypatch):
     module = load_app(monkeypatch, rate_limit="1")
-    headers = {"Authorization": "Bearer test-api-key"}
+    headers = {"Authorization": "Bearer " + make_tenant_token("tenant-a", "user-1", "test-tenant-secret")}
     with TestClient(module.app) as client:
         module.app.state.agent = None
         first = client.post("/chat/stream", headers=headers, json={"message": "hello"})
@@ -106,7 +108,7 @@ def test_chat_timeout_returns_structured_sse_error(monkeypatch):
             if False:
                 yield {}
 
-    headers = {"Authorization": "Bearer test-api-key"}
+    headers = {"Authorization": "Bearer " + make_tenant_token("tenant-a", "user-1", "test-tenant-secret")}
     with TestClient(module.app) as client:
         module.app.state.agent = SlowGraph()
         module.app.state.settings = replace(
@@ -121,3 +123,35 @@ def test_chat_timeout_returns_structured_sse_error(monkeypatch):
 
     assert response.status_code == 200
     assert '"code": "agent_timeout"' in response.text
+
+
+def test_same_client_thread_is_derived_per_tenant(monkeypatch):
+    module = load_app(monkeypatch)
+    captured = []
+
+    class CapturingGraph:
+        async def astream(self, _inputs, config, **_kwargs):
+            captured.append(config["configurable"]["thread_id"])
+            if False:
+                yield {}
+
+    headers_a = {"Authorization": "Bearer " + make_tenant_token("tenant-a", "user-1", "test-tenant-secret")}
+    headers_b = {"Authorization": "Bearer " + make_tenant_token("tenant-b", "user-1", "test-tenant-secret")}
+    with TestClient(module.app) as client:
+        module.app.state.agent = CapturingGraph()
+        client.post("/chat/stream", headers=headers_a, json={"message": "hello", "thread_id": "same"})
+        client.post("/chat/stream", headers=headers_b, json={"message": "hello", "thread_id": "same"})
+
+    assert captured == ["tenant-a:user-1:same", "tenant-b:user-1:same"]
+
+
+def test_token_without_write_scope_is_forbidden(monkeypatch):
+    module = load_app(monkeypatch)
+    token = make_tenant_token("tenant-a", "user-1", "test-tenant-secret", scopes=("chat:read",))
+    with TestClient(module.app) as client:
+        response = client.post(
+            "/chat/stream",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"message": "hello"},
+        )
+    assert response.status_code == 403

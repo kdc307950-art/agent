@@ -19,10 +19,12 @@ from langchain_core.messages import HumanMessage
 
 from .security import (
     InMemoryRateLimiter,
+    Principal,
     cors_origins,
     rate_limit_dependency,
 )
 from .runtime import runtime_context
+from .repositories import tenant_thread_id
 from .settings import Settings
 
 
@@ -51,7 +53,7 @@ class ChatRequest(BaseModel):
         default="user_web_001",
         min_length=1,
         max_length=128,
-        pattern=r"^[A-Za-z0-9_.:-]+$",
+        pattern=r"^[A-Za-z0-9_.-]+$",
     )
     history: list[HistoryMessage] = Field(default_factory=list, max_length=50)
 
@@ -119,14 +121,15 @@ app.add_middleware(
 async def chat_stream(
     payload: ChatRequest,
     http_request: Request,
-    _principal: str = Depends(rate_limit_dependency),
+    principal: Principal = Depends(rate_limit_dependency),
 ):
     """流式对话端点（Server-Sent Events）。"""
     graph = http_request.app.state.agent
     if graph is None:
         raise HTTPException(status_code=503, detail="Agent 尚未初始化")
 
-    config = {"configurable": {"thread_id": payload.thread_id}}
+    physical_thread_id = tenant_thread_id(principal.tenant_id, principal.user_id, payload.thread_id)
+    config = {"configurable": {"thread_id": physical_thread_id, "checkpoint_ns": ""}}
     inputs = {"messages": [HumanMessage(content=payload.message)]}
 
     async def event_generator():
@@ -176,4 +179,9 @@ async def health_check(request: Request):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=8000,
+        loop="backend.uvicorn_loop:selector_event_loop_factory",
+    )

@@ -34,7 +34,7 @@ def _int_setting(name: str, default: int, minimum: int) -> int:
 @dataclass(frozen=True)
 class Settings:
     deepseek_api_key: str
-    x_api_key: str
+    tenant_token_secret: str
     database_url: str
     agent_run_timeout_seconds: int
     model_retry_attempts: int
@@ -46,7 +46,7 @@ class Settings:
         auto_setup = os.getenv("LANGGRAPH_AUTO_SETUP", "false").strip().lower()
         return cls(
             deepseek_api_key=_required("DEEPSEEK_API_KEY"),
-            x_api_key=_required("X_API_KEY"),
+            tenant_token_secret=_required("TENANT_TOKEN_SECRET"),
             database_url=database_url_from_env(),
             agent_run_timeout_seconds=_int_setting("AGENT_RUN_TIMEOUT_SECONDS", 60, 1),
             model_retry_attempts=_int_setting("MODEL_RETRY_ATTEMPTS", 2, 0),

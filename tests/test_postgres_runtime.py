@@ -3,8 +3,10 @@ import os
 from uuid import uuid4
 
 import pytest
+from typing_extensions import TypedDict
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.graph import END, START, StateGraph
 from langgraph.store.postgres.aio import AsyncPostgresStore
 
 
@@ -28,3 +30,31 @@ def test_postgres_schema_and_store_round_trip():
     item = asyncio.run(run())
     assert item is not None
     assert item.value == {"status": "ok"}
+
+
+def test_postgres_checkpoint_survives_runtime_restart():
+    class CounterState(TypedDict):
+        count: int
+
+    async def increment(state: CounterState) -> dict[str, int]:
+        return {"count": state["count"] + 1}
+
+    async def run():
+        thread_id = f"restart-{uuid4().hex}"
+        config = {"configurable": {"thread_id": thread_id}}
+        workflow = StateGraph(CounterState)
+        workflow.add_node("increment", increment)
+        workflow.add_edge(START, "increment")
+        workflow.add_edge("increment", END)
+
+        async with AsyncPostgresSaver.from_conn_string(DATABASE_URL) as checkpointer:
+            await checkpointer.setup()
+            graph = workflow.compile(checkpointer=checkpointer)
+            await graph.ainvoke({"count": 1}, config)
+
+        async with AsyncPostgresSaver.from_conn_string(DATABASE_URL) as checkpointer:
+            graph = workflow.compile(checkpointer=checkpointer)
+            state = await graph.aget_state(config)
+        return state.values
+
+    assert asyncio.run(run()) == {"count": 2}

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.migrate_sqlite import migrate_checkpoint_tuples
-from backend.repositories import LongTermMemoryRepository, tenant_namespace
+from backend.repositories import LongTermMemoryRepository, tenant_namespace, tenant_thread_id
 from src.my_agent.agent import _ainvoke_with_retry
 
 
@@ -54,6 +54,12 @@ def test_memory_namespace_is_tenant_scoped():
     )
     with pytest.raises(ValueError):
         tenant_namespace("tenant/a", "user-1")
+
+
+def test_checkpoint_thread_id_is_owned_by_tenant_and_user():
+    assert tenant_thread_id("tenant-a", "user-1", "web-1") == "tenant-a:user-1:web-1"
+    with pytest.raises(ValueError):
+        tenant_thread_id("tenant-a", "user-1", "other:user")
 
 
 def test_memory_repository_uses_scoped_namespace():
@@ -122,3 +128,29 @@ def test_checkpoint_migration_preserves_order_and_pending_writes():
     assert target.writes == [
         ({"configurable": {"checkpoint_id": "checkpoint-2"}}, [("messages", "value")], "task-1")
     ]
+
+
+def test_checkpoint_migration_can_scope_legacy_thread_ids():
+    item = SimpleNamespace(
+        config={"configurable": {"thread_id": "legacy", "checkpoint_ns": ""}},
+        parent_config=None,
+        checkpoint={"id": "checkpoint-1", "channel_versions": {}},
+        metadata={},
+        pending_writes=[],
+    )
+
+    class Source:
+        def list(self, _config):
+            return iter([item])
+
+    class Target:
+        async def aput(self, config, checkpoint, metadata, versions):
+            self.config = config
+            return config
+
+        async def aput_writes(self, *_args):
+            raise AssertionError("unexpected writes")
+
+    target = Target()
+    asyncio.run(migrate_checkpoint_tuples(Source(), target, lambda value: f"tenant-a:user-1:{value}"))
+    assert target.config["configurable"]["thread_id"] == "tenant-a:user-1:legacy"

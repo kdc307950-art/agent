@@ -10,18 +10,27 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from .settings import database_url_from_env
+from .repositories import tenant_thread_id
 
 
-async def migrate_checkpoint_tuples(source, target) -> int:
+async def migrate_checkpoint_tuples(source, target, thread_id_mapper=None) -> int:
     items = list(source.list(None))
     items.reverse()
     for item in items:
-        base_config = item.parent_config or {
+        source_config = item.parent_config or {
             "configurable": {
                 "thread_id": item.config["configurable"]["thread_id"],
                 "checkpoint_ns": item.config["configurable"].get("checkpoint_ns", ""),
             }
         }
+        base_config = {
+            **source_config,
+            "configurable": dict(source_config["configurable"]),
+        }
+        if thread_id_mapper is not None:
+            base_config["configurable"]["thread_id"] = thread_id_mapper(
+                base_config["configurable"]["thread_id"]
+            )
         target_config = await target.aput(
             base_config,
             item.checkpoint,
@@ -42,6 +51,10 @@ async def migrate_sqlite_to_postgres() -> int:
         raise RuntimeError(f"SQLite checkpoint 文件不存在: {sqlite_path}")
 
     database_url = database_url_from_env()
+    tenant_id = os.getenv("MIGRATION_TENANT_ID", "").strip()
+    user_id = os.getenv("MIGRATION_USER_ID", "").strip()
+    if not tenant_id or not user_id:
+        raise RuntimeError("迁移旧 checkpoint 必须设置 MIGRATION_TENANT_ID 和 MIGRATION_USER_ID")
     connection = sqlite3.connect(
         f"file:{sqlite_path.resolve().as_posix()}?mode=ro",
         uri=True,
@@ -51,7 +64,11 @@ async def migrate_sqlite_to_postgres() -> int:
     try:
         async with AsyncPostgresSaver.from_conn_string(database_url) as target:
             await target.setup()
-            return await migrate_checkpoint_tuples(source, target)
+            return await migrate_checkpoint_tuples(
+                source,
+                target,
+                lambda old_thread_id: tenant_thread_id(tenant_id, user_id, old_thread_id),
+            )
     finally:
         connection.close()
 

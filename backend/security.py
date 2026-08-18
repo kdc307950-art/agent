@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hmac
 import hashlib
+import base64
+import json
 import os
 import time
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from typing import Deque
 
 from fastapi import Depends, HTTPException, Request, status
@@ -14,6 +17,20 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+_TOKEN_VERSION = "v1"
+_IDENTIFIER = r"^[A-Za-z0-9_.-]{1,64}$"
+
+
+@dataclass(frozen=True)
+class Principal:
+    tenant_id: str
+    user_id: str
+    scopes: frozenset[str]
+
+    @property
+    def limiter_key(self) -> str:
+        return f"{self.tenant_id}:{self.user_id}"
 
 
 def required_setting(name: str) -> str:
@@ -38,32 +55,87 @@ def cors_origins() -> list[str]:
     return origins
 
 
+def _b64url_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def make_tenant_token(
+    tenant_id: str,
+    user_id: str,
+    secret: str,
+    *,
+    scopes: tuple[str, ...] = ("chat:read", "chat:write"),
+    ttl_seconds: int = 3600,
+    now: int | None = None,
+) -> str:
+    """Create an internal signed token for local/integration use.
+
+    Production deployments should replace this issuer with OIDC/JWT validation.
+    """
+    import re
+
+    if not re.fullmatch(_IDENTIFIER, tenant_id) or not re.fullmatch(_IDENTIFIER, user_id):
+        raise ValueError("租户或用户标识包含非法字符")
+    issued_at = int(time.time() if now is None else now)
+    payload = {"tenant_id": tenant_id, "user_id": user_id, "scopes": list(scopes), "exp": issued_at + ttl_seconds}
+    encoded = _b64url_encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode())
+    body = f"{_TOKEN_VERSION}.{encoded}"
+    signature = hmac.new(secret.encode(), body.encode(), hashlib.sha256).digest()
+    return f"{body}.{_b64url_encode(signature)}"
+
+
+def _parse_tenant_token(token: str, secret: str) -> Principal:
+    import re
+
+    parts = token.split(".")
+    if len(parts) != 3 or parts[0] != _TOKEN_VERSION:
+        raise ValueError("令牌格式无效")
+    body = ".".join(parts[:2])
+    expected = hmac.new(secret.encode(), body.encode(), hashlib.sha256).digest()
+    actual = _b64url_decode(parts[2])
+    if not hmac.compare_digest(actual, expected):
+        raise ValueError("令牌签名无效")
+    payload = json.loads(_b64url_decode(parts[1]))
+    if int(payload.get("exp", 0)) <= int(time.time()):
+        raise ValueError("令牌已过期")
+    tenant_id = str(payload["tenant_id"])
+    user_id = str(payload["user_id"])
+    if not re.fullmatch(_IDENTIFIER, tenant_id) or not re.fullmatch(_IDENTIFIER, user_id):
+        raise ValueError("令牌身份无效")
+    scopes = frozenset(str(scope) for scope in payload.get("scopes", []))
+    return Principal(tenant_id=tenant_id, user_id=user_id, scopes=scopes)
+
+
 def authenticate(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> str:
-    """Validate the shared local/internal Bearer token."""
-    expected = os.getenv("X_API_KEY", "").strip()
-    if not expected:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="服务未配置 API 鉴权密钥",
-        )
+) -> Principal:
+    """Validate a tenant-scoped signed token."""
+    settings = getattr(request.app.state, "settings", None)
+    secret = getattr(settings, "tenant_token_secret", "") or os.getenv("TENANT_TOKEN_SECRET", "").strip()
+    if not secret:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="服务未配置租户令牌密钥")
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="需要 Bearer 鉴权",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    if not hmac.compare_digest(credentials.credentials, expected):
+    try:
+        principal = _parse_tenant_token(credentials.credentials, secret)
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="API 鉴权失败",
             headers={"WWW-Authenticate": "Bearer"},
         )
     request.state.authenticated = True
-    # Keep only a non-reversible fingerprint in limiter state, never the token itself.
-    return hashlib.sha256(credentials.credentials.encode("utf-8")).hexdigest()[:16]
+    request.state.principal = principal
+    return principal
 
 
 class InMemoryRateLimiter:
@@ -91,11 +163,13 @@ class InMemoryRateLimiter:
 
 def rate_limit_dependency(
     request: Request,
-    principal: str = Depends(authenticate),
-) -> str:
+    principal: Principal = Depends(authenticate),
+) -> Principal:
+    if "chat:write" not in principal.scopes:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="缺少 chat:write 权限")
     limiter = request.app.state.rate_limiter
     client_host = request.client.host if request.client else "unknown"
-    retry_after = limiter.check(f"{client_host}:{principal}")
+    retry_after = limiter.check(f"{client_host}:{principal.limiter_key}")
     if retry_after is not None:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,

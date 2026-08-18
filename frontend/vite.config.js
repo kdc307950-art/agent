@@ -11,8 +11,8 @@ export default defineConfig(({ mode }) => {
     rewrite: (path) => path.replace(/^\/api/, ''),
   }
 
-  if (env.X_API_KEY) {
-    proxy.headers = { Authorization: `Bearer ${env.X_API_KEY}` }
+  if (env.DEV_TENANT_TOKEN) {
+    proxy.headers = { Authorization: `Bearer ${env.DEV_TENANT_TOKEN}` }
   }
 
   return {

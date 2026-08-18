@@ -1,9 +1,6 @@
-"""Backend package compatibility setup."""
-
 import asyncio
 import sys
 
 
 if sys.platform == "win32":
-    # psycopg async connections require selector-based event loops on Windows.
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
