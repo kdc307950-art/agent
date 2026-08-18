@@ -159,3 +159,41 @@ def test_token_without_write_scope_is_forbidden(monkeypatch):
             json={"message": "hello"},
         )
     assert response.status_code == 403
+
+
+def test_chat_passes_server_context_and_finishes_audit(monkeypatch):
+    module = load_app(monkeypatch)
+    captured = {}
+
+    class CapturingAudit:
+        async def start_run(self, context, **_kwargs):
+            captured["start"] = context
+
+        async def finish_run(self, context, status, **_kwargs):
+            captured["finish"] = (context, status)
+
+        async def record_event(self, *_args, **_kwargs):
+            return None
+
+    class CapturingGraph:
+        async def astream(self, _inputs, config, context, **_kwargs):
+            captured["thread_id"] = config["configurable"]["thread_id"]
+            captured["context"] = context
+            if False:
+                yield {}
+
+    token = make_tenant_token("tenant-a", "user-1", "test-tenant-secret")
+    with TestClient(module.app) as client:
+        module.app.state.agent = CapturingGraph()
+        module.app.state.audit = CapturingAudit()
+        response = client.post(
+            "/chat/stream",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"message": "hello", "thread_id": "same"},
+        )
+
+    assert response.status_code == 200
+    assert captured["thread_id"] == "tenant-a:user-1:same"
+    assert captured["context"].tenant_id == "tenant-a"
+    assert captured["context"].user_id == "user-1"
+    assert captured["finish"][1] == "completed"

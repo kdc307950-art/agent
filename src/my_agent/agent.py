@@ -65,6 +65,7 @@ def build_agent(
     api_key: str | None = None,
     base_url: str | None = None,
     model_name: str | None = None,
+    tool_call_wrapper=None,
 ):
     """Build the graph with injectable model and persistence dependencies."""
     if model is None:
@@ -89,7 +90,7 @@ def build_agent(
 
     workflow = StateGraph(AgentState)
     workflow.add_node("agent", agent_node)
-    workflow.add_node("tools", ToolNode(tools))
+    workflow.add_node("tools", ToolNode(tools, awrap_tool_call=tool_call_wrapper))
     workflow.add_edge(START, "agent")
     workflow.add_conditional_edges(
         "agent",

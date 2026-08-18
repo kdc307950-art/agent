@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
@@ -31,11 +32,44 @@ def _int_setting(name: str, default: int, minimum: int) -> int:
     return value
 
 
+def _float_setting(name: str, default: float, minimum: float) -> float:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"环境变量 {name} 必须是数字") from exc
+    if value < minimum:
+        raise RuntimeError(f"环境变量 {name} 必须 >= {minimum}")
+    return value
+
+
 def _choice_setting(name: str, default: str, choices: set[str]) -> str:
     value = os.getenv(name, default).strip().lower()
     if value not in choices:
         raise RuntimeError(f"环境变量 {name} 必须是: {', '.join(sorted(choices))}")
     return value
+
+
+def _tool_allowlist_setting() -> dict[str, frozenset[str]] | None:
+    """Parse tenant=tool1,tool2;tenant2=tool1 or leave unset for all tools."""
+    raw = os.getenv("TOOL_TENANT_ALLOWLIST", "").strip()
+    if not raw:
+        return None
+    allowlist: dict[str, frozenset[str]] = {}
+    for entry in raw.split(";"):
+        tenant, separator, tools = entry.partition("=")
+        tenant = tenant.strip()
+        if not separator or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", tenant):
+            raise RuntimeError("TOOL_TENANT_ALLOWLIST 必须使用 tenant=tool1,tool2 格式")
+        if tenant in allowlist:
+            raise RuntimeError(f"TOOL_TENANT_ALLOWLIST 不能重复配置租户: {tenant}")
+        tool_names = frozenset(tool.strip() for tool in tools.split(",") if tool.strip())
+        if not tool_names:
+            raise RuntimeError("TOOL_TENANT_ALLOWLIST 不能为租户配置空工具列表")
+        if not all(re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", tool) for tool in tool_names):
+            raise RuntimeError("TOOL_TENANT_ALLOWLIST 中包含非法工具名")
+        allowlist[tenant] = tool_names
+    return allowlist
 
 
 @dataclass(frozen=True)
@@ -62,6 +96,9 @@ class Settings:
     redis_fail_mode: str
     agent_run_timeout_seconds: int
     model_retry_attempts: int
+    tool_retry_attempts: int
+    tool_tenant_allowlist: dict[str, frozenset[str]] | None
+    audit_write_timeout_seconds: float
     checkpoint_retention_days: int
     auto_setup: bool
 
@@ -116,6 +153,9 @@ class Settings:
             redis_fail_mode=_choice_setting("REDIS_FAIL_MODE", "closed", {"open", "closed"}),
             agent_run_timeout_seconds=_int_setting("AGENT_RUN_TIMEOUT_SECONDS", 60, 1),
             model_retry_attempts=_int_setting("MODEL_RETRY_ATTEMPTS", 2, 0),
+            tool_retry_attempts=_int_setting("TOOL_RETRY_ATTEMPTS", 1, 0),
+            tool_tenant_allowlist=_tool_allowlist_setting(),
+            audit_write_timeout_seconds=_float_setting("AUDIT_WRITE_TIMEOUT_SECONDS", 2.0, 0.1),
             checkpoint_retention_days=_int_setting("CHECKPOINT_RETENTION_DAYS", 30, 1),
             auto_setup=auto_setup in {"1", "true", "yes"},
         )

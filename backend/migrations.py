@@ -5,6 +5,7 @@ import asyncio
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres.aio import AsyncPostgresStore
 
+from .audit import audit_context
 from .settings import database_url_from_env
 
 
@@ -14,6 +15,8 @@ async def setup_postgres() -> None:
         await checkpointer.setup()
     async with AsyncPostgresStore.from_conn_string(database_url) as store:
         await store.setup()
+    async with audit_context(database_url) as audit:
+        await audit.setup()
 
 
 if __name__ == "__main__":

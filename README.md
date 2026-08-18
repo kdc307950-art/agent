@@ -46,6 +46,12 @@ Vite 开发代理把 `/api` 转发到后端，并从项目根 `.env` 读取 `DEV
 
 CI 会使用 PostgreSQL 和 Redis service containers；当 `CI=true` 时，缺少 `TEST_DATABASE_URL` 或 `REDIS_URL` 会直接失败，不会静默跳过集成测试。
 
+每次 Agent run 都会在 PostgreSQL 的 `agent_runs` / `agent_events` 中记录运行状态和脱敏事件。部署或 CI 必须先执行 `uv run python -m backend.migrations`；应用启动只检查 schema 是否存在，不在多 Worker 中自动迁移。运行状态可通过带 `chat:read` scope 的令牌查询：`GET /audit/runs/{run_id}`。跨租户查询返回 404，不泄露其他租户记录。
+
+工具调用经过统一治理层：按服务端租户身份检查 scope 和工具白名单，限制输入长度，执行单工具超时，临时错误仅对无副作用工具重试。工具审计只保存工具名、状态、耗时和错误类型等摘要，不保存完整 prompt、Authorization、API key 或原始工具结果。
+
+需要限制租户工具集合时设置 `TOOL_TENANT_ALLOWLIST=tenant-a=calculate,get_weather;tenant-b=calculate`；启用该配置后，未列出的租户默认不能调用任何工具。
+
 `checkpoints.db` 仅作为本地 SQLite 后备。生产运行时使用 `DATABASE_URL` 指向 PostgreSQL；迁移完成并验证重启恢复前，不要删除旧的 SQLite 文件。
 
 迁移现有 SQLite checkpoint：

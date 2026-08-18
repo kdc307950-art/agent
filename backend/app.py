@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 from contextlib import asynccontextmanager
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import Literal
 from uuid import uuid4
 
@@ -19,6 +19,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from langchain_core.messages import HumanMessage
 
 from .security import (
+    authenticate,
     InMemoryRateLimiter,
     OIDCVerifier,
     Principal,
@@ -27,7 +28,9 @@ from .security import (
 )
 from .rate_limit import RedisRateLimiter
 from .revocation import RedisRevocationStore
+from .audit import NoopAuditRepository
 from .metrics import RuntimeMetrics
+from .run_context import RunContext
 from .runtime import runtime_context
 from .repositories import tenant_thread_id
 from .settings import Settings
@@ -102,6 +105,7 @@ async def lifespan(app: FastAPI):
     settings = Settings.from_env()
     app.state.settings = settings
     app.state.metrics = RuntimeMetrics()
+    app.state.audit = NoopAuditRepository()
     redis_client = None
     auth_verifier = None
     try:
@@ -148,9 +152,15 @@ async def lifespan(app: FastAPI):
             )
         app.state.auth_verifier = auth_verifier
         logger.info("正在初始化 LangGraph Agent runtime auth_mode=%s rate_limit_backend=%s", settings.auth_mode, settings.rate_limit_backend)
-        async with runtime_context(settings) as runtime:
+        try:
+            runtime_manager = runtime_context(settings, metrics=app.state.metrics)
+        except TypeError:
+            # Keep lightweight test fixtures compatible with the production signature.
+            runtime_manager = runtime_context(settings)
+        async with runtime_manager as runtime:
             app.state.runtime = runtime
             app.state.agent = runtime.graph
+            app.state.audit = getattr(runtime, "audit", NoopAuditRepository())
             logger.info("LangGraph Agent runtime 初始化完成")
             yield
     finally:
@@ -160,6 +170,7 @@ async def lifespan(app: FastAPI):
             await redis_client.aclose()
         app.state.agent = None
         app.state.runtime = None
+        app.state.audit = NoopAuditRepository()
 
 
 app = FastAPI(title="LangGraph Agent API", lifespan=lifespan)
@@ -191,14 +202,48 @@ async def chat_stream(
     physical_thread_id = tenant_thread_id(principal.tenant_id, principal.user_id, payload.thread_id)
     config = {"configurable": {"thread_id": physical_thread_id, "checkpoint_ns": ""}}
     inputs = {"messages": [HumanMessage(content=payload.message)]}
+    settings = http_request.app.state.settings
+    run_context = RunContext(
+        run_id=run_id,
+        request_id=http_request.state.request_id,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        thread_id=physical_thread_id,
+        scopes=principal.scopes,
+        deadline=monotonic() + settings.agent_run_timeout_seconds,
+    )
+    audit = getattr(http_request.app.state, "audit", NoopAuditRepository())
+    try:
+        async with asyncio.timeout(settings.audit_write_timeout_seconds):
+            await audit.start_run(
+                run_context,
+                metadata={"route": http_request.url.path},
+            )
+    except Exception as exc:
+        http_request.app.state.metrics.increment("audit_errors_total")
+        logger.exception("无法创建运行审计记录 request_id=%s run_id=%s", run_context.request_id, run_id)
+        raise HTTPException(status_code=503, detail="运行审计服务暂时不可用") from exc
+
+    async def finish_run(status: str, *, error_code: str | None = None) -> None:
+        try:
+            async with asyncio.timeout(settings.audit_write_timeout_seconds):
+                await audit.finish_run(
+                    run_context,
+                    status,
+                    error_code=error_code,
+                    metadata={"route": http_request.url.path},
+                )
+        except Exception:
+            http_request.app.state.metrics.increment("audit_errors_total")
+            logger.exception("无法更新运行审计状态 request_id=%s run_id=%s status=%s", run_context.request_id, run_id, status)
 
     async def event_generator():
         try:
-            timeout_seconds = http_request.app.state.settings.agent_run_timeout_seconds
-            async with asyncio.timeout(timeout_seconds):
+            async with asyncio.timeout(settings.agent_run_timeout_seconds):
                 async for event in graph.astream(
                     inputs,
                     config=config,
+                    context=run_context,
                     stream_mode="updates",
                 ):
                     for node_name, update in event.items():
@@ -210,20 +255,24 @@ async def chat_stream(
                                 yield f"data: {json.dumps({'type': 'tool', 'status': 'calling'}, ensure_ascii=False)}\n\n"
                         elif node_name == "tools":
                             yield f"data: {json.dumps({'type': 'tool', 'status': 'done'}, ensure_ascii=False)}\n\n"
+                await finish_run("completed")
                 http_request.app.state.metrics.increment("agent_runs_completed_total")
-                yield "data: {\"type\": \"end\"}\n\n"
+                yield f"data: {json.dumps({'type': 'end', 'run_id': run_id}, ensure_ascii=False)}\n\n"
         except asyncio.TimeoutError:
+            await finish_run("timeout", error_code="agent_timeout")
             http_request.app.state.metrics.increment("agent_timeouts_total")
             logger.warning("Agent stream timed out request_id=%s run_id=%s", http_request.state.request_id, run_id)
-            yield "data: {\"type\": \"error\", \"code\": \"agent_timeout\", \"content\": \"请求超时，请稍后重试\"}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'code': 'agent_timeout', 'run_id': run_id, 'content': '请求超时，请稍后重试'}, ensure_ascii=False)}\n\n"
         except asyncio.CancelledError:
+            await finish_run("cancelled", error_code="client_cancelled")
             http_request.app.state.metrics.increment("agent_cancellations_total")
             logger.info("Agent stream cancelled request_id=%s run_id=%s", http_request.state.request_id, run_id)
             raise
         except Exception:
+            await finish_run("failed", error_code="agent_failed")
             http_request.app.state.metrics.increment("agent_errors_total")
             logger.exception("Agent stream failed request_id=%s run_id=%s", http_request.state.request_id, run_id)
-            yield "data: {\"type\": \"error\", \"code\": \"agent_failed\", \"content\": \"服务暂时不可用，请稍后重试\"}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'code': 'agent_failed', 'run_id': run_id, 'content': '服务暂时不可用，请稍后重试'}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_generator(),
@@ -234,6 +283,31 @@ async def chat_stream(
             "X-Run-ID": run_id,
         },
     )
+
+
+@app.get("/audit/runs/{run_id}")
+async def get_audit_run(
+    run_id: str,
+    http_request: Request,
+    principal: Principal = Depends(authenticate),
+):
+    """Return one tenant-owned run and its redacted audit events."""
+    if "chat:read" not in principal.scopes:
+        raise HTTPException(status_code=403, detail="缺少 chat:read 权限")
+    audit = getattr(http_request.app.state, "audit", None)
+    if audit is None:
+        raise HTTPException(status_code=503, detail="运行审计服务尚未初始化")
+    try:
+        run = await audit.get_run(principal.tenant_id, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="运行记录不存在")
+        events = await audit.list_events(principal.tenant_id, run_id)
+        return {"run": run, "events": events}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("读取运行审计失败 run_id=%s", run_id)
+        raise HTTPException(status_code=503, detail="运行审计服务暂时不可用") from exc
 
 
 @app.get("/health")
