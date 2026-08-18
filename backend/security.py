@@ -8,15 +8,21 @@ import base64
 import json
 import os
 import time
-from collections import defaultdict, deque
+import logging
 from dataclasses import dataclass
-from typing import Deque
+
+import httpx
+import jwt
+from jwt import InvalidTokenError
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from .rate_limit import InMemoryRateLimiter
+
 
 bearer_scheme = HTTPBearer(auto_error=False)
+logger = logging.getLogger("langgraph.security")
 
 _TOKEN_VERSION = "v1"
 _IDENTIFIER = r"^[A-Za-z0-9_.-]{1,64}$"
@@ -31,6 +37,102 @@ class Principal:
     @property
     def limiter_key(self) -> str:
         return f"{self.tenant_id}:{self.user_id}"
+
+
+class OIDCVerifier:
+    """Validate OIDC JWTs against a cached JWKS document."""
+
+    def __init__(
+        self,
+        *,
+        issuer: str,
+        audience: str,
+        jwks_url: str | None,
+        tenant_claim: str,
+        clock_skew_seconds: int,
+        required_scopes: frozenset[str],
+        revocation_store=None,
+        cache_seconds: int = 300,
+    ) -> None:
+        self.issuer = issuer.rstrip("/")
+        self.audience = audience
+        self.jwks_url = jwks_url
+        self.discovery_url = f"{self.issuer}/.well-known/openid-configuration"
+        self.tenant_claim = tenant_claim
+        self.clock_skew_seconds = clock_skew_seconds
+        self.required_scopes = required_scopes
+        self.revocation_store = revocation_store
+        self.cache_seconds = cache_seconds
+        self._jwks: dict[str, dict] = {}
+        self._jwks_expires_at = 0.0
+        self._client = httpx.AsyncClient(timeout=5.0)
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    async def _load_jwks(self, *, force: bool = False) -> None:
+        if not force and self._jwks and self._jwks_expires_at > time.monotonic():
+            return
+        if not self.jwks_url:
+            discovery = await self._client.get(self.discovery_url)
+            discovery.raise_for_status()
+            self.jwks_url = str(discovery.json()["jwks_uri"])
+        response = await self._client.get(self.jwks_url)
+        response.raise_for_status()
+        keys = response.json().get("keys", [])
+        self._jwks = {str(key["kid"]): key for key in keys if key.get("kid")}
+        self._jwks_expires_at = time.monotonic() + self.cache_seconds
+
+    async def verify(self, token: str) -> Principal:
+        try:
+            header = jwt.get_unverified_header(token)
+            algorithm = header.get("alg")
+            kid = header.get("kid")
+            if algorithm not in {"RS256", "ES256"} or not kid:
+                raise ValueError("OIDC token header 无效")
+            await self._load_jwks()
+            key_data = self._jwks.get(str(kid))
+            if key_data is None:
+                await self._load_jwks(force=True)
+                key_data = self._jwks.get(str(kid))
+            if key_data is None:
+                raise ValueError("OIDC token 的 kid 不存在")
+            key = jwt.algorithms.get_default_algorithms()[algorithm].from_jwk(json.dumps(key_data))
+            claims = jwt.decode(
+                token,
+                key=key,
+                algorithms=[algorithm],
+                audience=self.audience,
+                issuer=self.issuer,
+                leeway=self.clock_skew_seconds,
+                options={"require": ["exp", "sub"]},
+            )
+        except (InvalidTokenError, KeyError, TypeError, ValueError, httpx.HTTPError) as exc:
+            raise ValueError("OIDC token 校验失败") from exc
+
+        jti = str(claims.get("jti", ""))
+        if self.revocation_store is not None and jti:
+            try:
+                revoked = await self.revocation_store.is_revoked(jti)
+            except Exception as exc:
+                raise RuntimeError("OIDC 撤销服务不可用") from exc
+            if revoked:
+                raise ValueError("OIDC token 已撤销")
+        tenant_id = str(claims.get(self.tenant_claim, ""))
+        user_id = str(claims.get("sub", ""))
+        if not _valid_identifier(tenant_id) or not _valid_identifier(user_id):
+            raise ValueError("OIDC token 缺少有效租户身份")
+        raw_scopes = claims.get("scope", claims.get("scp", claims.get("roles", [])))
+        scopes = frozenset(raw_scopes.split() if isinstance(raw_scopes, str) else (str(item) for item in raw_scopes))
+        if not self.required_scopes.issubset(scopes):
+            raise PermissionError("OIDC token 缺少所需 scope")
+        return Principal(tenant_id=tenant_id, user_id=user_id, scopes=scopes)
+
+
+def _valid_identifier(value: str) -> bool:
+    import re
+
+    return bool(re.fullmatch(_IDENTIFIER, value))
 
 
 def required_setting(name: str) -> str:
@@ -110,15 +212,12 @@ def _parse_tenant_token(token: str, secret: str) -> Principal:
     return Principal(tenant_id=tenant_id, user_id=user_id, scopes=scopes)
 
 
-def authenticate(
+async def authenticate(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> Principal:
-    """Validate a tenant-scoped signed token."""
+    """Validate a dev token or OIDC token according to startup mode."""
     settings = getattr(request.app.state, "settings", None)
-    secret = getattr(settings, "tenant_token_secret", "") or os.getenv("TENANT_TOKEN_SECRET", "").strip()
-    if not secret:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="服务未配置租户令牌密钥")
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -126,7 +225,17 @@ def authenticate(
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
-        principal = _parse_tenant_token(credentials.credentials, secret)
+        if getattr(settings, "auth_mode", "dev") == "oidc":
+            principal = await request.app.state.auth_verifier.verify(credentials.credentials)
+        else:
+            secret = getattr(settings, "tenant_token_secret", "") or os.getenv("TENANT_TOKEN_SECRET", "").strip()
+            if not secret:
+                raise RuntimeError("服务未配置租户令牌密钥")
+            principal = _parse_tenant_token(credentials.credentials, secret)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -138,42 +247,31 @@ def authenticate(
     return principal
 
 
-class InMemoryRateLimiter:
-    """A small single-process sliding-window limiter for local deployments."""
-
-    def __init__(self, limit: int = 60, window_seconds: int = 60) -> None:
-        if limit < 1 or window_seconds < 1:
-            raise ValueError("限流参数必须为正数")
-        self.limit = limit
-        self.window_seconds = window_seconds
-        self._requests: dict[str, Deque[float]] = defaultdict(deque)
-
-    def check(self, key: str) -> int | None:
-        """Return retry seconds when blocked, otherwise record the request."""
-        now = time.monotonic()
-        entries = self._requests[key]
-        cutoff = now - self.window_seconds
-        while entries and entries[0] <= cutoff:
-            entries.popleft()
-        if len(entries) >= self.limit:
-            return max(1, int(entries[0] + self.window_seconds - now + 0.999))
-        entries.append(now)
-        return None
-
-
-def rate_limit_dependency(
+async def rate_limit_dependency(
     request: Request,
     principal: Principal = Depends(authenticate),
 ) -> Principal:
     if "chat:write" not in principal.scopes:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="缺少 chat:write 权限")
     limiter = request.app.state.rate_limiter
-    client_host = request.client.host if request.client else "unknown"
-    retry_after = limiter.check(f"{client_host}:{principal.limiter_key}")
+    try:
+        retry_after = await limiter.check(principal.limiter_key, request.url.path)
+    except Exception as exc:
+        request.app.state.metrics.increment("rate_limit_errors_total")
+        logger.exception("rate limiter failed")
+        if request.app.state.settings.redis_fail_mode == "open":
+            retry_after = await request.app.state.memory_rate_limiter.check(
+                principal.limiter_key,
+                request.url.path,
+            )
+        else:
+            raise HTTPException(status_code=503, detail="限流服务暂时不可用") from exc
     if retry_after is not None:
+        request.app.state.metrics.increment("rate_limit_rejected_total")
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="请求过于频繁，请稍后重试",
             headers={"Retry-After": str(retry_after)},
         )
+    request.app.state.metrics.increment("rate_limit_allowed_total")
     return principal

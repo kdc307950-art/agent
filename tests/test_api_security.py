@@ -11,7 +11,10 @@ def load_app(monkeypatch, rate_limit="60"):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
     monkeypatch.setenv("X_API_KEY", "test-api-key")
     monkeypatch.setenv("TENANT_TOKEN_SECRET", "test-tenant-secret")
+    monkeypatch.setenv("AUTH_MODE", "dev")
     monkeypatch.setenv("DATABASE_URL", "postgresql://test/test")
+    monkeypatch.setenv("RATE_LIMIT_BACKEND", "memory")
+    monkeypatch.setenv("RATE_LIMIT_CAPACITY", rate_limit)
     monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", rate_limit)
     module = importlib.import_module("backend.app")
     module = importlib.reload(module)
@@ -97,6 +100,7 @@ def test_chat_rate_limit_returns_429(monkeypatch):
     assert first.status_code == 503
     assert second.status_code == 429
     assert second.headers["Retry-After"].isdigit()
+    assert module.app.state.metrics.snapshot()["rate_limit_rejected_total"] == 1
 
 
 def test_chat_timeout_returns_structured_sse_error(monkeypatch):

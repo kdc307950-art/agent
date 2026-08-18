@@ -10,11 +10,11 @@
 - `TENANT_TOKEN_SECRET`：签发和验证租户令牌的服务端密钥；生产建议替换为 OIDC/JWT 验证。
 - `LANGCHAIN_API_KEY`：可选，仅用于 LangSmith 追踪。
 
-启动后，`POST /chat/stream` 必须带 `Authorization: Bearer <签名租户令牌>`。令牌包含 `tenant_id`、`user_id`、`scopes` 和过期时间；服务端会将客户端会话转换为 `tenant_id:user_id:client_thread_id`。`GET /health` 保持公开，便于健康检查。限流默认为每个客户端和租户用户每分钟 60 次，可通过 `RATE_LIMIT_PER_MINUTE` 调整；当前实现是单进程内存限流，多实例部署应替换为 Redis 等共享限流器。
+启动后，`POST /chat/stream` 必须带 Bearer 令牌。开发环境使用 `AUTH_MODE=dev` 的内部签名令牌；公网环境必须切换为 `AUTH_MODE=oidc`，校验 issuer、audience、过期时间、scope 和撤销状态。服务端会将客户端会话转换为 `tenant_id:user_id:client_thread_id`。`GET /health` 保持公开，便于健康检查。限流默认使用 Redis，按租户和用户共享计数；Redis 不可用时默认 fail-closed。
 
 ## 启动
 
-本地开发先启动 PostgreSQL，再初始化 LangGraph 的 checkpoint/store 表：
+本地开发先启动 PostgreSQL 和 Redis，再初始化 LangGraph 的 checkpoint/store 表：
 
 ```powershell
 docker compose -f infra/compose.dev.yml up -d
@@ -43,6 +43,8 @@ uv run python -m backend.issue_dev_token tenant-a user-1
 ```
 
 Vite 开发代理把 `/api` 转发到后端，并从项目根 `.env` 读取 `DEV_TENANT_TOKEN` 注入 Bearer 头；该令牌不会打进 React bundle。公网部署应改为 OIDC/JWT、撤销机制和共享限流。
+
+CI 会使用 PostgreSQL 和 Redis service containers；当 `CI=true` 时，缺少 `TEST_DATABASE_URL` 或 `REDIS_URL` 会直接失败，不会静默跳过集成测试。
 
 `checkpoints.db` 仅作为本地 SQLite 后备。生产运行时使用 `DATABASE_URL` 指向 PostgreSQL；迁移完成并验证重启恢复前，不要删除旧的 SQLite 文件。
 

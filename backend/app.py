@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
-import os
 from contextlib import asynccontextmanager
 from time import perf_counter
 from typing import Literal
 from uuid import uuid4
 
+import redis.asyncio as redis
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -19,10 +20,14 @@ from langchain_core.messages import HumanMessage
 
 from .security import (
     InMemoryRateLimiter,
+    OIDCVerifier,
     Principal,
     cors_origins,
     rate_limit_dependency,
 )
+from .rate_limit import RedisRateLimiter
+from .revocation import RedisRevocationStore
+from .metrics import RuntimeMetrics
 from .runtime import runtime_context
 from .repositories import tenant_thread_id
 from .settings import Settings
@@ -78,32 +83,83 @@ class AuditMiddleware(BaseHTTPMiddleware):
             elapsed_ms = (perf_counter() - started) * 1000
             status_code = response.status_code if response is not None else 500
             logger.info(
-                "request_id=%s method=%s path=%s status=%s client=%s elapsed_ms=%.1f",
+                "request_id=%s run_id=%s tenant_hash=%s method=%s path=%s status=%s client=%s elapsed_ms=%.1f",
                 request_id,
+                getattr(request.state, "run_id", ""),
+                getattr(request.state, "tenant_hash", ""),
                 request.method,
                 request.url.path,
                 status_code,
                 request.client.host if request.client else "unknown",
                 elapsed_ms,
             )
+            if hasattr(request.app.state, "metrics"):
+                request.app.state.metrics.increment("http_requests_total")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = Settings.from_env()
     app.state.settings = settings
-    app.state.rate_limiter = InMemoryRateLimiter(
-        limit=int(os.getenv("RATE_LIMIT_PER_MINUTE", "60")),
-        window_seconds=60,
-    )
-    logger.info("正在初始化 LangGraph Agent runtime")
-    async with runtime_context(settings) as runtime:
-        app.state.runtime = runtime
-        app.state.agent = runtime.graph
-        logger.info("LangGraph Agent runtime 初始化完成")
-        yield
-    app.state.agent = None
-    app.state.runtime = None
+    app.state.metrics = RuntimeMetrics()
+    redis_client = None
+    auth_verifier = None
+    try:
+        if settings.rate_limit_backend == "redis" or (
+            settings.auth_mode == "oidc" and settings.oidc_revocation_mode == "redis"
+        ):
+            redis_client = redis.from_url(
+                settings.redis_url,
+                encoding="utf-8",
+                decode_responses=True,
+                socket_timeout=settings.redis_socket_timeout_seconds,
+                socket_connect_timeout=settings.redis_socket_timeout_seconds,
+            )
+            try:
+                await redis_client.ping()
+            except Exception:
+                await redis_client.aclose()
+                if settings.redis_fail_mode == "closed":
+                    raise RuntimeError("Redis 不可用，按 fail-closed 策略拒绝启动")
+                redis_client = None
+
+        app.state.memory_rate_limiter = InMemoryRateLimiter(settings.rate_limit_capacity)
+        if settings.rate_limit_backend == "redis" and redis_client is not None:
+            app.state.rate_limiter = RedisRateLimiter(
+                redis_client,
+                capacity=settings.rate_limit_capacity,
+                refill_per_second=settings.rate_limit_refill_per_second,
+            )
+        else:
+            app.state.rate_limiter = InMemoryRateLimiter(settings.rate_limit_capacity)
+
+        if settings.auth_mode == "oidc":
+            revocation_store = RedisRevocationStore(redis_client) if settings.oidc_revocation_mode == "redis" and redis_client else None
+            if settings.oidc_revocation_mode == "redis" and revocation_store is None:
+                raise RuntimeError("OIDC_REVOCATION_MODE=redis 但 Redis 不可用")
+            auth_verifier = OIDCVerifier(
+                issuer=settings.oidc_issuer_url,
+                audience=settings.oidc_audience,
+                jwks_url=settings.oidc_jwks_url,
+                tenant_claim=settings.oidc_tenant_claim,
+                clock_skew_seconds=settings.oidc_clock_skew_seconds,
+                required_scopes=settings.oidc_required_scopes,
+                revocation_store=revocation_store,
+            )
+        app.state.auth_verifier = auth_verifier
+        logger.info("正在初始化 LangGraph Agent runtime auth_mode=%s rate_limit_backend=%s", settings.auth_mode, settings.rate_limit_backend)
+        async with runtime_context(settings) as runtime:
+            app.state.runtime = runtime
+            app.state.agent = runtime.graph
+            logger.info("LangGraph Agent runtime 初始化完成")
+            yield
+    finally:
+        if auth_verifier is not None:
+            await auth_verifier.aclose()
+        if redis_client is not None:
+            await redis_client.aclose()
+        app.state.agent = None
+        app.state.runtime = None
 
 
 app = FastAPI(title="LangGraph Agent API", lifespan=lifespan)
@@ -128,6 +184,10 @@ async def chat_stream(
     if graph is None:
         raise HTTPException(status_code=503, detail="Agent 尚未初始化")
 
+    run_id = uuid4().hex
+    http_request.state.run_id = run_id
+    http_request.state.tenant_hash = hashlib.sha256(principal.tenant_id.encode("utf-8")).hexdigest()[:16]
+    http_request.app.state.metrics.increment("agent_runs_total")
     physical_thread_id = tenant_thread_id(principal.tenant_id, principal.user_id, payload.thread_id)
     config = {"configurable": {"thread_id": physical_thread_id, "checkpoint_ns": ""}}
     inputs = {"messages": [HumanMessage(content=payload.message)]}
@@ -150,15 +210,19 @@ async def chat_stream(
                                 yield f"data: {json.dumps({'type': 'tool', 'status': 'calling'}, ensure_ascii=False)}\n\n"
                         elif node_name == "tools":
                             yield f"data: {json.dumps({'type': 'tool', 'status': 'done'}, ensure_ascii=False)}\n\n"
+                http_request.app.state.metrics.increment("agent_runs_completed_total")
                 yield "data: {\"type\": \"end\"}\n\n"
         except asyncio.TimeoutError:
-            logger.warning("Agent stream timed out request_id=%s", http_request.state.request_id)
+            http_request.app.state.metrics.increment("agent_timeouts_total")
+            logger.warning("Agent stream timed out request_id=%s run_id=%s", http_request.state.request_id, run_id)
             yield "data: {\"type\": \"error\", \"code\": \"agent_timeout\", \"content\": \"请求超时，请稍后重试\"}\n\n"
         except asyncio.CancelledError:
-            logger.info("Agent stream cancelled request_id=%s", http_request.state.request_id)
+            http_request.app.state.metrics.increment("agent_cancellations_total")
+            logger.info("Agent stream cancelled request_id=%s run_id=%s", http_request.state.request_id, run_id)
             raise
         except Exception:
-            logger.exception("Agent stream failed request_id=%s", http_request.state.request_id)
+            http_request.app.state.metrics.increment("agent_errors_total")
+            logger.exception("Agent stream failed request_id=%s run_id=%s", http_request.state.request_id, run_id)
             yield "data: {\"type\": \"error\", \"code\": \"agent_failed\", \"content\": \"服务暂时不可用，请稍后重试\"}\n\n"
 
     return StreamingResponse(
@@ -167,6 +231,7 @@ async def chat_stream(
         headers={
             "Cache-Control": "no-cache",
             "X-Request-ID": http_request.state.request_id,
+            "X-Run-ID": run_id,
         },
     )
 
