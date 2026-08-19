@@ -1,0 +1,56 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: langgraph-agent-retention
+spec:
+  schedule: "17 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: retention
+              image: ghcr.io/your-org/langgraph-agent:REPLACE
+              imagePullPolicy: IfNotPresent
+              command: ["uv", "run", "python", "-m", "backend.retention"]
+              env:
+                - name: AUDIT_RETENTION_ENABLED
+                  value: "true"
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: langgraph-runtime
+                      key: database-url
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: langgraph-agent-data-retention
+spec:
+  schedule: "47 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: data-retention
+              image: ghcr.io/your-org/langgraph-agent:REPLACE
+              imagePullPolicy: IfNotPresent
+              command: ["uv", "run", "python", "-m", "backend.data_retention"]
+              args: ["--checkpoint-days", "90", "--batch-size", "500"]
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: langgraph-runtime
+                      key: database-url

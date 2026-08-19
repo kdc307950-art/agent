@@ -30,11 +30,15 @@ from .security import (
 from .rate_limit import RedisRateLimiter
 from .revocation import RedisRevocationStore
 from .audit import NoopAuditRepository
+from .budget import TenantBudget, TenantBudgetExceeded
 from .metrics import RuntimeMetrics
 from .run_context import RunContext
 from .runtime import runtime_context
 from .repositories import tenant_thread_id
+from .readiness import probe_dependencies
 from .settings import Settings
+from .telemetry import Telemetry
+from .usage import extract_model_usage, usage_cost_usd
 
 
 logger = logging.getLogger("langgraph.api")
@@ -125,8 +129,11 @@ async def lifespan(app: FastAPI):
     settings = Settings.from_env()
     app.state.settings = settings
     app.state.metrics = RuntimeMetrics()
+    app.state.telemetry = Telemetry(app)
     app.state.audit = NoopAuditRepository()
     app.state.revocation_store = None
+    app.state.redis_client = None
+    app.state.budget = None
     redis_client = None
     auth_verifier = None
     try:
@@ -147,6 +154,15 @@ async def lifespan(app: FastAPI):
                 if settings.redis_fail_mode == "closed":
                     raise RuntimeError("Redis 不可用，按 fail-closed 策略拒绝启动")
                 redis_client = None
+            app.state.redis_client = redis_client
+
+        if settings.tenant_daily_budget_usd > 0:
+            if redis_client is None:
+                raise RuntimeError("租户预算需要可用 Redis")
+            app.state.budget = TenantBudget(
+                redis_client,
+                daily_limit_usd=settings.tenant_daily_budget_usd,
+            )
 
         app.state.memory_rate_limiter = InMemoryRateLimiter(settings.rate_limit_capacity)
         if settings.rate_limit_backend == "redis" and redis_client is not None:
@@ -197,8 +213,12 @@ async def lifespan(app: FastAPI):
         app.state.runtime = None
         app.state.audit = NoopAuditRepository()
         app.state.revocation_store = None
+        app.state.redis_client = None
+        app.state.budget = None
         if hasattr(app.state, "metrics"):
             app.state.metrics.shutdown()
+        if hasattr(app.state, "telemetry"):
+            app.state.telemetry.shutdown()
 
 
 app = FastAPI(title="LangGraph Agent API", lifespan=lifespan)
@@ -224,6 +244,7 @@ async def chat_stream(
         raise HTTPException(status_code=503, detail="Agent 尚未初始化")
 
     run_id = uuid4().hex
+    run_started = monotonic()
     http_request.state.run_id = run_id
     http_request.state.tenant_hash = hashlib.sha256(principal.tenant_id.encode("utf-8")).hexdigest()[:16]
     http_request.app.state.metrics.increment("agent_runs_total")
@@ -240,6 +261,17 @@ async def chat_stream(
         scopes=principal.scopes,
         deadline=monotonic() + settings.agent_run_timeout_seconds,
     )
+    budget = getattr(http_request.app.state, "budget", None)
+    if budget is not None:
+        try:
+            if not await budget.can_start(principal.tenant_id):
+                http_request.app.state.metrics.increment("tenant_budget_rejections_total")
+                raise HTTPException(status_code=429, detail="租户当日模型预算已用尽")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            http_request.app.state.metrics.increment("budget_errors_total")
+            raise HTTPException(status_code=503, detail="租户预算服务暂时不可用") from exc
     audit = getattr(http_request.app.state, "audit", NoopAuditRepository())
     try:
         async with asyncio.timeout(settings.audit_write_timeout_seconds):
@@ -252,6 +284,19 @@ async def chat_stream(
         logger.exception("无法创建运行审计记录 request_id=%s run_id=%s", run_context.request_id, run_id)
         raise HTTPException(status_code=503, detail="运行审计服务暂时不可用") from exc
 
+    usage_totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    total_cost_usd = 0.0
+
+    def run_metadata() -> dict[str, object]:
+        metadata: dict[str, object] = {"route": http_request.url.path}
+        if usage_totals["total_tokens"]:
+            metadata["model"] = settings.llm_model
+            metadata["input_tokens"] = usage_totals["input_tokens"]
+            metadata["output_tokens"] = usage_totals["output_tokens"]
+            metadata["total_tokens"] = usage_totals["total_tokens"]
+            metadata["cost_usd"] = round(total_cost_usd, 8)
+        return metadata
+
     async def finish_run(status: str, *, error_code: str | None = None) -> None:
         try:
             async with asyncio.timeout(settings.audit_write_timeout_seconds):
@@ -259,13 +304,19 @@ async def chat_stream(
                     run_context,
                     status,
                     error_code=error_code,
-                    metadata={"route": http_request.url.path},
+                    metadata=run_metadata(),
                 )
+            http_request.app.state.metrics.observe(
+                "agent_run_duration_seconds",
+                monotonic() - run_started,
+                {"outcome": status},
+            )
         except Exception:
             http_request.app.state.metrics.increment("audit_errors_total")
             logger.exception("无法更新运行审计状态 request_id=%s run_id=%s status=%s", run_context.request_id, run_id, status)
 
     async def event_generator():
+        nonlocal total_cost_usd
         try:
             async with asyncio.timeout(settings.agent_run_timeout_seconds):
                 async for event in graph.astream(
@@ -277,6 +328,51 @@ async def chat_stream(
                     for node_name, update in event.items():
                         if node_name == "agent" and "messages" in update:
                             msg = update["messages"][0]
+                            usage = extract_model_usage(msg)
+                            if usage.known:
+                                usage_totals["input_tokens"] += usage.input_tokens
+                                usage_totals["output_tokens"] += usage.output_tokens
+                                usage_totals["total_tokens"] += usage.total_tokens
+                                cost = usage_cost_usd(
+                                    usage,
+                                    input_per_1k=settings.model_input_cost_per_1k_usd,
+                                    output_per_1k=settings.model_output_cost_per_1k_usd,
+                                )
+                                total_cost_usd += cost
+                                http_request.app.state.metrics.increment(
+                                    "model_input_tokens_total",
+                                    usage.input_tokens,
+                                    {"model": settings.llm_model},
+                                )
+                                http_request.app.state.metrics.increment(
+                                    "model_output_tokens_total",
+                                    usage.output_tokens,
+                                    {"model": settings.llm_model},
+                                )
+                                http_request.app.state.metrics.increment(
+                                    "model_cost_microusd_total",
+                                    int(round(cost * 1_000_000)),
+                                    {"model": settings.llm_model},
+                                )
+                                if budget is not None and not await budget.record(principal.tenant_id, cost):
+                                    raise TenantBudgetExceeded("tenant daily model budget exceeded")
+                                try:
+                                    async with asyncio.timeout(settings.audit_write_timeout_seconds):
+                                        await audit.record_event(
+                                            run_context,
+                                            "model_usage",
+                                            status="completed",
+                                            payload={
+                                                "model": settings.llm_model,
+                                                "input_tokens": usage.input_tokens,
+                                                "output_tokens": usage.output_tokens,
+                                                "total_tokens": usage.total_tokens,
+                                                "cost_usd": cost,
+                                            },
+                                        )
+                                except Exception:
+                                    http_request.app.state.metrics.increment("audit_errors_total")
+                                    logger.exception("模型用量审计写入失败 run_id=%s", run_id)
                             if getattr(msg, "content", None):
                                 yield f"data: {json.dumps({'type': 'text', 'content': msg.content}, ensure_ascii=False)}\n\n"
                             if getattr(msg, "tool_calls", None):
@@ -286,6 +382,10 @@ async def chat_stream(
                 await finish_run("completed")
                 http_request.app.state.metrics.increment("agent_runs_completed_total")
                 yield f"data: {json.dumps({'type': 'end', 'run_id': run_id}, ensure_ascii=False)}\n\n"
+        except TenantBudgetExceeded:
+            await finish_run("budget_exceeded", error_code="tenant_budget_exceeded")
+            http_request.app.state.metrics.increment("tenant_budget_exceeded_total")
+            yield f"data: {json.dumps({'type': 'error', 'code': 'tenant_budget_exceeded', 'run_id': run_id, 'content': '租户模型预算已用尽'}, ensure_ascii=False)}\n\n"
         except asyncio.TimeoutError:
             await finish_run("timeout", error_code="agent_timeout")
             http_request.app.state.metrics.increment("agent_timeouts_total")
@@ -362,7 +462,24 @@ async def revoke_oidc_token(
 
 @app.get("/health")
 async def health_check(request: Request):
+    """Backward-compatible liveness endpoint; it does not probe dependencies."""
     return {"status": "ok", "agent_ready": request.app.state.agent is not None}
+
+
+@app.get("/livez")
+async def liveness_check():
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readiness_check(request: Request):
+    result = await probe_dependencies(request)
+    status_code = 200 if result.ok else 503
+    return Response(
+        content=json.dumps({"status": "ready" if result.ok else "not_ready", "checks": result.checks}),
+        media_type="application/json",
+        status_code=status_code,
+    )
 
 
 @app.get("/metrics")

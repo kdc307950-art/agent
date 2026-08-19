@@ -13,3 +13,4 @@ frontend/dist/
 *.db-shm
 *.db-wal
 chat_history.json
+artifacts/

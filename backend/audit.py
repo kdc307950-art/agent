@@ -51,6 +51,21 @@ AUDIT_SCHEMA_STATEMENTS = (
     CREATE INDEX IF NOT EXISTS idx_agent_events_run
     ON agent_events (run_id, occurred_at)
     """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_thread_activity (
+        tenant_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        thread_id TEXT PRIMARY KEY,
+        last_started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        last_finished_at TIMESTAMPTZ,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_thread_activity_finished
+    ON agent_thread_activity (last_finished_at)
+    WHERE last_finished_at IS NOT NULL
+    """,
 )
 
 _SENSITIVE_KEY = re.compile(
@@ -155,6 +170,19 @@ class AuditRepository:
                     """,
                     (context.run_id, context.tenant_id, Jsonb(safe_metadata)),
                 )
+                await cursor.execute(
+                    """
+                    INSERT INTO agent_thread_activity
+                        (tenant_id, user_id, thread_id, last_started_at, updated_at)
+                    VALUES (%s, %s, %s, now(), now())
+                    ON CONFLICT (thread_id) DO UPDATE SET
+                        tenant_id = EXCLUDED.tenant_id,
+                        user_id = EXCLUDED.user_id,
+                        last_started_at = EXCLUDED.last_started_at,
+                        updated_at = EXCLUDED.updated_at
+                    """,
+                    (context.tenant_id, context.user_id, context.thread_id),
+                )
 
     async def finish_run(
         self,
@@ -186,6 +214,14 @@ class AuditRepository:
                 )
                 updated = cursor.rowcount == 1
                 if updated:
+                    await cursor.execute(
+                        """
+                        UPDATE agent_thread_activity
+                        SET last_finished_at = now(), updated_at = now()
+                        WHERE thread_id = %s AND tenant_id = %s
+                        """,
+                        (context.thread_id, context.tenant_id),
+                    )
                     await cursor.execute(
                         """
                         INSERT INTO agent_events

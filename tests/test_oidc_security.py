@@ -180,6 +180,56 @@ def test_oidc_verifier_can_require_jti_and_token_age():
     asyncio.run(run())
 
 
+def test_oidc_verifier_refreshes_jwks_for_rotated_kid():
+    old_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    new_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    old_jwk = {**json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(old_key.public_key())), "kid": "old"}
+    new_jwk = {**json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(new_key.public_key())), "kid": "new"}
+
+    class RotatingClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def get(self, _url):
+            self.calls += 1
+            return FakeResponse({"keys": [old_jwk] if self.calls == 1 else [new_jwk]})
+
+        async def aclose(self):
+            return None
+
+    verifier = OIDCVerifier(
+        issuer="https://issuer.example",
+        audience="agent-api",
+        jwks_url="https://issuer.example/keys",
+        tenant_claim="tenant_id",
+        clock_skew_seconds=0,
+        required_scopes=frozenset({"chat:write"}),
+    )
+    client = RotatingClient()
+    verifier._client = client
+    token = jwt.encode(
+        {
+            "iss": "https://issuer.example",
+            "aud": "agent-api",
+            "sub": "user-1",
+            "tenant_id": "tenant-a",
+            "scope": "chat:write",
+            "exp": int(time.time()) + 60,
+        },
+        new_key,
+        algorithm="RS256",
+        headers={"kid": "new"},
+    )
+
+    async def run():
+        principal = await verifier.verify(token)
+        assert principal.tenant_id == "tenant-a"
+        assert client.calls == 2
+        await verifier.aclose()
+
+    asyncio.run(run())
+
+
 def test_production_rejects_dev_auth(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("AUTH_MODE", "dev")
@@ -203,6 +253,7 @@ def test_production_requires_jti_and_metrics_auth(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "model-key")
     monkeypatch.setenv("DATABASE_URL", "postgresql://test/test")
     monkeypatch.setenv("RATE_LIMIT_BACKEND", "redis")
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://app.example")
     monkeypatch.setenv("OIDC_REQUIRE_JTI", "false")
     monkeypatch.delenv("METRICS_AUTH_TOKEN", raising=False)
 

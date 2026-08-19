@@ -118,6 +118,9 @@ class Settings:
     audit_retention_batch_size: int
     audit_retention_max_runtime_seconds: float
     audit_retention_enabled: bool
+    model_input_cost_per_1k_usd: float
+    model_output_cost_per_1k_usd: float
+    tenant_daily_budget_usd: float
     auto_setup: bool
 
     @classmethod
@@ -136,14 +139,26 @@ class Settings:
         rate_limit_backend = _choice_setting("RATE_LIMIT_BACKEND", "redis", {"memory", "redis"})
         redis_url = os.getenv("REDIS_URL", "").strip() or None
         revocation_mode = _choice_setting("OIDC_REVOCATION_MODE", "none", {"none", "redis"})
+        redis_fail_mode = _choice_setting("REDIS_FAIL_MODE", "closed", {"open", "closed"})
+        auto_setup_enabled = auto_setup in {"1", "true", "yes"}
         if app_env == "production" and auth_mode != "oidc":
             raise RuntimeError("APP_ENV=production 禁止使用 AUTH_MODE=dev")
         if app_env == "production" and revocation_mode != "redis":
             raise RuntimeError("APP_ENV=production 必须启用 OIDC_REVOCATION_MODE=redis")
+        if app_env == "production" and rate_limit_backend != "redis":
+            raise RuntimeError("APP_ENV=production 必须使用 RATE_LIMIT_BACKEND=redis")
+        if app_env == "production" and redis_fail_mode != "closed":
+            raise RuntimeError("APP_ENV=production 必须使用 REDIS_FAIL_MODE=closed")
+        if app_env == "production" and auto_setup_enabled:
+            raise RuntimeError("APP_ENV=production 禁止 LANGGRAPH_AUTO_SETUP=true")
+        if app_env == "production" and not os.getenv("CORS_ALLOWED_ORIGINS", "").strip():
+            raise RuntimeError("APP_ENV=production 必须显式配置 CORS_ALLOWED_ORIGINS")
         oidc_require_jti = _bool_setting("OIDC_REQUIRE_JTI", app_env == "production")
         oidc_max_token_age_seconds = _int_setting("OIDC_MAX_TOKEN_AGE_SECONDS", 3600, 0)
         if app_env == "production" and not oidc_require_jti:
             raise RuntimeError("APP_ENV=production 必须要求 OIDC token 携带 jti")
+        if app_env == "production" and oidc_max_token_age_seconds <= 0:
+            raise RuntimeError("APP_ENV=production 必须配置 OIDC_MAX_TOKEN_AGE_SECONDS")
         metrics_enabled = _bool_setting("METRICS_ENABLED", True)
         metrics_auth_token = os.getenv("METRICS_AUTH_TOKEN", "").strip() or None
         if app_env == "production" and metrics_enabled and not metrics_auth_token:
@@ -156,6 +171,15 @@ class Settings:
         required_scopes = frozenset(
             scope.strip() for scope in os.getenv("OIDC_REQUIRED_SCOPES", "chat:write").split(",") if scope.strip()
         )
+        if auth_mode == "oidc" and not required_scopes:
+            raise RuntimeError("AUTH_MODE=oidc 必须至少配置一个 OIDC_REQUIRED_SCOPES")
+        tenant_daily_budget_usd = _float_setting("TENANT_DAILY_BUDGET_USD", 0.0, 0.0)
+        if tenant_daily_budget_usd > 0 and not redis_url:
+            raise RuntimeError("启用 TENANT_DAILY_BUDGET_USD 时必须配置 REDIS_URL")
+        input_cost = _float_setting("MODEL_INPUT_COST_PER_1K_USD", 0.0, 0.0)
+        output_cost = _float_setting("MODEL_OUTPUT_COST_PER_1K_USD", 0.0, 0.0)
+        if app_env == "production" and tenant_daily_budget_usd > 0 and input_cost <= 0 and output_cost <= 0:
+            raise RuntimeError("生产启用租户预算时必须配置模型输入或输出价格")
         return cls(
             app_env=app_env,
             deepseek_api_key=_required("DEEPSEEK_API_KEY"),
@@ -179,7 +203,7 @@ class Settings:
             rate_limit_capacity=_int_setting("RATE_LIMIT_CAPACITY", 60, 1),
             rate_limit_refill_per_second=refill_rate,
             redis_socket_timeout_seconds=float(os.getenv("REDIS_SOCKET_TIMEOUT_SECONDS", "1")),
-            redis_fail_mode=_choice_setting("REDIS_FAIL_MODE", "closed", {"open", "closed"}),
+            redis_fail_mode=redis_fail_mode,
             agent_run_timeout_seconds=_int_setting("AGENT_RUN_TIMEOUT_SECONDS", 60, 1),
             model_retry_attempts=_int_setting("MODEL_RETRY_ATTEMPTS", 2, 0),
             tool_retry_attempts=_int_setting("TOOL_RETRY_ATTEMPTS", 1, 0),
@@ -194,5 +218,8 @@ class Settings:
                 "AUDIT_RETENTION_MAX_RUNTIME_SECONDS", 60.0, 0.1
             ),
             audit_retention_enabled=_bool_setting("AUDIT_RETENTION_ENABLED", False),
-            auto_setup=auto_setup in {"1", "true", "yes"},
+            model_input_cost_per_1k_usd=input_cost,
+            model_output_cost_per_1k_usd=output_cost,
+            tenant_daily_budget_usd=tenant_daily_budget_usd,
+            auto_setup=auto_setup_enabled,
         )

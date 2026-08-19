@@ -4,6 +4,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator
 
+from psycopg import AsyncConnection
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres.aio import AsyncPostgresStore
 
@@ -12,6 +13,7 @@ from src.my_agent.agent import build_agent
 from .audit import AuditRepository, audit_context
 from .metrics import RuntimeMetrics
 from .repositories import LongTermMemoryRepository
+from .schema import check_schema_ready, ensure_schema_version
 from .settings import Settings
 from .tool_governance import ToolGovernance
 
@@ -47,6 +49,10 @@ async def runtime_context(
             await checkpointer.setup()
             await store.setup()
             await audit.setup()
+        async with await AsyncConnection.connect(settings.database_url) as connection:
+            if settings.auto_setup:
+                await ensure_schema_version(connection)
+            await check_schema_ready(connection)
         await audit.check_ready()
         runtime_metrics = metrics or RuntimeMetrics()
         tool_governance = ToolGovernance(

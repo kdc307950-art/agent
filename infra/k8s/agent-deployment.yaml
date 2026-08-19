@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langgraph-agent
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: langgraph-agent
+  template:
+    metadata:
+      labels:
+        app: langgraph-agent
+    spec:
+      containers:
+        - name: agent
+          image: ghcr.io/your-org/langgraph-agent:REPLACE
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: langgraph-runtime
+          env:
+            - name: APP_ENV
+              value: production
+            - name: AUTH_MODE
+              value: oidc
+            - name: RATE_LIMIT_BACKEND
+              value: redis
+            - name: REDIS_FAIL_MODE
+              value: closed
+            - name: LANGGRAPH_AUTO_SETUP
+              value: "false"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8000
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 8000
+            periodSeconds: 10
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: langgraph-agent
+spec:
+  selector:
+    app: langgraph-agent
+  ports:
+    - port: 8000
+      targetPort: 8000

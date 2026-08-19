@@ -22,6 +22,8 @@ dependencies = [
     "opentelemetry-sdk>=1.44.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.44.0",
     "opentelemetry-exporter-prometheus>=0.65b0",
+    "opentelemetry-instrumentation-fastapi>=0.65b0",
+    "opentelemetry-instrumentation-httpx>=0.65b0",
 ]
 
 [build-system]

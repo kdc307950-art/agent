@@ -74,6 +74,12 @@ class OIDCVerifier:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    async def check_ready(self) -> None:
+        """Ensure the configured issuer/JWKS endpoint is reachable and valid."""
+        await self._load_jwks()
+        if not self._jwks:
+            raise RuntimeError("OIDC JWKS 为空")
+
     async def _load_jwks(self, *, force: bool = False) -> None:
         if not force and self._jwks and self._jwks_expires_at > time.monotonic():
             return
@@ -126,6 +132,8 @@ class OIDCVerifier:
                 raise ValueError("OIDC token 尚未签发")
             if self.max_token_age_seconds and now - issued_at > self.max_token_age_seconds + self.clock_skew_seconds:
                 raise ValueError("OIDC token 超过允许年龄")
+        elif self.max_token_age_seconds:
+            raise ValueError("OIDC token 缺少 iat")
         if self.require_jti and not jti:
             raise ValueError("OIDC token 缺少 jti")
         if self.revocation_store is not None and jti:
@@ -162,10 +170,11 @@ def required_setting(name: str) -> str:
 
 def cors_origins() -> list[str]:
     """Read a comma-separated, explicit CORS allowlist."""
-    raw = os.getenv(
-        "CORS_ALLOWED_ORIGINS",
-        "http://127.0.0.1:5173,http://localhost:5173,http://localhost:3000",
-    )
+    raw = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+    if os.getenv("APP_ENV", "development").strip().lower() == "production" and not raw:
+        raise RuntimeError("APP_ENV=production 必须显式配置 CORS_ALLOWED_ORIGINS")
+    if not raw:
+        raw = "http://127.0.0.1:5173,http://localhost:5173,http://localhost:3000"
     origins = [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
     if not origins:
         raise RuntimeError("CORS_ALLOWED_ORIGINS 不能是空值")
