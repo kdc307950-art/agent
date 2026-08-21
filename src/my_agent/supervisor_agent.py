@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import logging
 import os
-import sqlite3
 from typing import Annotated
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph, add_messages
 # 注：langgraph 1.x 已标记 create_react_agent 废弃（v2.0 移除，将迁移到
 # langchain.agents.create_agent）。当前项目未装 langchain 包，故继续用此 API。
@@ -180,8 +179,10 @@ def build_supervisor_agent(
     workflow.add_edge("weather_agent", "supervisor")
     workflow.add_edge("calc_agent", "supervisor")
 
+    # 默认用内存 checkpointer（保证图能跑、支持 interrupt 恢复）；
+    # 需要持久化（长任务断点续跑）时，由调用方在 async 上下文创建
+    # AsyncSqliteSaver(await aiosqlite.connect(...)) 传入。
     if checkpointer is None:
-        conn = sqlite3.connect("checkpoints.db", check_same_thread=False)
-        checkpointer = SqliteSaver(conn)
+        checkpointer = MemorySaver()
 
     return workflow.compile(checkpointer=checkpointer)

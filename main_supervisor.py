@@ -1,9 +1,16 @@
 import asyncio
+import sys
 
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from src.my_agent.supervisor_agent import build_supervisor_agent
+
+# Windows 控制台默认 GBK 编码，强制 UTF-8 输出，避免中文/emoji 报错
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
 async def _handle_interrupts(agent, config):
@@ -24,7 +31,7 @@ async def _handle_interrupts(agent, config):
 
         for payload in pending:
             question = payload.get("question", "是否批准？")
-            ans = input(f"⏸  {question} (y/n): ").strip().lower()
+            ans = input(f"[审批] {question} (y/n): ").strip().lower()
             approved = ans in ("y", "yes", "是", "1")
             await agent.ainvoke(Command(resume={"approved": approved}), config=config)
 
@@ -33,12 +40,12 @@ async def main():
     agent = build_supervisor_agent()
     config = {"configurable": {"thread_id": "supervisor_demo_001"}}
 
-    print("🚀 Supervisor 多 Agent（含 Human-in-the-loop 人工审批）")
-    print("💡 输入 exit 退出")
+    print("Supervisor 多 Agent（含 Human-in-the-loop 人工审批）")
+    print("输入 exit 退出")
     print("-" * 40)
 
     while True:
-        user_input = input("🧑 你: ")
+        user_input = input("你: ")
         if user_input.lower() in ("exit", "quit"):
             break
 
@@ -55,10 +62,10 @@ async def main():
             last = msgs[-1]
             content = getattr(last, "content", "")
             if content:
-                print(f"🤖 {content}")
+                print(f"Agent: {content}")
         print()
 
-    print("👋 再见！")
+    print("再见！")
 
 
 if __name__ == "__main__":

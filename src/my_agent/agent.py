@@ -3,12 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import sqlite3
 from typing import Any
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
@@ -99,8 +98,9 @@ def build_agent(
     )
     workflow.add_edge("tools", "agent")
 
+    # 默认用内存 checkpointer（支持异步 ainvoke/astream）；
+    # 持久化由调用方传入（backend 会传 AsyncPostgresSaver）。
     if checkpointer is None:
-        conn = sqlite3.connect("checkpoints.db", check_same_thread=False)
-        checkpointer = SqliteSaver(conn)
+        checkpointer = MemorySaver()
 
     return workflow.compile(checkpointer=checkpointer, store=store)
