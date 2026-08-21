@@ -1,0 +1,65 @@
+import asyncio
+
+from langchain_core.messages import HumanMessage
+from langgraph.types import Command
+
+from src.my_agent.supervisor_agent import build_supervisor_agent
+
+
+async def _handle_interrupts(agent, config):
+    """循环处理所有挂起的 interrupt（人工审批）。
+
+    审批节点用 interrupt() 暂停后，这里读取 interrupt 的 payload，
+    询问用户，再用 Command(resume={"approved": ...}) 恢复执行。
+    """
+    while True:
+        snapshot = await agent.aget_state(config)
+        pending = []
+        for task in snapshot.tasks:
+            for it in task.interrupts:
+                pending.append(it.value)
+
+        if not pending:
+            return  # 没有挂起的审批，本轮结束
+
+        for payload in pending:
+            question = payload.get("question", "是否批准？")
+            ans = input(f"⏸  {question} (y/n): ").strip().lower()
+            approved = ans in ("y", "yes", "是", "1")
+            await agent.ainvoke(Command(resume={"approved": approved}), config=config)
+
+
+async def main():
+    agent = build_supervisor_agent()
+    config = {"configurable": {"thread_id": "supervisor_demo_001"}}
+
+    print("🚀 Supervisor 多 Agent（含 Human-in-the-loop 人工审批）")
+    print("💡 输入 exit 退出")
+    print("-" * 40)
+
+    while True:
+        user_input = input("🧑 你: ")
+        if user_input.lower() in ("exit", "quit"):
+            break
+
+        # 送入用户消息，图会跑到审批节点（interrupt 暂停）或直接结束
+        await agent.ainvoke({"messages": [HumanMessage(content=user_input)]}, config=config)
+
+        # 处理人工审批中断
+        await _handle_interrupts(agent, config)
+
+        # 打印最终回答
+        snapshot = await agent.aget_state(config)
+        msgs = snapshot.values.get("messages", [])
+        if msgs:
+            last = msgs[-1]
+            content = getattr(last, "content", "")
+            if content:
+                print(f"🤖 {content}")
+        print()
+
+    print("👋 再见！")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
