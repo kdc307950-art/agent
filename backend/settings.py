@@ -122,6 +122,8 @@ class Settings:
     model_output_cost_per_1k_usd: float
     tenant_daily_budget_usd: float
     auto_setup: bool
+    agent_graph_mode: str
+    agent_workflow_path: str | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -180,6 +182,11 @@ class Settings:
         output_cost = _float_setting("MODEL_OUTPUT_COST_PER_1K_USD", 0.0, 0.0)
         if app_env == "production" and tenant_daily_budget_usd > 0 and input_cost <= 0 and output_cost <= 0:
             raise RuntimeError("生产启用租户预算时必须配置模型输入或输出价格")
+        # 图形态：single=单 Agent（默认，向后兼容）；workflow=按 JSON 编排图
+        agent_graph_mode = _choice_setting("AGENT_GRAPH_MODE", "single", {"single", "workflow"})
+        agent_workflow_path = os.getenv("AGENT_WORKFLOW_PATH", "").strip() or None
+        if agent_graph_mode == "workflow" and not agent_workflow_path:
+            raise RuntimeError("AGENT_GRAPH_MODE=workflow 必须配置 AGENT_WORKFLOW_PATH")
         return cls(
             app_env=app_env,
             deepseek_api_key=_required("DEEPSEEK_API_KEY"),
@@ -222,4 +229,6 @@ class Settings:
             model_output_cost_per_1k_usd=output_cost,
             tenant_daily_budget_usd=tenant_daily_budget_usd,
             auto_setup=auto_setup_enabled,
+            agent_graph_mode=agent_graph_mode,
+            agent_workflow_path=agent_workflow_path,
         )

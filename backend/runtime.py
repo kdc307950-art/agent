@@ -9,6 +9,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres.aio import AsyncPostgresStore
 
 from src.my_agent.agent import build_agent
+from src.my_agent.workflow import build_workflow_from_json
 
 from .audit import AuditRepository, audit_context
 from .metrics import RuntimeMetrics
@@ -16,6 +17,7 @@ from .repositories import LongTermMemoryRepository
 from .schema import check_schema_ready, ensure_schema_version
 from .settings import Settings
 from .tool_governance import ToolGovernance
+from .workflow_loader import load_workflow_spec
 
 
 @dataclass
@@ -27,6 +29,39 @@ class AgentRuntime:
     audit: AuditRepository
     tool_governance: ToolGovernance
     metrics: RuntimeMetrics
+    graph_mode: str = "single"
+
+
+def build_graph(settings: Settings, *, checkpointer, store, tool_governance: ToolGovernance):
+    """按 AGENT_GRAPH_MODE 构建生产图。
+
+    - single：单 Agent（默认，历史行为）
+    - workflow：由 JSON 编排定义编译，支持 supervisor 路由与 human_approval 审批
+
+    两种形态共用同一套 checkpointer / store / 工具治理钩子，因此多租户隔离、
+    审计、预算、限流对上层完全一致；差异只在图结构本身。
+    """
+    if settings.agent_graph_mode == "workflow":
+        # spec 不合法时在此直接抛错，不让服务带病启动
+        spec = load_workflow_spec(settings)
+        return build_workflow_from_json(
+            spec,
+            checkpointer=checkpointer,
+            store=store,
+            api_key=settings.deepseek_api_key,
+            base_url=settings.llm_base_url,
+            model_name=settings.llm_model,
+            tool_call_wrapper=tool_governance.awrap_tool_call,
+        )
+    return build_agent(
+        checkpointer=checkpointer,
+        store=store,
+        model_retry_attempts=settings.model_retry_attempts,
+        api_key=settings.deepseek_api_key,
+        base_url=settings.llm_base_url,
+        model_name=settings.llm_model,
+        tool_call_wrapper=tool_governance.awrap_tool_call,
+    )
 
 
 @asynccontextmanager
@@ -61,14 +96,11 @@ async def runtime_context(
             max_retry_attempts=settings.tool_retry_attempts,
             metrics=runtime_metrics,
         )
-        graph = build_agent(
+        graph = build_graph(
+            settings,
             checkpointer=checkpointer,
             store=store,
-            model_retry_attempts=settings.model_retry_attempts,
-            api_key=settings.deepseek_api_key,
-            base_url=settings.llm_base_url,
-            model_name=settings.llm_model,
-            tool_call_wrapper=tool_governance.awrap_tool_call,
+            tool_governance=tool_governance,
         )
         yield AgentRuntime(
             graph=graph,
@@ -78,4 +110,5 @@ async def runtime_context(
             audit=audit,
             tool_governance=tool_governance,
             metrics=runtime_metrics,
+            graph_mode=settings.agent_graph_mode,
         )

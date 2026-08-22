@@ -44,6 +44,27 @@ uv run python -m backend.issue_dev_token tenant-a user-1
 
 Vite 开发代理把 `/api` 转发到后端，并从项目根 `.env` 读取 `DEV_TENANT_TOKEN` 注入 Bearer 头；该令牌不会打进 React bundle。公网部署应改为 OIDC/JWT、撤销机制和共享限流。
 
+## 编排模式与人工审批
+
+后端支持两种图形态，由 `AGENT_GRAPH_MODE` 切换，**默认 `single`**（单 Agent，与历史行为一致）：
+
+```dotenv
+AGENT_GRAPH_MODE=workflow
+AGENT_WORKFLOW_PATH=workflows/helpdesk_supervisor.json
+```
+
+`workflow` 模式由 JSON 定义编译出图，支持 supervisor 路由、子 Agent 和 `human_approval` 审批节点。两种形态共用同一套 checkpointer、store 和工具治理钩子，因此多租户隔离、审计、预算、限流完全一致。配置缺失或 spec 不合法时服务在启动阶段直接失败，不会带病启动。
+
+当图停在审批节点时，`POST /chat/stream` 的 SSE 流会下发一条 interrupt 事件并结束，**不发 `end`**：
+
+```json
+{"type": "interrupt", "run_id": "...", "thread_id": "...", "interrupt_id": "...", "question": "是否批准将问题交给 weather 处理？"}
+```
+
+审批人调用 `POST /chat/resume` 恢复执行，请求体为 `{"thread_id": "...", "approved": true, "interrupt_id": "...", "resumed_from": "..."}`。该端点要求 `chat:approve` scope（与 `chat:write` 分离），并同样受限流和租户预算约束——恢复执行会真实触发模型调用。服务端会先读取会话状态确认存在挂起审批，`interrupt_id` 不匹配或没有挂起审批时返回 409，避免重复审批和跨会话串批。恢复轮会开一个新的 `run_id`，审计 metadata 记录 `resumed_from`、`approved`、`interrupt_id` 和 `approver_user_id`。
+
+前端在收到 interrupt 事件后锁定输入框并展示审批卡片，点击批准/拒绝即调用 `/api/chat/resume` 继续同一个会话。
+
 CI 会使用 PostgreSQL 和 Redis service containers；当 `CI=true` 时，缺少 `TEST_DATABASE_URL` 或 `REDIS_URL` 会直接失败，不会静默跳过集成测试。
 
 每次 Agent run 都会在 PostgreSQL 的 `agent_runs` / `agent_events` 中记录运行状态和脱敏事件。部署或 CI 必须先执行 `uv run python -m backend.migrations`；应用启动只检查 schema 是否存在，不在多 Worker 中自动迁移。运行状态可通过带 `chat:read` scope 的令牌查询：`GET /audit/runs/{run_id}`。跨租户查询返回 404，不泄露其他租户记录。

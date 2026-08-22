@@ -196,7 +196,9 @@ def make_tenant_token(
     user_id: str,
     secret: str,
     *,
-    scopes: tuple[str, ...] = ("chat:read", "chat:write"),
+    # chat:approve 允许恢复被 human_approval 挂起的运行；本地/集成 token 默认下发，
+    # 生产走 OIDC 时应由 IdP 单独授予，不要和 chat:write 绑定
+    scopes: tuple[str, ...] = ("chat:read", "chat:write", "chat:approve"),
     ttl_seconds: int = 3600,
     now: int | None = None,
 ) -> str:

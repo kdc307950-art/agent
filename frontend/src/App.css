@@ -17,4 +17,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .input-area input:focus { border-color: #0084ff; }
 .input-area button { padding: 12px 28px; background: #0084ff; color: white; border: none; border-radius: 24px; font-size: 14px; cursor: pointer; transition: background 0.2s; }
 .input-area button:hover:not(:disabled) { background: #0073e6; }
-.input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
+.input-area button:disabled { opacity: 0.5; cursor: not-allowed; }.approval-card { margin: 8px 0 16px; padding: 16px 18px; background: #fff8e1; border: 1px solid #ffd54f; border-radius: 12px; }
+.approval-question { font-size: 14px; color: #6d4c00; line-height: 1.6; margin-bottom: 12px; }
+.approval-actions { display: flex; gap: 12px; }
+.approval-actions button { padding: 8px 22px; border: none; border-radius: 18px; font-size: 14px; cursor: pointer; background: #2e7d32; color: white; transition: opacity 0.2s; }
+.approval-actions button.reject { background: #c62828; }
+.approval-actions button:hover:not(:disabled) { opacity: 0.85; }
+.approval-actions button:disabled { opacity: 0.5; cursor: not-allowed; }

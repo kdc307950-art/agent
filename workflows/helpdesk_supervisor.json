@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "name": "helpdesk_supervisor",
+  "description": "客服分诊：Supervisor 路由 + 人工审批 + 天气/计算子 Agent（等价于 main_supervisor.py 的硬编码图）",
+  "state": {
+    "messages": { "type": "messages", "reducer": "add_messages", "required": true },
+    "next": { "type": "str" }
+  },
+  "nodes": [
+    {
+      "id": "supervisor",
+      "type": "supervisor",
+      "config": {
+        "targets": {
+          "weather": "用户想查询天气",
+          "calc": "用户想做数学计算",
+          "finish": "问题已经解决，可以结束对话"
+        },
+        "fallback": "finish"
+      },
+      "metadata": { "x": 40, "y": 80, "label": "主管路由" }
+    },
+    {
+      "id": "approval",
+      "type": "human_approval",
+      "config": {
+        "question_template": "是否批准将问题交给 {next} 处理？",
+        "reject_message": "[已拒绝] 用户取消了 {next} 的操作。",
+        "reject_next": "finish"
+      },
+      "metadata": { "x": 300, "y": 80, "label": "人工审批" }
+    },
+    {
+      "id": "weather_agent",
+      "type": "agent",
+      "config": {
+        "name": "weather_agent",
+        "prompt": "你是天气查询专家，负责回答用户关于城市天气的问题，需要时调用 get_weather 工具。",
+        "tools": ["get_weather"]
+      },
+      "metadata": { "x": 300, "y": 220, "label": "天气 Agent" }
+    },
+    {
+      "id": "calc_agent",
+      "type": "agent",
+      "config": {
+        "name": "calc_agent",
+        "prompt": "你是数学计算专家，负责计算数学表达式，需要时调用 calculate 工具。",
+        "tools": ["calculate"]
+      },
+      "metadata": { "x": 560, "y": 220, "label": "计算 Agent" }
+    }
+  ],
+  "edges": [
+    { "source": "START", "target": "supervisor" },
+    {
+      "source": "supervisor",
+      "type": "route",
+      "field": "next",
+      "mapping": { "weather": "approval", "calc": "approval", "finish": "END" }
+    },
+    {
+      "source": "approval",
+      "type": "route",
+      "field": "next",
+      "mapping": { "weather": "weather_agent", "calc": "calc_agent", "finish": "END" }
+    },
+    { "source": "weather_agent", "target": "supervisor" },
+    { "source": "calc_agent", "target": "supervisor" }
+  ]
+}
