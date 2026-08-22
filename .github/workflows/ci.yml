@@ -56,8 +56,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
       - name: Initialize PostgreSQL schema
+        # 空库上这一步应在数秒内完成。加超时是因为它的历史故障模式是**无限挂起**
+        # 而不是报错（持锁连接的隐式事务阻塞 CREATE INDEX CONCURRENTLY，
+        # 见 backend/migrations.py）；没有超时的话会耗尽整个 job 的时限才失败。
+        timeout-minutes: 3
         run: uv run python -m backend.migrations
       - name: Run Python tests
         run: uv run pytest -q
       - name: Build frontend
         run: npm --prefix frontend ci && npm --prefix frontend run build
+      - name: Build backend image
+        # infra/k8s 的清单引用的镜像必须真的构建得出来，否则那套部署配置
+        # 只是一份没被验证过的文档。这一步让 Dockerfile 的腐化在 CI 就暴露。
+        run: docker build -t langgraph-agent:ci .

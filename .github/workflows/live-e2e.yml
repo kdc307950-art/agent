@@ -61,6 +61,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
       - name: Initialize PostgreSQL schema
+        # 见 ci.yml 同名步骤：该命令的历史故障模式是无限挂起而非报错
+        timeout-minutes: 3
         run: uv run python -m backend.migrations
       - name: Start agent
         run: nohup uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 > agent.log 2>&1 &

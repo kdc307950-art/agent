@@ -39,9 +39,15 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
 
     Future schema changes must add an explicit migration step and increment
     ``APP_SCHEMA_VERSION``.  A running application never upgrades the schema.
+
+    显式开事务：调用方（``backend.migrations``）的连接是 autocommit 的，否则会
+    阻塞 ``CREATE INDEX CONCURRENTLY``（见 migrations.py 的注释）。而 v1→v2 的
+    「建表 + 回填 + 更新版本号」必须原子完成 —— 逐条提交时中途失败会留下
+    「版本号已是 2 但回填只做了一半」的状态，且因为版本号已更新，重跑迁移不会修复它。
+    这段事务在 checkpointer.setup() 之后才开始，不会再阻塞索引创建。
     """
 
-    async with connection.cursor() as cursor:
+    async with connection.transaction(), connection.cursor() as cursor:
         await cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS agent_schema_version (

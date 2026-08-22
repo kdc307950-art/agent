@@ -17,7 +17,9 @@ spec:
             - name: retention
               image: ghcr.io/your-org/langgraph-agent:REPLACE
               imagePullPolicy: IfNotPresent
-              command: ["uv", "run", "python", "-m", "backend.retention"]
+              # 直接 python 而不是 uv run：生产镜像（见项目根 Dockerfile）不带 uv，
+              # 且 uv run 会尝试校验并改写 .venv，在只读根文件系统下会失败
+              command: ["python", "-m", "backend.retention"]
               env:
                 - name: AUDIT_RETENTION_ENABLED
                   value: "true"
@@ -46,7 +48,7 @@ spec:
             - name: data-retention
               image: ghcr.io/your-org/langgraph-agent:REPLACE
               imagePullPolicy: IfNotPresent
-              command: ["uv", "run", "python", "-m", "backend.data_retention"]
+              command: ["python", "-m", "backend.data_retention"]
               args: ["--checkpoint-days", "90", "--batch-size", "500"]
               env:
                 - name: DATABASE_URL

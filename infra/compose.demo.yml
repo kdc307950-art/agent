@@ -1,0 +1,85 @@
+name: langgraph-demo
+
+# 一条命令跑起完整后端栈，供演示和首次上手使用：
+#
+#   docker compose -f infra/compose.demo.yml up --build
+#
+# 与 compose.dev.yml 的分工：
+#   - compose.dev.yml  开发时用的依赖栈（含 Prometheus / Jaeger / Grafana），应用跑在宿主机
+#   - compose.demo.yml 应用本身也在容器里，只暴露 8000 一个端口，起 4 个容器
+#
+# 刻意的取舍：
+#   1. 不暴露 5432 / 6379 到宿主机。demo 只需要 8000，少暴露一个端口就少一次
+#      与本机已有 Postgres/Redis 的端口冲突。
+#   2. 密码是写死的弱口令。这里的容器不对外暴露端口，且数据卷是匿名的，
+#      随 down -v 一起消失。任何联网环境都不要用这份文件。
+#   3. DEEPSEEK_API_KEY 允许缺省。缺省时服务照样起得来、/readyz 返回 200、
+#      /docs 与 /metrics 可访问，只是真发消息会失败 —— 让人先看到系统跑起来，
+#      再决定要不要填自己的 key。
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: langgraph
+      POSTGRES_USER: langgraph
+      POSTGRES_PASSWORD: demo_only_not_a_secret
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langgraph -d langgraph"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # 建表是一次性任务，不是应用启动的一部分。
+  # 应用有 2 个副本时并发建表会互相踩，所以生产也是这个顺序：先迁移，再放流量。
+  migrate:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["python", "-m", "backend.migrations"]
+    # 镜像的 HEALTHCHECK 探的是 HTTP /livez，而这个容器跑的是一次性迁移、
+    # 没有 HTTP 服务。不关掉的话它会一直显示 unhealthy，看的人会以为迁移失败了。
+    healthcheck:
+      disable: true
+    environment:
+      DATABASE_URL: postgresql://langgraph:demo_only_not_a_secret@postgres:5432/langgraph
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-demo-placeholder-key}
+      TENANT_TOKEN_SECRET: demo_only_not_a_secret
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  agent:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      APP_ENV: development
+      AUTH_MODE: dev
+      DATABASE_URL: postgresql://langgraph:demo_only_not_a_secret@postgres:5432/langgraph
+      REDIS_URL: redis://redis:6379/0
+      RATE_LIMIT_BACKEND: redis
+      # 表已由 migrate 建好，应用只做 schema 就绪检查，不自己建表
+      LANGGRAPH_AUTO_SETUP: "false"
+      TENANT_TOKEN_SECRET: demo_only_not_a_secret
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-demo-placeholder-key}
+      # 想看 supervisor 路由 + 人工审批，把下面两行的注释去掉再 up
+      # AGENT_GRAPH_MODE: workflow
+      # AGENT_WORKFLOW_PATH: workflows/helpdesk_supervisor.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully

@@ -1,0 +1,31 @@
+# 构建上下文裁剪。两类东西必须排除：
+#
+# 1. 会污染运行时的：Windows 下的 .venv 拷进 Linux 镜像后二进制不可用，
+#    且体积巨大；__pycache__ 里的 .pyc 与目标 Python 版本未必匹配。
+# 2. 会泄密的：.env 含真实 API key，checkpoints.db 与 chat_history.json
+#    含历史对话内容。镜像层是只追加的，一旦 COPY 进去，后续 RUN rm 也删不掉。
+
+.venv/
+**/__pycache__/
+**/*.py[cod]
+*.egg-info/
+
+.env
+.env.*
+!.env.example
+checkpoints.db*
+chat_history.json
+artifacts/
+backups/
+
+.git/
+.github/
+.pytest_cache/
+pytest-cache-files-*/
+tests/
+
+frontend/node_modules/
+frontend/dist/
+
+*.md
+!README.md
