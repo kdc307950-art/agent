@@ -1,5 +1,7 @@
 # LangGraph Agent
 
+[![CI](https://github.com/kdc307950-art/agent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kdc307950-art/agent/actions/workflows/ci.yml)
+
 一个跑在生产形态基础设施上的 LangGraph Agent 服务：**JSON 定义的多 Agent 编排 + 跨请求人工审批**，运行在多租户隔离、审计留痕、租户预算、限流和工具治理之上。
 
 不是 demo 脚本——审批可以隔几小时由另一个人在另一台设备上完成，状态落在 PostgreSQL checkpoint 里，不依赖任何进程内存。
