@@ -1,3 +1,13 @@
+"""Agent 工具集 —— 绑定给 LLM 的外部能力。
+
+当前提供两个工具：
+    - get_weather: 查城市实时天气（Open-Meteo 免费 API，无需 Key）
+    - calculate:   安全计算数学表达式（AST 白名单校验，防注入）
+
+tools 列表会被 agent.py 的 build_agent 绑定到模型上，也会被
+supervisor_agent.py / workflow 节点工厂复用。
+"""
+
 from __future__ import annotations
 
 import ast

@@ -1,3 +1,14 @@
+"""数据迁移工具 —— 把 SQLite checkpointer 数据迁移到 Postgres。
+
+用途：
+    开发期用 SQLite 跑通后，需要切到 Postgres 持久化时，
+    用 migrate_sqlite_to_postgres() 将已有 checkpoint 全部搬过去。
+
+注意：
+    - 需要 DATABASE_URL（Postgres）与默认 SQLite 路径（checkpoints.db）
+    - 迁移是追加式（insert），不会覆盖目标数据
+"""
+
 from __future__ import annotations
 
 import asyncio

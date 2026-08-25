@@ -1,3 +1,10 @@
+"""配置模块 —— 集中读取并校验所有环境变量（失败即报错，防止带病启动）。
+
+Settings 是不可变 dataclass，from_env() 做类型转换 + 生产环境强约束：
+    - APP_ENV=production 时强制 OIDC 鉴权、Redis 限流/撤销、关闭 auto_setup 等
+    - 所有 *_setting 辅助函数负责解析单类环境变量并给出清晰报错
+"""
+
 from __future__ import annotations
 
 import os

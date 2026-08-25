@@ -1,3 +1,10 @@
+"""开发工具 —— 生成本地开发用租户 token。
+
+用法：
+    uv run python -m backend.issue_dev_token --tenant demo --user admin
+    （AUTH_MODE=dev 下，鉴权需要 TENANT_TOKEN_SECRET 签发的 token）
+"""
+
 from __future__ import annotations
 
 import argparse

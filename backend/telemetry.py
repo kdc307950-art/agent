@@ -1,4 +1,4 @@
-"""OpenTelemetry traces for the API and outbound model/tool HTTP calls."""
+"""OpenTelemetry 链路追踪 —— API 及出站模型/工具 HTTP 调用。"""
 
 from __future__ import annotations
 

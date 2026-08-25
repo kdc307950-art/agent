@@ -1,3 +1,11 @@
+"""运行时装配 —— 把 Agent 图 + 所有基础设施组装成可用的 Runtime。
+
+职责：
+    - build_graph: 按 AGENT_GRAPH_MODE 构建图（single 单 Agent / workflow JSON 编排）
+    - runtime_context: 应用生命周期内创建并持有 checkpointer(Postgres)、store、
+      Redis 限流/撤销、工具治理、预算、审计等依赖的异步上下文管理器
+"""
+
 from __future__ import annotations
 
 from contextlib import AsyncExitStack, asynccontextmanager

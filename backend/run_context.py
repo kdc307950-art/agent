@@ -1,3 +1,9 @@
+"""运行上下文 —— 一次 Agent 运行（request）的上下文对象。
+
+RunContext 承载：租户/用户身份、thread_id、开始时间等，
+贯穿一次请求的鉴权 → 执行 → 审计 → 计量全链路。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -1,3 +1,11 @@
+"""仓库层 —— 租户命名空间 + 长期记忆存储。
+
+职责：
+    - tenant_thread_id:  把业务 thread_id 包装成带租户前缀的隔离 ID（防跨租户串会话）
+    - tenant_namespace:  租户命名空间元组（用于 Redis 键 / Postgres 行隔离）
+    - LongTermMemoryRepository: 长期记忆的读写（按租户/用户隔离）
+"""
+
 from __future__ import annotations
 
 import re

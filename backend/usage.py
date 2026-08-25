@@ -1,4 +1,9 @@
-"""Provider-neutral model usage extraction and cost calculation."""
+"""从模型返回值提取 token 用量，并按单价换算成成本。
+
+各家 LLM 的 usage 格式各异（LangChain 会根据供应商包装），本模块做的是
+标准化：提供通用的形状，消费方无需关心是用了 langchain_openai/langchain_anthropic
+还是 langchain_community 的哪个集成。
+"""
 
 from __future__ import annotations
 
@@ -8,16 +13,19 @@ from typing import Any, Mapping
 
 @dataclass(frozen=True, slots=True)
 class ModelUsage:
+    """模型 API 调用的 token 计数。slots=True 降低内存占用（百万量级 run 时管用）。"""
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
 
     @property
     def known(self) -> bool:
+        """是否成功从模型响应中提取了 usage 数据。"""
         return self.input_tokens > 0 or self.output_tokens > 0 or self.total_tokens > 0
 
 
 def _int(value: Any) -> int:
+    """容错的整数转换。None/空/非数值都转成 0。"""
     try:
         return max(0, int(value or 0))
     except (TypeError, ValueError):

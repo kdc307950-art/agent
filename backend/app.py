@@ -1,3 +1,16 @@
+"""FastAPI 主应用 —— Agent 的 HTTP 网关。
+
+职责：
+    - 提供 /api/chat/stream 流式对话接口（单 Agent / Supervisor / JSON 工作流三种图形态）
+    - /api/chat/resume 恢复被 human_approval 挂起的审批（interrupt_id 防重复/防串批）
+    - 鉴权（dev token / OIDC）、租户隔离（thread_id 加租户命名空间）
+    - 限流（内存 / Redis）、审计、用量计量、预算控制、健康检查、metrics
+
+关键设计：
+    - lifespan 里装配 runtime_context（Postgres checkpointer + Redis + 治理等）
+    - _execute_run 统一处理三种图的执行，并把 interrupt 通过 SSE 事件下发
+"""
+
 from __future__ import annotations
 
 import asyncio

@@ -1,3 +1,12 @@
+"""Supervisor 多 Agent 命令行演示入口 —— 含 Human-in-the-loop 人工审批。
+
+运行：uv run python main_supervisor.py
+功能：
+    - 交互式对话，Supervisor 决定路由到天气 Agent 还是计算 Agent
+    - 每次路由前暂停等待人工审批（y/n），用 Command(resume=...) 恢复
+    - thread_id 固定为 supervisor_demo_001
+"""
+
 import asyncio
 import sys
 

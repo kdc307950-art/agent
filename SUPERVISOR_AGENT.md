@@ -1,10 +1,22 @@
 # Supervisor 多 Agent + Human-in-the-loop 使用说明书
 
+> **文档状态（2026-08-23 核对）**：本文写于编排层接入生产链路之前，描述的是
+> `main_supervisor.py` 这条**命令行**路径。其中的**人工审批部分已被生产实现取代**——
+> 生产审批是两次 HTTP 请求、两条 SSE 流、状态落在 PostgreSQL checkpoint 上，
+> 由 `backend/app.py` 的 `/chat/resume` 端点提供，见 [README](README.md#人工审批为什么是两次请求)。
+>
+> 本文仍然有效的部分：图结构、supervisor 路由逻辑、`interrupt` 机制原理、关键代码位置。
+> 需要了解**部署形态**时以 README 为准，本文不描述生产路径。
+
 ## 一、这是什么
 
-在原有单 Agent 基础上，新增的一套 **Supervisor（主管）多智能体协作** 架构，并内置
-**Human-in-the-loop（人工审批）** 能力。用于演示和练习 LangGraph 的多 Agent 编排、状态路由、
+在原有单 Agent 基础上的一套 **Supervisor（主管）多智能体协作** 架构，内置
+**Human-in-the-loop（人工审批）** 能力，覆盖 LangGraph 的多 Agent 编排、状态路由、
 以及高风险操作人工确认。
+
+硬编码版本是 `src/my_agent/supervisor_agent.py`（本文主要描述对象）；
+等价的 JSON 配置版本是 `workflows/helpdesk_supervisor.json`，由
+`src/my_agent/workflow/` 编译，那条路径已接入生产后端。
 
 > 与原有 `agent.py` 的 `build_agent()` **互不影响**，可并行使用。
 
@@ -141,15 +153,5 @@ async def main():
 | SqliteSaver 不支持异步 | `NotImplementedError: SqliteSaver does not support async methods` | 默认改用 `MemorySaver`，持久化改用 `AsyncSqliteSaver`（由调用方传入） |
 | GBK 编码崩溃 | Windows 控制台 print 中文/emoji 报 `UnicodeEncodeError` | `main_supervisor.py` 开头 `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` + 去除装饰性 emoji |
 
-> 注：原有 `agent.py` 也存在「SqliteSaver + astream」的同类异步 bug（codex 生成后未实测），
-> 本次未改动，如需修复请告知。
-
----
-
-## 九、简历可写内容
-
-升级后，Agent 项目经历可写：
-
-- 基于 LangGraph 构建 Supervisor 多智能体调度体系，实现任务路由、状态管理、工具调用
-- 引入 Human-in-the-loop 人工审批（interrupt 机制），高风险操作先人工确认，支持批准/拒绝
-- 基于 Checkpoint 机制支持长任务断点续跑与状态恢复
+> `src/my_agent/agent.py` 存在同类的「SqliteSaver + astream」异步问题，已在同一提交
+> （`45d54c9`）中一并改为默认 `MemorySaver`，持久化 checkpointer 由调用方传入。

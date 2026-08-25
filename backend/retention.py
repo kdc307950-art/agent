@@ -1,9 +1,7 @@
-"""Bounded PostgreSQL retention for agent audit records.
+"""审计记录的有界清理 —— 定时删除过期审计行。
 
-The cleanup command is intentionally separate from the API process.  A single
-PostgreSQL advisory lock makes it safe to run from several schedulers or
-workers, while short transactions and a batch limit keep lock duration and
-write amplification bounded.
+设计：清理命令刻意与 API 进程分离，用单个 PostgreSQL advisory lock
+保证多调度器/多 worker 并发安全；短事务 + 批大小限制控制锁时长与写放大。
 """
 
 from __future__ import annotations

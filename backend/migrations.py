@@ -1,3 +1,9 @@
+"""Postgres schema 初始化 —— 建表建索引，保证运行时依赖的表存在。
+
+setup_postgres() 在应用启动时调用（AUTO_SETUP），幂等：
+    已存在的表不会重复创建，缺的才会补建。
+"""
+
 from __future__ import annotations
 
 import asyncio

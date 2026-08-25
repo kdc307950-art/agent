@@ -1,3 +1,13 @@
+"""工具治理 —— Agent 调用工具前的安全管控层。
+
+职责：
+    - ToolPolicy: 工具策略（租户白名单、scope、超时、重试次数）
+    - ToolGovernance.awrap_tool_call: 包一层所有工具调用，执行
+      租户白名单校验 → 调用 → 审计 → 失败重试（临时错误）
+    - 通过 BuildContext.tool_call_wrapper 注入到每个 ToolNode，
+      保证编排图/子 Agent 的所有工具入口都过治理
+"""
+
 from __future__ import annotations
 
 import asyncio

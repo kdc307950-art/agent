@@ -1,3 +1,11 @@
+"""运行时指标 —— 进程内的指标采集器（线程安全）。
+
+职责：
+    - 记录 Agent 运行的计数、耗时、状态分布（Counter / Histogram 语义）
+    - /metrics 端点通过 METRICS_AUTH_TOKEN 保护
+    - 数据保留在内存（Counter + Lock），适合单机部署
+"""
+
 from __future__ import annotations
 
 import os
@@ -19,11 +27,15 @@ except ImportError:  # pragma: no cover - optional OTLP dependency
 
 
 class RuntimeMetrics:
-    """Low-cardinality OpenTelemetry metrics facade.
+    """OpenTelemetry 指标门面，故意设计为低基数。
 
-    ``snapshot`` remains for local tests and debugging. Prometheus scraping is
-    exposed through ``prometheus_payload``; OTLP export is enabled when
-    ``OTEL_EXPORTER_OTLP_ENDPOINT`` is configured.
+    指标标签只用 route/status/outcome/tool 这类通用概念，不分 tenant/user/run_id/prompt，
+    防止无限膨胀的 cardinality 把 Prometheus 撑爆。基于这个原则，即使有
+    1000 个租户、百万级请求也不会导致指标分析系统瘫痪。
+
+    Prometheus 刮取通过 ``prometheus_payload()`` 暴露；OTLP 导出在配置
+    ``OTEL_EXPORTER_OTLP_ENDPOINT`` 时自动启用，可连到观测栈（Grafana/Jaeger）。
+    本地测试用 ``snapshot()`` 取内存计数无需额外依赖。
     """
 
     def __init__(
@@ -32,14 +44,16 @@ class RuntimeMetrics:
         service_name: str | None = None,
         otlp_endpoint: str | None = None,
     ) -> None:
-        self._counts: Counter[str] = Counter()
-        self._lock = Lock()
-        self._counters = {}
-        self._histograms = {}
-        self._registry = CollectorRegistry()
+        self._counts: Counter[str] = Counter()  # 本地快照用（测试/诊断）
+        self._lock = Lock()  # 多线程 FastAPI 下需要——创建计器/柱状图都要涉及 dict 改写
+        self._counters = {}  # 名字→计数器对象，激活时创建（OTel 的对象难以销毁，故懒创）
+        self._histograms = {}  # 名字→柱状图对象，激活时创建
+        self._registry = CollectorRegistry()  # Prometheus 注册表，所有指标刮取从这里拿
         readers = [PrometheusMetricReader(registry=self._registry)]
         endpoint = (otlp_endpoint or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")).strip()
         self._otlp_reader = None
+        # OTLP 是可选的补充导出（推送到观测后端）——生产跨集群才需要，
+        # 本地开发和单机 Prometheus 都不需要。import 失败时 graceful degrade
         if endpoint and OTLPMetricExporter is not None and PeriodicExportingMetricReader is not None:
             exporter = OTLPMetricExporter(
                 endpoint=endpoint,
@@ -77,6 +91,7 @@ class RuntimeMetrics:
         amount: int = 1,
         attributes: Mapping[str, object] | None = None,
     ) -> None:
+        """记录计数器事件（如请求数、错误数）。"""
         if amount == 0:
             return
         attrs = self._attributes(attributes)
@@ -85,7 +100,8 @@ class RuntimeMetrics:
             if counter is None:
                 counter = self._meter.create_counter(name, unit="{request}")
                 self._counters[name] = counter
-            self._counts[name] += amount
+            self._counts[name] += amount  # 本地快照并发增长，同锁保护
+        # 向 Prometheus/OTLP 推送——由于已注册到 registry，下次刮取会读到更新后的值
         counter.add(amount, attrs)
 
     def observe(
@@ -94,12 +110,14 @@ class RuntimeMetrics:
         value: float,
         attributes: Mapping[str, object] | None = None,
     ) -> None:
+        """记录观测值（如延时、输入/输出 token 数）。"""
         attrs = self._attributes(attributes)
         with self._lock:
             histogram = self._histograms.get(name)
             if histogram is None:
-                histogram = self._meter.create_histogram(name, unit="s")
+                histogram = self._meter.create_histogram(name, unit="s")  # 时间单位默认秒
                 self._histograms[name] = histogram
+        # 懒创后即可无锁写入——柱状图对象本身是线程安全的
         histogram.record(value, attrs)
 
     def snapshot(self) -> dict[str, int]:

@@ -1,3 +1,15 @@
+"""Supervisor 多 Agent 编排图 —— 含 Human-in-the-loop 人工审批。
+
+架构（与 workflow JSON 版等价，这里是硬编码版本）：
+    START → supervisor(LLM 路由) → approval(interrupt 审批) → weather/calc 子 Agent → supervisor → … → END
+
+关键点：
+    - supervisor 节点用 LLM 决定路由目标（weather / calc / finish）
+    - approval 节点用 interrupt() 暂停图，等待外部 Command(resume={"approved": ...}) 恢复
+    - 子 Agent 用 create_react_agent 封装，各自只绑一个工具
+    - 需要 checkpointer 才能支持 interrupt 恢复（默认 MemorySaver）
+"""
+
 from __future__ import annotations
 
 import logging

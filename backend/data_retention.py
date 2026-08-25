@@ -1,9 +1,10 @@
-"""Layered retention for LangGraph store/checkpoint data.
+"""分层数据保留策略 —— LangGraph store/checkpoint 数据清理。
 
-Audit rows are handled by backend.retention. Store rows use LangGraph's native
-expires_at. Checkpoints are removed only at whole-thread granularity after the
-latest terminal audit run is old enough; partial parent-chain deletion is not
-safe.
+分层规则：
+    - 审计行：由 backend.retention 处理
+    - Store 行：用 LangGraph 原生的 expires_at 过期
+    - Checkpoint：仅在「最新终态审计运行足够久之后」按整线程粒度删除，
+      不允许部分删父链（不安全）
 """
 
 from __future__ import annotations

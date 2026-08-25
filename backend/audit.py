@@ -1,3 +1,15 @@
+"""审计模块 —— 记录每次 Agent 运行的敏感操作日志。
+
+职责：
+    - sanitize_payload: 对写入审计的 payload 脱敏（隐藏 token/密钥等敏感字段）
+    - AuditRepository:  审计记录落库（Postgres），提供写入与查询
+    - NoopAuditRepository: 空实现（审计不可用时降级）
+    - audit_context:    按数据库连接串创建审计仓库的异步上下文
+
+设计：
+    审计与业务解耦，写入失败不阻断主流程（有超时保护）。
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -68,6 +80,8 @@ AUDIT_SCHEMA_STATEMENTS = (
     """,
 )
 
+# prompt/content/result 是 LLM 特有的敏感字段，不是标准 auth 字段：
+# prompt 含用户原文，content 是模型输出，result 是工具返回值——三者都不应进审计库明文。
 _SENSITIVE_KEY = re.compile(
     r"authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|prompt|content|result",
     re.IGNORECASE,
@@ -92,6 +106,8 @@ def sanitize_payload(payload: dict[str, Any] | None, *, max_chars: int = 2048) -
     encoded = json.dumps(safe, ensure_ascii=False, separators=(",", ":"), default=str)
     if len(encoded) <= max_chars:
         return safe
+    # 超长时保留原始内容的 sha256，而不是直接丢弃：
+    # 审计系统可用哈希关联到其他日志系统（如 LangSmith）里的完整记录。
     return {
         "truncated": True,
         "size_chars": len(encoded),
@@ -170,6 +186,8 @@ class AuditRepository:
                     """,
                     (context.run_id, context.tenant_id, Jsonb(safe_metadata)),
                 )
+                # ON CONFLICT DO UPDATE：同一个 thread 可以跨多次 run 被复用（多轮对话），
+                # 不能因 thread_id 已存在就报 unique 冲突——UPSERT 记录最新活跃时间即可。
                 await cursor.execute(
                     """
                     INSERT INTO agent_thread_activity
@@ -197,6 +215,8 @@ class AuditRepository:
         safe_metadata = sanitize_payload(metadata, max_chars=self.payload_limit)
         async with self.pool.connection() as connection:
             async with connection.cursor() as cursor:
+                # WHERE 同时带 tenant_id：单靠 run_id 不足以隔离——
+                # A 租户的 run_id 碰巧和 B 租户相同时，不应能改 B 的状态。
                 await cursor.execute(
                     """
                     UPDATE agent_runs
@@ -283,6 +303,8 @@ class AuditRepository:
     async def list_events(self, tenant_id: str, run_id: str) -> list[dict[str, Any]]:
         async with self.pool.connection() as connection:
             async with connection.cursor(row_factory=dict_row) as cursor:
+                # JOIN agent_runs 是隔离机制的一部分：event 只属于该租户的 run，
+                # 即使攻击者猜到 run_id，跨租户查询也因 tenant_id 不匹配而返回空。
                 await cursor.execute(
                     """
                     SELECT e.id, e.run_id, e.tenant_id, e.event_type, e.tool_name,

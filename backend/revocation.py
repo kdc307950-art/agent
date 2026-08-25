@@ -1,3 +1,9 @@
+"""Token 撤销 —— Redis 存储已吊销的 OIDC token（jti）。
+
+用于 OIDC 场景：token 被吊销后，即使未过期也不能再通过鉴权。
+RedisRevocationStore 提供 add / is_revoked / 过期清理。
+"""
+
 from __future__ import annotations
 
 import hashlib

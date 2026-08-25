@@ -27,6 +27,23 @@ curl http://127.0.0.1:8000/readyz
 
 用完 `docker compose -f infra/compose.demo.yml down -v` 清干净。这份 compose 里的密码是写死的弱口令且不暴露数据库端口，**仅供本地演示，不要用于任何联网环境**。
 
+## 仓库里的入口
+
+**生产路径只有一条：`backend/app.py`。** 本文档其余部分讲的都是它——多租户、审计、预算、限流、工具治理、跨请求人工审批都在这条路径上。
+
+根目录还有三个 CLI 脚本，是编排层接入生产链路（提交 `88b6c89`）**之前**的演示程序，保留下来用于快速试跑图结构：
+
+| 入口 | 用途 | 与生产路径的关系 |
+| --- | --- | --- |
+| `backend/app.py` | **生产服务**，FastAPI + SSE | 唯一受支持的部署形态 |
+| `main.py` | 单 Agent 命令行对话，带消息摘要 | 不经过鉴权、审计、限流和预算 |
+| `main_supervisor.py` | 硬编码的 supervisor 图 + 命令行审批 | 审批是进程内 `input()` 阻塞，**不是**生产的跨请求审批 |
+| `main_workflow.py` | 从 JSON 加载图 + 命令行审批 | 用本地 `checkpoints.db`，图结构与生产 `workflow` 模式一致 |
+
+三个 CLI 的价值是改完 `workflows/*.json` 后不起容器就能验证图跑不跑得通。**但人工审批的真实实现不在它们里面**——CLI 里审批是同一个进程同一次调用中的阻塞输入，生产里是两次 HTTP 请求、两条 SSE 流、状态落在 PostgreSQL checkpoint 上，见 [人工审批为什么是两次请求](#人工审批为什么是两次请求)。
+
+`SUPERVISOR_AGENT.md` 是同一时期写的说明书，其中的 HITL 部分已被生产链路取代，只作为图结构和路由逻辑的补充阅读。
+
 ## 架构
 
 ```mermaid

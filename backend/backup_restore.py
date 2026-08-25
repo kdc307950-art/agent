@@ -1,8 +1,8 @@
-"""PostgreSQL backup and restore smoke-test helpers.
+"""PostgreSQL 备份/恢复冒烟测试工具。
 
-The application does not perform backups inside request workers.  Operators
-run this module from a scheduled job or a recovery workstation with the
-PostgreSQL client tools installed (or inside the database container).
+说明：应用本身不在请求链路里做备份，运维人员从定时任务或恢复工作站
+（装有 PostgreSQL 客户端工具，或数据库容器内）运行本模块：
+    create_backup / restore_backup / verify_recovery
 """
 
 from __future__ import annotations

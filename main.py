@@ -1,3 +1,12 @@
+"""单 Agent 命令行演示入口 —— P1(基础 Agent) + P2(智能摘要) + P5(状态追踪)。
+
+运行：uv run python main.py
+功能：
+    - 交互式对话，输入 exit/quit 退出
+    - 消息超过 MAX_MESSAGES_BEFORE_SUMMARY 条时，用 LLM 摘要压缩早期历史
+    - 每次对话后把最新状态写回，重启后可从断点继续（thread_id 固定为 user_demo_001）
+"""
+
 import asyncio
 import os
 from langchain_core.messages import HumanMessage, SystemMessage

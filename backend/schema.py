@@ -1,9 +1,8 @@
-"""Application schema versioning and readiness checks.
+"""应用层 schema 版本管理与就绪检查。
 
-LangGraph owns its checkpoint/store migration tables.  This module owns the
-application tables and records the version that was explicitly applied by the
-`backend.migrations` command.  The service refuses readiness when the version
-or required relations do not match the code it is running.
+LangGraph 自己管理 checkpoint/store 的迁移表；本模块管理应用表，
+并记录 backend.migrations 实际应用的版本号。
+当版本或必需表结构与当前代码不匹配时，服务拒绝就绪（readiness 失败）。
 """
 
 from __future__ import annotations

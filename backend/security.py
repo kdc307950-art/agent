@@ -1,4 +1,12 @@
-"""Authentication, request limits, and configuration helpers for the API."""
+"""认证与限流 —— API 的鉴权、速率限制、配置辅助。
+
+提供：
+    - Principal:         已认证主体（租户 + 用户 + scopes）
+    - OIDCVerifier:      校验 OIDC JWT（JWKS 缓存、jti、过期撤销）
+    - make_tenant_token / authenticate: 开发模式 token 签发与解析
+    - rate_limit_dependency: FastAPI 依赖形式的限流（内存/Redis）
+    - cors_origins:      从环境变量读取 CORS 白名单
+"""
 
 from __future__ import annotations
 

@@ -1,3 +1,18 @@
+"""单 Agent 图构建模块 —— 本项目最核心的 Agent 入口。
+
+职责：
+    把「模型 + 工具」编译成一个可执行的 LangGraph StateGraph（agent ⇄ tools 循环），
+    支持外部注入 checkpointer（持久化）、store（长期记忆）和模型配置，
+    默认使用 DeepSeek 官方 API。
+
+用法：
+    agent = build_agent()                                  # 全默认（读 DEEPSEEK_API_KEY）
+    agent = build_agent(model=自定义模型, checkpointer=自定义持久化)   # 依赖注入
+
+架构：
+    START → agent(LLM) → 有条件继续: 有 tool_calls → tools → 回 agent；否则 → END
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -25,6 +40,7 @@ if os.getenv("LANGCHAIN_API_KEY"):
 
 
 def _is_retryable(exc: Exception) -> bool:
+    """判断异常是否值得重试：超时/网络错误，或 HTTP 408/409/429/5xx。"""
     status_code = getattr(exc, "status_code", None)
     if status_code is None:
         response = getattr(exc, "response", None)
@@ -41,6 +57,7 @@ def _is_retryable(exc: Exception) -> bool:
 
 
 async def _ainvoke_with_retry(model: Any, messages: Any, max_retries: int):
+    """带指数退避重试的模型调用：最多重试 max_retries 次，间隔 2^n 秒（封顶 8s）。"""
     for attempt in range(max_retries + 1):
         try:
             return await model.ainvoke(messages)
@@ -51,6 +68,7 @@ async def _ainvoke_with_retry(model: Any, messages: Any, max_retries: int):
 
 
 def _should_continue(state: AgentState) -> str:
+    """路由函数：最后一条消息带 tool_calls 就进 tools 节点，否则结束。"""
     last_message = state["messages"][-1]
     return "tools" if getattr(last_message, "tool_calls", None) else "end"
 
@@ -89,6 +107,8 @@ def build_agent(
 
     workflow = StateGraph(AgentState)
     workflow.add_node("agent", agent_node)
+    # awrap_tool_call 是工具治理的钩子接入点：租户白名单、scope 校验、超时、审计都在这里触发。
+    # 不传则 None，ToolNode 跳过包装——工具调用会完全绕过治理层，生产路径必须传入。
     workflow.add_node("tools", ToolNode(tools, awrap_tool_call=tool_call_wrapper))
     workflow.add_edge(START, "agent")
     workflow.add_conditional_edges(
