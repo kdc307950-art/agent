@@ -6,7 +6,7 @@
 关键点：
     - supervisor 节点用 LLM 决定路由目标（weather / calc / finish）
     - approval 节点用 interrupt() 暂停图，等待外部 Command(resume={"approved": ...}) 恢复
-    - 子 Agent 用 create_react_agent 封装，各自只绑一个工具
+    - 子 Agent 用 create_agent 封装，各自只绑一个工具
     - 需要 checkpointer 才能支持 interrupt 恢复（默认 MemorySaver）
 """
 
@@ -21,9 +21,7 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph, add_messages
-# 注：langgraph 1.x 已标记 create_react_agent 废弃（v2.0 移除，将迁移到
-# langchain.agents.create_agent）。当前项目未装 langchain 包，故继续用此 API。
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 from langgraph.types import interrupt
 from typing_extensions import TypedDict
 
@@ -59,22 +57,22 @@ def _build_model(api_key=None, base_url=None, model_name=None):
     )
 
 
-# ========== 3. 子 Agent（create_react_agent 封装）==========
+# ========== 3. 子 Agent（create_agent 封装）==========
 def _make_weather_agent(model):
-    return create_react_agent(
+    return create_agent(
         model,
         [get_weather],
         name="weather_agent",
-        prompt="你是天气查询专家，负责回答用户关于城市天气的问题，需要时调用 get_weather 工具。",
+        system_prompt="你是天气查询专家，负责回答用户关于城市天气的问题，需要时调用 get_weather 工具。",
     )
 
 
 def _make_calc_agent(model):
-    return create_react_agent(
+    return create_agent(
         model,
         [calculate],
         name="calc_agent",
-        prompt="你是数学计算专家，负责计算数学表达式，需要时调用 calculate 工具。",
+        system_prompt="你是数学计算专家，负责计算数学表达式，需要时调用 calculate 工具。",
     )
 
 

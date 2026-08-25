@@ -3,11 +3,11 @@
 每个工厂签名：factory(node: NodeSpec, ctx: BuildContext) -> Callable
 返回一个 LangGraph 节点（可调用），可以是：
 - 普通函数/协程（接收 state dict，返回 partial update）
-- 已编译的子图（如 create_react_agent 的结果，add_node 直接嵌套）
+- 已编译的子图（如 create_agent 的结果，add_node 直接嵌套）
 
 已实现节点类型：
 - supervisor        LLM 路由节点（写 route_field，如 next）
-- agent             create_react_agent 子 Agent（绑定指定工具）
+- agent             create_agent 子 Agent（绑定指定工具）
 - tool              纯工具节点（ToolNode，直接执行一批工具）
 - condition         静态规则路由（不调 LLM，读 state 字段按规则表分流）
 - human_approval    Human-in-the-loop 审批节点（interrupt 暂停）
@@ -113,9 +113,9 @@ def supervisor_factory(node: NodeSpec, ctx: BuildContext) -> Callable:
     return supervisor_node
 
 
-# ========== agent：create_react_agent 子 Agent ==========
+# ========== agent：create_agent 子 Agent ==========
 def agent_factory(node: NodeSpec, ctx: BuildContext) -> Callable:
-    from langgraph.prebuilt import create_react_agent  # 延迟导入，避免启动开销
+    from langchain.agents import create_agent  # 延迟导入，避免启动开销
 
     config = node.config
     agent_name = config.get("name") or node.id
@@ -125,12 +125,22 @@ def agent_factory(node: NodeSpec, ctx: BuildContext) -> Callable:
     tool_names = list(config.get("tools") or [])
     if not tool_names:
         raise ValueError(f"节点 {node.id} (agent) 必须配置 tools 列表")
-    # 传 ToolNode 而不是裸 tools 列表，让子 Agent 的工具调用同样受治理约束
-    return create_react_agent(
+    selected_tools = _require_tools(ctx, tool_names)
+    middleware = ()
+    if ctx.tool_call_wrapper is not None:
+        from langchain.agents.middleware import AgentMiddleware
+
+        class GovernanceMiddleware(AgentMiddleware):
+            async def awrap_tool_call(self, request, handler):
+                return await ctx.tool_call_wrapper(request, handler)
+
+        middleware = (GovernanceMiddleware(),)
+    return create_agent(
         ctx.model,
-        ctx.build_tool_node(tool_names),
+        selected_tools,
         name=agent_name,
-        prompt=prompt,
+        system_prompt=prompt,
+        middleware=middleware,
     )
 
 
