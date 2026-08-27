@@ -271,6 +271,11 @@ def _serialize_intake_result(ticket, result: dict[str, Any], snapshot: object) -
                 "interrupt_id": str(getattr(item, "id", "") or ""),
                 **(value if isinstance(value, dict) else {"question": str(value)}),
             }
+            # 追问必须带缺失字段，前端才能渲染补全表单；从 checkpoint 状态补齐。
+            state_values = getattr(snapshot, "values", None) or {}
+            missing = state_values.get("missing_fields")
+            if missing is not None and "missing_fields" not in pending:
+                pending["missing_fields"] = list(missing)
             break
     return {
         "ticket": ticket,
