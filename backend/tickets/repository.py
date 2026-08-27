@@ -85,9 +85,9 @@ class TicketRepository:
                     INSERT INTO tickets (
                         tenant_id, ticket_id, requester_id, channel,
                         external_ticket_id, title, description, status,
-                        priority, version, metadata
+                        priority, version, asset_id, metadata
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'new', %s, 0, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'new', %s, 0, %s, %s)
                     ON CONFLICT DO NOTHING
                     RETURNING *
                     """,
@@ -100,6 +100,7 @@ class TicketRepository:
                         request.title,
                         request.description,
                         request.priority,
+                        request.asset_id,
                         Jsonb(request.metadata),
                     ),
                 )

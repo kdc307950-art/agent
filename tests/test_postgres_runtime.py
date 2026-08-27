@@ -153,7 +153,9 @@ def test_schema_v2_migrates_status_constraint_and_helpdesk_tables_to_current_ver
                            to_regclass('support_members'),
                            to_regclass('support_schedules'),
                            to_regclass('routing_rules'),
-                           to_regclass('ticket_assignments')
+                           to_regclass('ticket_assignments'),
+                           to_regclass('it_assets'),
+                           to_regclass('tenant_it_policies')
                     """
                 )
                 relation_row = await relations.fetchone()
@@ -165,7 +167,7 @@ def test_schema_v2_migrates_status_constraint_and_helpdesk_tables_to_current_ver
                 )
 
     version, constraint_definition, relations = asyncio.run(run())
-    assert version == 9
+    assert version == 10
     assert "awaiting_approval" in constraint_definition
     assert all(relation is not None for relation in relations)
 

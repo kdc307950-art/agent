@@ -13,7 +13,7 @@ from psycopg import AsyncConnection
 
 
 APP_SCHEMA_NAME = "langgraph_agent"
-APP_SCHEMA_VERSION = 9
+APP_SCHEMA_VERSION = 10
 MIGRATION_LOCK_KEY = 891274631
 
 # These are the tables created by the pinned LangGraph PostgreSQL adapters and
@@ -46,6 +46,8 @@ REQUIRED_RELATIONS: tuple[str, ...] = (
     "support_schedules",
     "routing_rules",
     "ticket_assignments",
+    "it_assets",
+    "tenant_it_policies",
 )
 
 
@@ -593,6 +595,198 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 )
             """)
             current = 9
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 10:
+            # v10: IT 服务台业务配置 —— 租户级分类策略（必填字段、默认优先级、
+            # 自动回答与人工审批开关）。category 支持点号子分类（it.vpn / it.account
+            # / it.network），required_fields 用数组而非 JSON，便于按列过滤和校验。
+            # 时间 SLA（TTO/TTR）不再内联：policy_id 引用 sla_policies，由该表提供
+            # first_response_minutes / resolution_minutes，避免两套 SLA 配置漂移。
+            await cursor.execute(
+                """
+                CREATE TABLE tenant_it_policies (
+                    tenant_id TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    policy_id TEXT,
+                    required_fields TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+                    default_priority TEXT NOT NULL DEFAULT 'normal',
+                    auto_answer_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    approval_required BOOLEAN NOT NULL DEFAULT FALSE,
+                    active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (tenant_id, category),
+                    CONSTRAINT tenant_it_policies_priority_check
+                        CHECK (default_priority IN ('low', 'normal', 'high', 'urgent')),
+                    CONSTRAINT tenant_it_policies_sla_fk
+                        FOREIGN KEY (tenant_id, policy_id)
+                        REFERENCES sla_policies (tenant_id, policy_id)
+                )
+                """
+            )
+            # 对早期 v10 草稿库做幂等修正：补 policy_id 引用、移除内联 TTO/TTR。
+            await cursor.execute(
+                "ALTER TABLE tenant_it_policies ADD COLUMN IF NOT EXISTS policy_id TEXT"
+            )
+            await cursor.execute(
+                "ALTER TABLE tenant_it_policies DROP COLUMN IF EXISTS tto_minutes"
+            )
+            await cursor.execute(
+                "ALTER TABLE tenant_it_policies DROP COLUMN IF EXISTS ttr_minutes"
+            )
+            await cursor.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint WHERE conname = 'tenant_it_policies_sla_fk'
+                    ) THEN
+                        ALTER TABLE tenant_it_policies
+                        ADD CONSTRAINT tenant_it_policies_sla_fk
+                        FOREIGN KEY (tenant_id, policy_id)
+                        REFERENCES sla_policies (tenant_id, policy_id);
+                    END IF;
+                END $$;
+                """
+            )
+            await cursor.execute(
+                """
+                CREATE INDEX idx_tenant_it_policies_active
+                ON tenant_it_policies (tenant_id, active)
+                """
+            )
+            # v10: IT 资产 —— 资产类型用 asset_type 定义表 + 资产实例表分离，
+            # 借鉴 GLPI 泛型资产模型：每类资产字段不同，用 custom_fields JSON 承载，
+            # 不为一类资产单建表。is_deleted 软删，不做物理删除。
+            # asset_no 用「部分唯一索引」而非 UNIQUE 约束：软删后可复用编号，
+            # 避免 is_deleted 行永久占用编号导致唯一键异常。
+            await cursor.execute(
+                """
+                CREATE TABLE it_assets (
+                    tenant_id TEXT NOT NULL,
+                    asset_id TEXT NOT NULL,
+                    asset_no TEXT NOT NULL,
+                    asset_type TEXT NOT NULL,
+                    name TEXT,
+                    hostname TEXT,
+                    ip_address TEXT,
+                    department TEXT,
+                    owner_user_id TEXT,
+                    uuid TEXT,
+                    serial TEXT,
+                    status TEXT NOT NULL DEFAULT 'in_use',
+                    purchased_at TIMESTAMPTZ,
+                    warranty_expires_at TIMESTAMPTZ,
+                    location TEXT,
+                    custom_fields JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (tenant_id, asset_id),
+                    CONSTRAINT it_assets_status_check
+                        CHECK (status IN ('in_stock', 'in_use', 'repairing', 'retired'))
+                )
+                """
+            )
+            # 兼容早期 v10 草稿库：移除整表唯一约束，改用部分唯一索引。
+            await cursor.execute(
+                "ALTER TABLE it_assets DROP CONSTRAINT IF EXISTS it_assets_asset_no_unique"
+            )
+            await cursor.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS it_assets_asset_no_active_unique
+                ON it_assets (tenant_id, asset_no)
+                WHERE is_deleted = FALSE
+                """
+            )
+            await cursor.execute(
+                """
+                CREATE INDEX idx_it_assets_owner
+                ON it_assets (tenant_id, owner_user_id)
+                WHERE is_deleted = FALSE
+                """
+            )
+            await cursor.execute(
+                """
+                CREATE INDEX idx_it_assets_department
+                ON it_assets (tenant_id, department)
+                WHERE is_deleted = FALSE
+                """
+            )
+            # v10: 工单关联资产 —— 回答"哪台电脑常报修/某员工名下有哪些设备"。
+            await cursor.execute(
+                """
+                ALTER TABLE tickets ADD COLUMN IF NOT EXISTS asset_id TEXT
+                """
+            )
+            await cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_tickets_asset
+                ON tickets (tenant_id, asset_id)
+                WHERE asset_id IS NOT NULL
+                """
+            )
+            # 工单资产必须引用真实存在的租户资产：复合外键 (tenant_id, asset_id)
+            # 同时约束租户隔离，NULL 资产不触发检查。
+            await cursor.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint WHERE conname = 'tickets_asset_fk'
+                    ) THEN
+                        ALTER TABLE tickets
+                        ADD CONSTRAINT tickets_asset_fk
+                        FOREIGN KEY (tenant_id, asset_id)
+                        REFERENCES it_assets (tenant_id, asset_id);
+                    END IF;
+                END $$;
+                """
+            )
+            # v10: 知识库增强 —— 分类、可见性、创建者。
+            # visibility 是粗粒度过滤（public/internal/restricted），与已有的
+            # allowed_departments 部门 ACL 并存：visibility 先粗筛，ACL 再细控。
+            await cursor.execute(
+                """
+                ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS category TEXT
+                """
+            )
+            await cursor.execute(
+                """
+                ALTER TABLE knowledge_documents
+                ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'internal'
+                """
+            )
+            await cursor.execute(
+                """
+                ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS created_by TEXT
+                """
+            )
+            await cursor.execute(
+                """
+                ALTER TABLE knowledge_documents
+                DROP CONSTRAINT IF EXISTS knowledge_documents_visibility_check
+                """
+            )
+            await cursor.execute(
+                """
+                ALTER TABLE knowledge_documents
+                ADD CONSTRAINT knowledge_documents_visibility_check
+                CHECK (visibility IN ('public', 'internal', 'restricted'))
+                """
+            )
+            await cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_knowledge_documents_category
+                ON knowledge_documents (tenant_id, category)
+                WHERE category IS NOT NULL
+                """
+            )
+            current = 10
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
                 (current, APP_SCHEMA_NAME),

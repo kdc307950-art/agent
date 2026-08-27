@@ -128,12 +128,30 @@ class PgVectorRetriever:
                       AND d.status = 'published'
                       AND (d.valid_from IS NULL OR d.valid_from <= now())
                       AND (d.valid_until IS NULL OR d.valid_until > now())
+                      AND (
+                          d.visibility = 'public'
+                          OR (d.visibility = 'internal' AND %s::boolean)
+                          OR (
+                              d.visibility = 'restricted' AND %s::boolean
+                              AND cardinality(d.allowed_departments) > 0
+                              AND d.allowed_departments && %s::TEXT[]
+                          )
+                      )
                       AND (cardinality(d.allowed_departments) = 0
                            OR d.allowed_departments && %s::TEXT[])
                     ORDER BY c.embedding <=> %s::vector, c.document_id, c.chunk_id
                     LIMIT %s
                     """,
-                    (literal, principal.tenant_id, list(principal.departments), literal, limit),
+                    (
+                        literal,
+                        principal.tenant_id,
+                        principal.internal,
+                        principal.internal,
+                        list(principal.departments),
+                        list(principal.departments),
+                        literal,
+                        limit,
+                    ),
                 )
                 rows = await cursor.fetchall()
         return [RetrievalHit(source="vector", fused_score=0.0, **row) for row in rows]

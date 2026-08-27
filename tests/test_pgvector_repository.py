@@ -42,10 +42,10 @@ def test_pgvector_search_enforces_tenant_and_department_acl(monkeypatch):
         repository = KnowledgeRepository(tickets.pool)
         retriever = PgVectorRetriever(repository, Embedder(), dimension=8)
         try:
-            for tenant_id, document_id, departments in (
-                (tenant, "public", ()),
-                (tenant, "finance", ("finance",)),
-                (other, "other", ()),
+            for tenant_id, document_id, departments, visibility in (
+                (tenant, "public", (), "public"),
+                (tenant, "finance", ("finance",), "restricted"),
+                (other, "other", (), "public"),
             ):
                 await repository.put_document(
                     tenant_id,
@@ -54,6 +54,7 @@ def test_pgvector_search_enforces_tenant_and_department_acl(monkeypatch):
                         version=1,
                         title=document_id,
                         status="published",
+                        visibility=visibility,
                         allowed_departments=departments,
                     ),
                     [KnowledgeChunkInput(chunk_id="c1", ordinal=0, content=document_id)],
@@ -70,7 +71,9 @@ def test_pgvector_search_enforces_tenant_and_department_acl(monkeypatch):
                 RetrievalPrincipal(tenant_id=tenant), "query", limit=10
             )
             finance = await retriever.search(
-                RetrievalPrincipal(tenant_id=tenant, departments={"finance"}), "query", limit=10
+                RetrievalPrincipal(tenant_id=tenant, departments={"finance"}, internal=True),
+                "query",
+                limit=10,
             )
             return public, finance
         finally:

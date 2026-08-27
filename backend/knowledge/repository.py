@@ -32,14 +32,18 @@ class KnowledgeRepository:
                     """
                     INSERT INTO knowledge_documents (
                         tenant_id, document_id, version, title, source_uri,
-                        status, allowed_departments, valid_from, valid_until, metadata
+                        status, category, visibility, allowed_departments,
+                        created_by, valid_from, valid_until, metadata
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (tenant_id, document_id, version) DO UPDATE SET
                         title = EXCLUDED.title,
                         source_uri = EXCLUDED.source_uri,
                         status = EXCLUDED.status,
+                        category = EXCLUDED.category,
+                        visibility = EXCLUDED.visibility,
                         allowed_departments = EXCLUDED.allowed_departments,
+                        created_by = EXCLUDED.created_by,
                         valid_from = EXCLUDED.valid_from,
                         valid_until = EXCLUDED.valid_until,
                         metadata = EXCLUDED.metadata,
@@ -52,7 +56,10 @@ class KnowledgeRepository:
                         document.title,
                         document.source_uri,
                         document.status,
+                        document.category,
+                        document.visibility,
                         list(document.allowed_departments),
+                        document.created_by,
                         document.valid_from,
                         document.valid_until,
                         Jsonb(document.metadata),
@@ -144,6 +151,15 @@ class KnowledgeRepository:
                           AND (d.valid_from IS NULL OR d.valid_from <= now())
                           AND (d.valid_until IS NULL OR d.valid_until > now())
                           AND (
+                              d.visibility = 'public'
+                              OR (d.visibility = 'internal' AND %s::boolean)
+                              OR (
+                                  d.visibility = 'restricted' AND %s::boolean
+                                  AND cardinality(d.allowed_departments) > 0
+                                  AND d.allowed_departments && %s::TEXT[]
+                              )
+                          )
+                          AND (
                               cardinality(d.allowed_departments) = 0
                               OR d.allowed_departments && %s::TEXT[]
                           )
@@ -159,6 +175,9 @@ class KnowledgeRepository:
                     (
                         query,
                         principal.tenant_id,
+                        principal.internal,
+                        principal.internal,
+                        list(principal.departments),
                         list(principal.departments),
                         query,
                         limit,

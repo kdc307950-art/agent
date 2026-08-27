@@ -2,6 +2,7 @@
 
 from .models import CreateTicket, InboundEventResult, TicketRecord, TicketStatusEvent
 from .operations import OperationsConflict, TicketOperationsRepository
+from .policies import ItPolicyNotFound, ItPolicyRepository, TenantItPolicy, UpsertItPolicy
 from .repository import (
     InboundEventConflict,
     TicketAlreadyExists,
@@ -20,9 +21,12 @@ __all__ = [
     "CreateTicket",
     "InboundEventConflict",
     "InboundEventResult",
+    "ItPolicyNotFound",
+    "ItPolicyRepository",
     "OperationsConflict",
     "RoutingDecision",
     "RoutingRepository",
+    "TenantItPolicy",
     "TicketAlreadyExists",
     "TicketCapacityExceeded",
     "TicketNotFound",
@@ -31,6 +35,7 @@ __all__ = [
     "TicketRepository",
     "TicketStatusEvent",
     "TicketVersionConflict",
+    "UpsertItPolicy",
     "canonical_payload_hash",
     "ticket_repository_context",
 ]

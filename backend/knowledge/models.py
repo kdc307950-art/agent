@@ -16,7 +16,10 @@ class KnowledgeDocumentInput(BaseModel):
     title: str = Field(min_length=1, max_length=512)
     source_uri: str | None = Field(default=None, max_length=2_048)
     status: Literal["draft", "published", "retired"] = "draft"
+    category: str | None = Field(default=None, max_length=128)
+    visibility: Literal["public", "internal", "restricted"] = "internal"
     allowed_departments: tuple[str, ...] = ()
+    created_by: str | None = Field(default=None, max_length=128)
     valid_from: datetime | None = None
     valid_until: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -38,6 +41,13 @@ class RetrievalPrincipal(BaseModel):
 
     tenant_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
     departments: frozenset[str] = frozenset()
+    # 检索可见性语义（与 knowledge_documents.visibility 对应）：
+    #   public      —— 任何检索主体可见（部门 ACL 仍生效）；
+    #   internal    —— 仅 internal=True 的检索主体可见（客服/内部系统）；
+    #   restricted  —— 仅 internal=True 且文档声明 allowed_departments
+    #                  且包含主体部门时可见（比 internal 更严格）。
+    # 客户工单建议回复场景传 internal=False；客服工作台传 internal=True。
+    internal: bool = False
 
 
 class RetrievalHit(BaseModel):

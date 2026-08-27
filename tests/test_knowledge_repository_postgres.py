@@ -20,6 +20,61 @@ DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
 
 
+def test_knowledge_visibility_public_internal_restricted_matrix(monkeypatch):
+    tenant = f"tenant-{uuid4().hex}"
+
+    async def run():
+        monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
+        await setup_postgres()
+        tickets = await TicketRepository.connect(DATABASE_URL)
+        repository = KnowledgeRepository(tickets.pool)
+        try:
+            docs = {
+                "pub": KnowledgeDocumentInput(
+                    document_id="pub", version=1, title="Public", status="published", visibility="public"
+                ),
+                "int": KnowledgeDocumentInput(
+                    document_id="int", version=1, title="Internal", status="published", visibility="internal"
+                ),
+                "res-it": KnowledgeDocumentInput(
+                    document_id="res-it", version=1, title="Restricted IT", status="published",
+                    visibility="restricted", allowed_departments=("it",),
+                ),
+                "res-fin": KnowledgeDocumentInput(
+                    document_id="res-fin", version=1, title="Restricted Finance", status="published",
+                    visibility="restricted", allowed_departments=("finance",),
+                ),
+            }
+            for doc in docs.values():
+                await repository.put_document(
+                    tenant, doc, [KnowledgeChunkInput(chunk_id="c1", ordinal=0, content="Public Internal Restricted")]
+                )
+
+            customer = await repository.lexical_search(
+                RetrievalPrincipal(tenant_id=tenant), "Public Internal Restricted", limit=10
+            )
+            agent_no_dept = await repository.lexical_search(
+                RetrievalPrincipal(tenant_id=tenant, internal=True), "Public Internal Restricted", limit=10
+            )
+            agent_it = await repository.lexical_search(
+                RetrievalPrincipal(tenant_id=tenant, departments={"it"}, internal=True),
+                "Public Internal Restricted",
+                limit=10,
+            )
+            return (
+                {hit.document_id for hit in customer},
+                {hit.document_id for hit in agent_no_dept},
+                {hit.document_id for hit in agent_it},
+            )
+        finally:
+            await tickets.close()
+
+    customer, agent_no_dept, agent_it = asyncio.run(run())
+    assert customer == {"pub"}
+    assert agent_no_dept == {"pub", "int"}
+    assert agent_it == {"pub", "int", "res-it"}
+
+
 def test_knowledge_search_enforces_tenant_status_and_department_acl(monkeypatch):
     tenant_id = f"tenant-{uuid4().hex}"
     other_tenant = f"tenant-{uuid4().hex}"
@@ -37,6 +92,7 @@ def test_knowledge_search_enforces_tenant_status_and_department_acl(monkeypatch)
                     version=1,
                     title="Public SSO",
                     status="published",
+                    visibility="public",
                 ),
                 [KnowledgeChunkInput(chunk_id="c1", ordinal=0, content="reset sso password")],
             )
@@ -47,6 +103,7 @@ def test_knowledge_search_enforces_tenant_status_and_department_acl(monkeypatch)
                     version=1,
                     title="Finance SSO",
                     status="published",
+                    visibility="restricted",
                     allowed_departments=("finance",),
                 ),
                 [KnowledgeChunkInput(chunk_id="c1", ordinal=0, content="reset sso finance token")],
@@ -68,6 +125,7 @@ def test_knowledge_search_enforces_tenant_status_and_department_acl(monkeypatch)
                     version=1,
                     title="Other tenant SSO",
                     status="published",
+                    visibility="public",
                 ),
                 [KnowledgeChunkInput(chunk_id="c1", ordinal=0, content="reset sso other tenant")],
             )
@@ -77,7 +135,7 @@ def test_knowledge_search_enforces_tenant_status_and_department_acl(monkeypatch)
                 "reset sso",
             )
             finance = await knowledge.lexical_search(
-                RetrievalPrincipal(tenant_id=tenant_id, departments={"finance"}),
+                RetrievalPrincipal(tenant_id=tenant_id, departments={"finance"}, internal=True),
                 "reset sso",
             )
             other = await knowledge.lexical_search(
