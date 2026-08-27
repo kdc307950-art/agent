@@ -52,6 +52,7 @@ from .repositories import tenant_thread_id
 from .readiness import probe_dependencies
 from .settings import Settings
 from .telemetry import Telemetry
+from .ticket_api import channel_router, router as ticket_router
 from .usage import extract_model_usage, usage_cost_usd
 
 
@@ -297,12 +298,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="LangGraph Agent API", lifespan=lifespan)
+app.include_router(ticket_router)
+app.include_router(channel_router)
 app.add_middleware(AuditMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins(),
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
 

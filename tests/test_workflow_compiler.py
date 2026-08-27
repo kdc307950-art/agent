@@ -4,7 +4,9 @@
 condition 节点路由、rag 占位、节点注册表扩展。
 """
 
+import asyncio
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 from langchain_openai import ChatOpenAI
@@ -139,9 +141,52 @@ def test_compile_unknown_node_type():
         }, model=_fake_model())
 
 
-def test_rag_node_placeholder():
-    with pytest.raises(NotImplementedError, match="pgvector"):
+def test_rag_node_requires_injected_service():
+    with pytest.raises(ValueError, match="rag_service"):
         rag_factory(NodeSpec(id="r", type="rag", config={}), BuildContext(model=_fake_model()))
+
+
+def test_rag_node_writes_answer_citations_and_gate_fields():
+    class Service:
+        async def answer(self, principal, query, *, category, risk_level, limit):
+            assert principal == "server-owned-principal"
+            assert (query, category, risk_level, limit) == ("reset sso", "it", "low", 3)
+            return SimpleNamespace(
+                answer="Reset the session.",
+                citations=(
+                    SimpleNamespace(
+                        model_dump=lambda **_kwargs: {
+                            "document_id": "doc-1",
+                            "document_version": 1,
+                            "chunk_id": "c1",
+                            "title": "SSO",
+                            "source_uri": None,
+                        }
+                    ),
+                ),
+                auto_reply=True,
+                reason_codes=("gate_passed",),
+            )
+
+    node = rag_factory(
+        NodeSpec(id="r", type="rag", config={"limit": 3}),
+        BuildContext(model=_fake_model(), rag_service=Service()),
+    )
+    result = asyncio.run(
+        node(
+            {
+                "text": "reset sso",
+                "category": "it",
+                "risk_level": "low",
+                "retrieval_principal": "server-owned-principal",
+            }
+        )
+    )
+
+    assert result["draft_answer"] == "Reset the session."
+    assert result["auto_reply"] is True
+    assert result["answer_reason_codes"] == ["gate_passed"]
+    assert result["citations"][0]["chunk_id"] == "c1"
 
 
 # ========== condition 节点 ==========

@@ -1,0 +1,400 @@
+"""Transactional messages, outbox delivery, SLA instances, and surveys."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
+from psycopg_pool import AsyncConnectionPool
+
+from .sla import BusinessCalendar
+
+
+class OperationsConflict(RuntimeError):
+    pass
+
+
+class TicketOperationsRepository:
+    def __init__(self, pool: AsyncConnectionPool) -> None:
+        self.pool = pool
+
+    @classmethod
+    async def connect(
+        cls,
+        conninfo: str,
+        *,
+        min_size: int = 1,
+        max_size: int = 4,
+    ) -> "TicketOperationsRepository":
+        pool = AsyncConnectionPool(
+            conninfo,
+            min_size=min_size,
+            max_size=max_size,
+            open=False,
+            name="helpdesk-operations-worker",
+        )
+        await pool.open(wait=True)
+        return cls(pool)
+
+    async def close(self) -> None:
+        await self.pool.close()
+
+    async def append_outbound_message(
+        self,
+        *,
+        tenant_id: str,
+        ticket_id: str,
+        message_id: str,
+        actor_type: str,
+        actor_id: str,
+        channel: str,
+        content: str,
+        event_id: str,
+        idempotency_key: str,
+        payload: dict[str, Any],
+    ) -> bool:
+        async with self.pool.connection() as connection:
+            async with connection.transaction(), connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    INSERT INTO outbox_events (
+                        tenant_id, event_id, idempotency_key, event_type,
+                        aggregate_type, aggregate_id, payload
+                    ) VALUES (%s, %s, %s, 'ticket_message.send', 'ticket', %s, %s)
+                    ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+                    RETURNING event_id
+                    """,
+                    (tenant_id, event_id, idempotency_key, ticket_id, Jsonb(payload)),
+                )
+                created = await cursor.fetchone()
+                if created is None:
+                    return False
+                await cursor.execute(
+                    """
+                    INSERT INTO ticket_messages (
+                        tenant_id, ticket_id, message_id, direction, actor_type,
+                        actor_id, channel, content
+                    ) VALUES (%s, %s, %s, 'outbound', %s, %s, %s, %s)
+                    """,
+                    (tenant_id, ticket_id, message_id, actor_type, actor_id, channel, content),
+                )
+                return True
+
+    async def claim_outbox(
+        self,
+        *,
+        limit: int = 20,
+        tenant_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if limit < 1 or limit > 100:
+            raise ValueError("limit 必须在 1 到 100 之间")
+        async with self.pool.connection() as connection:
+            async with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    WITH ready AS (
+                        SELECT tenant_id, event_id
+                        FROM outbox_events
+                        WHERE status = 'pending' AND available_at <= now()
+                          AND (%s::TEXT IS NULL OR tenant_id = %s)
+                        ORDER BY available_at, created_at
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT %s
+                    )
+                    UPDATE outbox_events AS o
+                    SET status = 'processing', claimed_at = now(), attempts = attempts + 1
+                    FROM ready
+                    WHERE o.tenant_id = ready.tenant_id AND o.event_id = ready.event_id
+                    RETURNING o.*
+                    """,
+                    (tenant_id, tenant_id, limit),
+                )
+                return list(await cursor.fetchall())
+
+    async def complete_outbox(self, tenant_id: str, event_id: str) -> bool:
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE outbox_events
+                    SET status = 'delivered', delivered_at = now(), last_error_code = NULL
+                    WHERE tenant_id = %s AND event_id = %s AND status = 'processing'
+                    """,
+                    (tenant_id, event_id),
+                )
+                return cursor.rowcount == 1
+
+    async def fail_outbox(
+        self,
+        tenant_id: str,
+        event_id: str,
+        *,
+        error_code: str,
+        retry_at: datetime | None,
+    ) -> bool:
+        target_status = "pending" if retry_at is not None else "dead"
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE outbox_events
+                    SET status = %s, available_at = COALESCE(%s, available_at),
+                        claimed_at = NULL, last_error_code = %s
+                    WHERE tenant_id = %s AND event_id = %s AND status = 'processing'
+                    """,
+                    (target_status, retry_at, error_code, tenant_id, event_id),
+                )
+                return cursor.rowcount == 1
+
+    async def create_sla(
+        self,
+        *,
+        tenant_id: str,
+        ticket_id: str,
+        policy_id: str,
+        policy_version: int,
+        started_at: datetime,
+        first_response_minutes: int,
+        resolution_minutes: int,
+        calendar: BusinessCalendar,
+    ) -> None:
+        first_due = calendar.add_business_minutes(started_at, first_response_minutes)
+        resolution_due = calendar.add_business_minutes(started_at, resolution_minutes)
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    INSERT INTO ticket_sla (
+                        tenant_id, ticket_id, policy_id, policy_version,
+                        first_response_due_at, resolution_due_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (tenant_id, ticket_id) DO NOTHING
+                    """,
+                    (tenant_id, ticket_id, policy_id, policy_version, first_due, resolution_due),
+                )
+                if cursor.rowcount != 1:
+                    raise OperationsConflict("工单 SLA 已存在")
+
+    async def reset_sla_on_reassignment(
+        self,
+        *,
+        tenant_id: str,
+        ticket_id: str,
+        reassigned_at: datetime,
+        first_response_minutes: int,
+        resolution_minutes: int,
+        calendar: BusinessCalendar,
+        reset_enabled: bool,
+    ) -> bool:
+        if not reset_enabled:
+            return False
+        first_due = calendar.add_business_minutes(reassigned_at, first_response_minutes)
+        resolution_due = calendar.add_business_minutes(reassigned_at, resolution_minutes)
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE ticket_sla
+                    SET first_response_due_at = %s,
+                        resolution_due_at = %s,
+                        paused_at = NULL,
+                        pause_reason = NULL,
+                        total_paused_seconds = 0,
+                        first_responded_at = NULL,
+                        first_response_breached_at = NULL,
+                        resolution_breached_at = NULL,
+                        updated_at = now()
+                    WHERE tenant_id = %s AND ticket_id = %s
+                    """,
+                    (first_due, resolution_due, tenant_id, ticket_id),
+                )
+                return cursor.rowcount == 1
+
+    async def pause_sla(self, tenant_id: str, ticket_id: str, *, reason: str) -> bool:
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE ticket_sla SET paused_at = now(), pause_reason = %s, updated_at = now()
+                    WHERE tenant_id = %s AND ticket_id = %s AND paused_at IS NULL
+                    """,
+                    (reason, tenant_id, ticket_id),
+                )
+                return cursor.rowcount == 1
+
+    async def resume_sla(self, tenant_id: str, ticket_id: str, *, resumed_at: datetime) -> bool:
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE ticket_sla
+                    SET first_response_due_at = first_response_due_at + (%s - paused_at),
+                        resolution_due_at = resolution_due_at + (%s - paused_at),
+                        total_paused_seconds = total_paused_seconds + EXTRACT(EPOCH FROM (%s - paused_at))::BIGINT,
+                        paused_at = NULL, pause_reason = NULL, updated_at = now()
+                    WHERE tenant_id = %s AND ticket_id = %s
+                      AND paused_at IS NOT NULL AND %s >= paused_at
+                    """,
+                    (resumed_at, resumed_at, resumed_at, tenant_id, ticket_id, resumed_at),
+                )
+                return cursor.rowcount == 1
+
+    async def scan_sla_breaches(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = 100,
+        tenant_id: str | None = None,
+    ) -> int:
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit 必须在 1 到 1000 之间")
+        reference = now or datetime.now(timezone.utc)
+        async with self.pool.connection() as connection:
+            async with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    SELECT tenant_id, ticket_id,
+                           first_responded_at IS NULL
+                               AND first_response_breached_at IS NULL
+                               AND first_response_due_at <= %s AS first_breach,
+                           resolution_breached_at IS NULL
+                               AND resolution_due_at <= %s AS resolution_breach
+                    FROM ticket_sla
+                    WHERE paused_at IS NULL
+                      AND (%s::TEXT IS NULL OR tenant_id = %s)
+                      AND (
+                          (first_responded_at IS NULL AND first_response_breached_at IS NULL
+                           AND first_response_due_at <= %s)
+                          OR (resolution_breached_at IS NULL AND resolution_due_at <= %s)
+                      )
+                    ORDER BY LEAST(first_response_due_at, resolution_due_at)
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT %s
+                    """,
+                    (reference, reference, tenant_id, tenant_id, reference, reference, limit),
+                )
+                breaches = list(await cursor.fetchall())
+                created = 0
+                for breach in breaches:
+                    kinds = []
+                    if breach["first_breach"]:
+                        kinds.append("first_response")
+                    if breach["resolution_breach"]:
+                        kinds.append("resolution")
+                    await cursor.execute(
+                        """
+                        UPDATE ticket_sla
+                        SET first_response_breached_at = CASE
+                                WHEN %s THEN %s ELSE first_response_breached_at END,
+                            resolution_breached_at = CASE
+                                WHEN %s THEN %s ELSE resolution_breached_at END,
+                            updated_at = now()
+                        WHERE tenant_id = %s AND ticket_id = %s
+                        """,
+                        (
+                            breach["first_breach"],
+                            reference,
+                            breach["resolution_breach"],
+                            reference,
+                            breach["tenant_id"],
+                            breach["ticket_id"],
+                        ),
+                    )
+                    for kind in kinds:
+                        event_id = f"sla-{kind}-{breach['ticket_id']}"
+                        idempotency_key = f"sla:{breach['ticket_id']}:{kind}"
+                        await cursor.execute(
+                            """
+                            INSERT INTO outbox_events (
+                                tenant_id, event_id, idempotency_key, event_type,
+                                aggregate_type, aggregate_id, payload
+                            ) VALUES (%s, %s, %s, 'sla.breached', 'ticket', %s, %s)
+                            ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+                            """,
+                            (
+                                breach["tenant_id"],
+                                event_id,
+                                idempotency_key,
+                                breach["ticket_id"],
+                                Jsonb({"ticket_id": breach["ticket_id"], "kind": kind}),
+                            ),
+                        )
+                        created += cursor.rowcount
+                return created
+
+    async def create_survey(
+        self,
+        *,
+        tenant_id: str,
+        ticket_id: str,
+        survey_id: str,
+        expires_at: datetime,
+        outbox_event_id: str,
+    ) -> bool:
+        async with self.pool.connection() as connection:
+            async with connection.transaction(), connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    INSERT INTO satisfaction_surveys (tenant_id, ticket_id, survey_id, expires_at)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (tenant_id, ticket_id) DO NOTHING
+                    RETURNING survey_id
+                    """,
+                    (tenant_id, ticket_id, survey_id, expires_at),
+                )
+                if await cursor.fetchone() is None:
+                    return False
+                await cursor.execute(
+                    """
+                    INSERT INTO outbox_events (
+                        tenant_id, event_id, idempotency_key, event_type,
+                        aggregate_type, aggregate_id, payload
+                    ) VALUES (%s, %s, %s, 'survey.send', 'ticket', %s, %s)
+                    """,
+                    (
+                        tenant_id,
+                        outbox_event_id,
+                        f"survey:{ticket_id}",
+                        ticket_id,
+                        Jsonb({"ticket_id": ticket_id, "survey_id": survey_id}),
+                    ),
+                )
+                return True
+
+    async def respond_survey(
+        self,
+        *,
+        tenant_id: str,
+        survey_id: str,
+        score: int,
+        feedback: str | None = None,
+    ) -> bool:
+        if score < 1 or score > 5:
+            raise ValueError("满意度评分必须在 1 到 5 之间")
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE satisfaction_surveys
+                    SET status = 'responded', score = %s, feedback = %s, responded_at = now()
+                    WHERE tenant_id = %s AND survey_id = %s
+                      AND status IN ('pending', 'sent') AND expires_at > now()
+                    """,
+                    (score, feedback, tenant_id, survey_id),
+                )
+                return cursor.rowcount == 1
+
+    async def expire_surveys(self, *, now: datetime | None = None) -> int:
+        reference = now or datetime.now(timezone.utc)
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE satisfaction_surveys SET status = 'expired'
+                    WHERE status IN ('pending', 'sent') AND expires_at <= %s
+                    """,
+                    (reference,),
+                )
+                return cursor.rowcount

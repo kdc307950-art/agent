@@ -3,9 +3,34 @@ from types import SimpleNamespace
 
 import pytest
 
+from backend.audit import AuditRepository
 from backend.migrate_sqlite import migrate_checkpoint_tuples
 from backend.repositories import LongTermMemoryRepository, tenant_namespace, tenant_thread_id
+from backend.run_context import RunContext
 from src.my_agent.agent import _ainvoke_with_retry
+
+
+def test_finish_run_accepts_awaiting_approval_before_database_call():
+    class FailingPool:
+        def connection(self):
+            raise RuntimeError("database call reached")
+
+    repository = AuditRepository(FailingPool())
+    context = RunContext(
+        run_id="run-validation",
+        request_id="request-validation",
+        tenant_id="tenant-a",
+        user_id="user-1",
+        thread_id="tenant-a:user-1:thread-1",
+        scopes=frozenset({"chat:write"}),
+        deadline=60,
+    )
+
+    async def run():
+        with pytest.raises(RuntimeError, match="database call reached"):
+            await repository.finish_run(context, "awaiting_approval")
+
+    asyncio.run(run())
 
 
 def test_retry_retries_transient_model_failure():

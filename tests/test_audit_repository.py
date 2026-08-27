@@ -24,6 +24,35 @@ def _context(run_id: str, tenant_id: str = "tenant-a") -> RunContext:
     )
 
 
+def test_awaiting_approval_is_persisted_with_matching_event():
+    run_id = f"awaiting-{uuid4().hex}"
+
+    async def run():
+        context = _context(run_id)
+        async with audit_context(DATABASE_URL) as audit:
+            await audit.setup()
+            await audit.start_run(context)
+            updated = await audit.finish_run(
+                context,
+                "awaiting_approval",
+                metadata={"interrupt_id": "interrupt-1"},
+            )
+            stored = await audit.get_run("tenant-a", run_id)
+            events = await audit.list_events("tenant-a", run_id)
+        return updated, stored, events
+
+    updated, stored, events = asyncio.run(run())
+    assert updated is True
+    assert stored is not None
+    assert stored["status"] == "awaiting_approval"
+    assert stored["finished_at"] is not None
+    assert any(
+        event["event_type"] == "run_awaiting_approval"
+        and event["status"] == "awaiting_approval"
+        for event in events
+    )
+
+
 def test_audit_round_trip_is_tenant_scoped_and_survives_reconnect():
     run_id = f"audit-{uuid4().hex}"
 

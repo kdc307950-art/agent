@@ -199,6 +199,22 @@ def _b64url_decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
+DEV_SCOPE_PROFILES: dict[str, tuple[str, ...]] = {
+    "chat": ("chat:read", "chat:write", "chat:approve"),
+    "helpdesk-agent": ("chat:read", "chat:write", "ticket:customer", "ticket:agent"),
+    "helpdesk-customer": ("ticket:customer",),
+    "helpdesk-channel": ("ticket:channel",),
+    "helpdesk-approver": ("ticket:agent", "ticket:approve"),
+}
+
+
+def scopes_for_dev_role(role: str) -> tuple[str, ...]:
+    try:
+        return DEV_SCOPE_PROFILES[role]
+    except KeyError as exc:
+        raise ValueError(f"未知开发令牌角色: {role}") from exc
+
+
 def make_tenant_token(
     tenant_id: str,
     user_id: str,

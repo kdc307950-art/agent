@@ -36,7 +36,18 @@ AUDIT_SCHEMA_STATEMENTS = (
         tenant_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
         thread_id TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'timeout', 'cancelled', 'failed', 'budget_exceeded')),
+        status TEXT NOT NULL,
+        CONSTRAINT agent_runs_status_check CHECK (
+            status IN (
+                'running',
+                'awaiting_approval',
+                'completed',
+                'timeout',
+                'cancelled',
+                'failed',
+                'budget_exceeded'
+            )
+        ),
         started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         finished_at TIMESTAMPTZ,
         error_code TEXT,
@@ -210,7 +221,14 @@ class AuditRepository:
         error_code: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> bool:
-        if status not in {"completed", "timeout", "cancelled", "failed", "budget_exceeded"}:
+        if status not in {
+            "awaiting_approval",
+            "completed",
+            "timeout",
+            "cancelled",
+            "failed",
+            "budget_exceeded",
+        }:
             raise ValueError("无效的运行结束状态")
         safe_metadata = sanitize_payload(metadata, max_chars=self.payload_limit)
         async with self.pool.connection() as connection:

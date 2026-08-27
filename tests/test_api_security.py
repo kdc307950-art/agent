@@ -4,7 +4,20 @@ import importlib
 from contextlib import asynccontextmanager
 
 from fastapi.testclient import TestClient
-from backend.security import make_tenant_token
+from backend.security import make_tenant_token, scopes_for_dev_role
+
+
+def test_dev_scope_profiles_support_helpdesk_roles():
+    assert "ticket:agent" in scopes_for_dev_role("helpdesk-agent")
+    assert scopes_for_dev_role("helpdesk-customer") == ("ticket:customer",)
+    assert scopes_for_dev_role("helpdesk-channel") == ("ticket:channel",)
+    assert "ticket:approve" in scopes_for_dev_role("helpdesk-approver")
+    try:
+        scopes_for_dev_role("unknown")
+    except ValueError as exc:
+        assert "未知开发令牌角色" in str(exc)
+    else:
+        raise AssertionError("unknown role must be rejected")
 
 
 def load_app(monkeypatch, rate_limit="60"):

@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/kdc307950-art/agent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kdc307950-art/agent/actions/workflows/ci.yml)
 
-一个跑在生产形态基础设施上的 LangGraph Agent 服务：**JSON 定义的多 Agent 编排 + 跨请求人工审批**，运行在多租户隔离、审计留痕、租户预算、限流和工具治理之上。
+一个具备生产化基础设施骨架的 LangGraph 客服工单系统：确定性工单状态机负责流程一致性，Agent 负责受理、分类和知识回答，受治理工具负责副作用。系统运行在多租户隔离、PostgreSQL Checkpoint、审计、Redis 限流、预算和 Outbox 之上。
 
-不是 demo 脚本——审批可以隔几小时由另一个人在另一台设备上完成，状态落在 PostgreSQL checkpoint 里，不依赖任何进程内存。
+工单支持跨请求信息补全、规则派单、知识检索门禁、企业微信/钉钉 Webhook、SLA、回访和响应式客服工作台；原有 JSON 多 Agent 编排与跨请求人工审批继续保留。
 
 ## 5 分钟跑起来
 
@@ -44,24 +44,51 @@ curl http://127.0.0.1:8000/readyz
 
 `SUPERVISOR_AGENT.md` 是同一时期写的说明书，其中的 HITL 部分已被生产链路取代，只作为图结构和路由逻辑的补充阅读。
 
+## 工单业务链路
+
+正式工单链路与旧 `/chat/*` 对话接口独立：
+
+```text
+创建工单 → 受理 → 缺字段则 awaiting_customer → 客户类型化恢复
+       → 分类 → 规则派单 queued → assigned → in_progress
+       → resolved → 满意度回访 → closed
+```
+
+工单快照与 `ticket_status_events` 使用连续乐观锁版本；批量状态转换在同一个 PostgreSQL 事务中写快照和事件。LangGraph Checkpoint 负责受理节点的暂停/恢复，工单表是业务状态的事实来源。
+
+主要 API：
+
+| API | Scope | 用途 |
+|---|---|---|
+| `POST /tickets` | `ticket:customer` | 创建工单 |
+| `GET /tickets` | `ticket:customer` / `ticket:agent` | 游标分页、状态/类别/团队筛选 |
+| `GET /tickets/{id}` | 同上 | 查询工单；客户只能看自己的 |
+| `POST /tickets/{id}/intake` | `ticket:customer` | 启动受理图 |
+| `POST /tickets/{id}/resume` | `ticket:customer` | 按真实 interrupt ID 补充信息 |
+| `POST /tickets/{id}/transitions` | 与 actor 对应的 `ticket:*` | 接单、处理、解决、关闭等 |
+| `POST /tickets/{id}/survey` | `ticket:agent` | 发起回访并写 Outbox |
+| `POST /tickets/{id}/survey/{survey_id}/response` | `ticket:customer` | 提交 1–5 分满意度 |
+
+企业微信 `/integrations/wecom/webhook` 使用 SHA-1 验签、AES-CBC 解密、CorpID 与重放窗口校验；钉钉 `/integrations/dingtalk/webhook` 使用时间戳和 HMAC-SHA256。两个厂商端点以服务端配置绑定租户，不信任请求体 tenant。内部适配器也可使用带 `ticket:channel` scope 的 `/integrations/{channel}/events`。
+
+知识库按 tenant、发布状态、有效期和部门 ACL 过滤，全文与向量候选使用 RRF 融合。默认没有绑定具体向量供应商；没有双路证据、缺少有效引用、高风险或财务类问题都禁止自动回复并转人工。
+
 ## 架构
 
 ```mermaid
 flowchart LR
-    U[React 前端] -->|SSE| API[FastAPI]
-    API --> AUTH[认证<br/>OIDC / 租户令牌<br/>scope 校验]
-    AUTH --> RL[限流<br/>Redis 共享计数]
-    RL --> BUD[租户日预算]
-    BUD --> MODE{AGENT_GRAPH_MODE}
-    MODE -->|single| SA[单 Agent]
-    MODE -->|workflow| WF[JSON 编排图<br/>supervisor 路由<br/>human_approval]
-    SA --> TG[工具治理<br/>租户白名单 / scope<br/>超时 / 重试 / 审计]
-    WF --> TG
-    TG --> LLM[DeepSeek]
-    SA -. checkpoint / store .-> PG[(PostgreSQL)]
-    WF -. checkpoint / store .-> PG
-    API -. 运行与事件审计 .-> PG
-    API -. 指标 / 链路 .-> OTEL[OTel Collector<br/>→ Prometheus / Jaeger]
+    U[React 客服工作台] --> API[FastAPI]
+    CH[企业微信 / 钉钉] --> API
+    API --> AUTH[OIDC / 租户令牌 / Webhook 验签]
+    AUTH --> TICKET[工单领域状态机]
+    TICKET --> INTAKE[受理 / 补全 / 分类 / 派单图]
+    INTAKE --> RAG[ACL 检索 / 引用门禁]
+    API --> CHAT[旧 Chat / JSON 多 Agent 编排]
+    TICKET --> PG[(PostgreSQL<br/>工单 / 事件 / Checkpoint / Outbox)]
+    API --> REDIS[(Redis<br/>限流 / 预算 / 撤销)]
+    PG --> WORKER[Outbox / SLA / 回访任务]
+    INTAKE --> LLM[DeepSeek / 可替换分类器]
+    API -. 指标 / 链路 .-> OTEL[OTel / Prometheus / Jaeger]
 ```
 
 两种图形态共用同一套 checkpointer、store 和工具治理钩子，因此多租户隔离、审计、预算、限流对上层完全一致，差异只在图结构本身。
@@ -118,6 +145,9 @@ AGENT_WORKFLOW_PATH=workflows/helpdesk_supervisor.json
 - `DEEPSEEK_API_KEY`：后端调用模型所需。
 - `TENANT_TOKEN_SECRET`：签发和验证租户令牌的服务端密钥；生产建议替换为 OIDC/JWT 验证。
 - `LANGCHAIN_API_KEY`：可选，仅用于 LangSmith 追踪。
+- `WECOM_TENANT_ID/TOKEN/ENCODING_AES_KEY/CORP_ID`：企业微信 Webhook，四项必须成组配置。
+- `DINGTALK_TENANT_ID/APP_SECRET`：钉钉 Webhook，两项必须成组配置。
+- `WEBHOOK_REPLAY_WINDOW_SECONDS`：Webhook 时间戳容差，默认 300 秒。
 
 启动后，`POST /chat/stream` 必须带 Bearer 令牌。开发环境使用 `AUTH_MODE=dev` 的内部签名令牌；公网环境必须切换为 `AUTH_MODE=oidc`，校验 issuer、audience、过期时间、scope 和撤销状态。服务端会将客户端会话转换为 `tenant_id:user_id:client_thread_id`。`GET /health` 保持公开，便于健康检查。限流默认使用 Redis，按租户和用户共享计数；Redis 不可用时默认 fail-closed。
 
@@ -158,10 +188,10 @@ npm run dev
 先签发本地开发令牌，再写入项目根 `.env` 的 `DEV_TENANT_TOKEN`：
 
 ```powershell
-uv run python -m backend.issue_dev_token tenant-a user-1
+uv run python -m backend.issue_dev_token tenant-a agent-1 --role helpdesk-agent
 ```
 
-Vite 开发代理把 `/api` 转发到后端，并从项目根 `.env` 读取 `DEV_TENANT_TOKEN` 注入 Bearer 头；该令牌不会打进 React bundle。公网部署应改为 OIDC/JWT、撤销机制和共享限流。
+可选角色：`chat`、`helpdesk-agent`、`helpdesk-customer`、`helpdesk-channel`、`helpdesk-approver`。Vite 开发代理把 `/api` 转发到后端，并从项目根 `.env` 读取 `DEV_TENANT_TOKEN` 注入 Bearer 头；该令牌不会打进 React bundle。客服工作台需要 `ticket:agent`，客户建单/补充/回访需要 `ticket:customer`，渠道内部适配器需要 `ticket:channel`。开发时可按角色签发不同令牌；公网部署必须改为 OIDC/JWT、撤销机制和共享限流。
 
 ## 迁移与数据
 
@@ -180,6 +210,17 @@ uv run python -m backend.retention
 ```
 
 任务使用 advisory lock，多个实例同时运行时只有一个会执行；每批最多删除 `AUDIT_RETENTION_BATCH_SIZE` 个已结束 run，并受 `AUDIT_RETENTION_MAX_RUNTIME_SECONDS` 限制。`status=running` 或没有 `finished_at` 的记录不会被删除。清理失败不会回退到内存，也不会影响 Agent 请求；调度器应对非零退出码告警。
+
+Outbox 使用独立常驻进程发送渠道消息、回访和 SLA 升级事件。Worker 通过 `FOR UPDATE SKIP LOCKED` 支持多副本，暂时性网络错误指数退避，超过最大次数进入 `dead`：
+
+```powershell
+$env:OUTBOX_TICKET_MESSAGE_ENDPOINT="https://internal.example/messages"
+$env:OUTBOX_SURVEY_ENDPOINT="https://internal.example/surveys"
+$env:OUTBOX_SLA_ENDPOINT="https://internal.example/sla"
+uv run python -m backend.run_outbox_worker --poll-interval 1 --batch-size 20
+```
+
+每个 Endpoint 都必须实现 `X-Idempotency-Key` 幂等语义；Worker 本身只保证数据库领取和状态转移，不替渠道服务解决重复请求。
 
 项目根的 `checkpoints.db` 是早期 SQLite 实现留下的历史数据，**不是运行时的降级后备**——`backend/runtime.py` 只支持 PostgreSQL。迁移旧数据：
 
@@ -227,23 +268,22 @@ uv run pytest tests -q -m "not live_e2e"
 
 需要 PostgreSQL 和 Redis 的集成测试通过 `TEST_DATABASE_URL` / `REDIS_URL` 开关。没配这两个变量时它们会被 skip；配了但服务连不上会 fail（每个用例要等满连接超时，整套会从 9 秒变成 6 分钟）。
 
-本地起一对临时实例跑全套（用非标准端口，避开本机已有的服务）：
+本地使用轻量集成测试栈跑全套（使用非标准端口，避开已有服务）：
 
-```bash
-docker run -d --name itpg -e POSTGRES_DB=langgraph -e POSTGRES_USER=langgraph -e POSTGRES_PASSWORD=itpass -p 127.0.0.1:55432:5432 postgres:17-alpine
-docker run -d --name itredis -p 127.0.0.1:56379:6379 redis:7-alpine
-export TEST_DATABASE_URL="postgresql://langgraph:itpass@127.0.0.1:55432/langgraph"
-export DATABASE_URL="$TEST_DATABASE_URL"
-export REDIS_URL="redis://127.0.0.1:56379/0"
+```powershell
+docker compose -f infra/compose.test.yml up -d --wait
+$env:TEST_DATABASE_URL="postgresql://langgraph:integration_only_not_a_secret@127.0.0.1:55432/langgraph"
+$env:DATABASE_URL=$env:TEST_DATABASE_URL
+$env:REDIS_URL="redis://127.0.0.1:56379/0"
 uv run python -m backend.migrations
 uv run pytest tests -q -m "not live_e2e"
 ```
 
-跑完清掉：`docker rm -f itpg itredis`（失败时先留着容器查库更方便，所以没串在上面）。
+跑完使用 `docker compose -f infra/compose.test.yml down -v` 清理。该栈只有 PostgreSQL 和 Redis，数据放在临时文件系统中，仅用于本地集成测试。
 
 命令行的环境变量优先于 `.env`（`conftest.py` 的 `load_dotenv()` 不覆盖已存在的变量），所以不必改本地配置。
 
-CI 使用 service containers，当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。
+CI 使用 PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。本地还在 PostgreSQL 14 / Redis 6 上执行过兼容验证：schema v6 迁移成功，全部非 live 测试 `177 passed`。真实 HTTP 工单 E2E 验证了创建、缺字段中断、补充恢复、分类派单、处理、解决、回访和关闭，最终事件版本连续到 v9。
 
 真实 DeepSeek E2E 默认不运行，以免普通 CI 产生费用。手动 workflow `Live Agent E2E` 需要受保护环境中的 `DEEPSEEK_API_KEY`、`LIVE_AGENT_TOKEN` 和 `TENANT_TOKEN_SECRET`，覆盖文本 SSE、工具调用和同线程续聊。
 
@@ -253,8 +293,10 @@ CI 使用 service containers，当 `CI=true` 时缺少这两个变量会直接�
 
 | 项 | 说明 |
 |---|---|
-| 工作流存库 + 热编译 | 改工作流需重启服务，所有租户共用一份定义。表结构、缓存失效、灰度回滚的设计已完成，代码未写；接缝留在 `backend/workflow_loader.py` 的单一函数入口 |
-| 审批超时 / 过期 | 挂起状态当前永久有效，没有 TTL |
-| 工作流可视化画布 | 节点 metadata 里预留了 `x/y/label`，画布未做 |
-| RAG 工具节点 | `src/my_agent/workflow/nodes.py` 的 `rag_factory` 仍是 `NotImplementedError`，尚未与检索项目对接 |
+| 工作流存库 + 热编译 | 改 JSON 工作流仍需重启服务，所有租户共用一份定义 |
+| 挂起任务 TTL | 工单信息补全和旧审批尚未实现自动过期/取消策略 |
+| 向量供应商 | `VectorRetriever` 契约和 RRF 门禁已实现，但未绑定 embedding 模型、维度和向量数据库；默认安全转人工 |
+| 附件安全链路 | 尚未接对象存储、病毒扫描、临时授权下载和内容解析隔离 |
+| PostgreSQL RLS | Repository 全部强制 tenant 条件，但数据库行级安全尚未启用 |
+| 工作台认证 | 本地 Vite 代理使用单个开发令牌；生产需接 IdP 并按客户/客服/审批人分配 scope |
 | 成本统计 | 单价配置默认为 0，接入真实供应商价格前，成本与预算功能不产生实际数值 |

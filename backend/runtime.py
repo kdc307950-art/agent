@@ -17,13 +17,16 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres.aio import AsyncPostgresStore
 
 from src.my_agent.agent import build_agent
+from src.my_agent.helpdesk import build_helpdesk_intake_graph
 from src.my_agent.workflow import build_workflow_from_json
 
 from .audit import AuditRepository, audit_context
+from .knowledge import KnowledgeRepository
 from .metrics import RuntimeMetrics
 from .repositories import LongTermMemoryRepository
 from .schema import check_schema_ready, ensure_schema_version
 from .settings import Settings
+from .tickets import TicketOperationsRepository, TicketRepository
 from .tool_governance import ToolGovernance
 from .workflow_loader import load_workflow_spec
 
@@ -31,10 +34,14 @@ from .workflow_loader import load_workflow_spec
 @dataclass
 class AgentRuntime:
     graph: object
+    intake_graph: object
     checkpointer: AsyncPostgresSaver
     store: AsyncPostgresStore
     memory: LongTermMemoryRepository
     audit: AuditRepository
+    tickets: TicketRepository
+    ticket_operations: TicketOperationsRepository
+    knowledge: KnowledgeRepository
     tool_governance: ToolGovernance
     metrics: RuntimeMetrics
     graph_mode: str = "single"
@@ -112,10 +119,14 @@ async def runtime_context(
         )
         yield AgentRuntime(
             graph=graph,
+            intake_graph=build_helpdesk_intake_graph(checkpointer=checkpointer),
             checkpointer=checkpointer,
             store=store,
             memory=LongTermMemoryRepository(store),
             audit=audit,
+            tickets=TicketRepository(audit.pool),
+            ticket_operations=TicketOperationsRepository(audit.pool),
+            knowledge=KnowledgeRepository(audit.pool),
             tool_governance=tool_governance,
             metrics=runtime_metrics,
             graph_mode=settings.agent_graph_mode,

@@ -101,6 +101,7 @@ def build_workflow_from_json(
     tools: dict[str, Any] | None = None,
     node_registry: dict[str, Callable] | None = None,
     tool_call_wrapper: Callable | None = None,
+    rag_service: Any | None = None,
 ) -> Any:
     """把工作流 JSON 编译成可执行 LangGraph 图。
 
@@ -111,6 +112,7 @@ def build_workflow_from_json(
         tools: 可选工具注册表 {名称: Tool}（默认取 src.my_agent.tools 全部）
         node_registry: 可选节点注册表覆盖（默认 NODE_REGISTRY）
         tool_call_wrapper: 工具治理钩子（backend 传 ToolGovernance.awrap_tool_call）
+        rag_service: 可选知识检索与回答服务，由 rag 节点消费
 
     返回：
         编译好的 CompiledStateGraph（可 invoke / astream / aget_state）
@@ -126,6 +128,7 @@ def build_workflow_from_json(
         checkpointer=checkpointer,
         store=store,
         tool_call_wrapper=tool_call_wrapper,
+        rag_service=rag_service,
     )
     registry = node_registry or NODE_REGISTRY
 

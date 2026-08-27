@@ -39,6 +39,7 @@ class BuildContext:
         checkpointer: Any = None,
         store: Any = None,
         tool_call_wrapper: Callable | None = None,
+        rag_service: Any = None,
     ):
         self.model = model
         self.tools: dict[str, Any] = dict(tools or _default_tool_map())
@@ -47,6 +48,7 @@ class BuildContext:
         # 工具治理钩子（租户白名单 / scope / 超时 / 工具审计）。
         # 必须透传到每个执行工具的节点，否则编排图会绕过治理直接调工具。
         self.tool_call_wrapper = tool_call_wrapper
+        self.rag_service = rag_service
 
     def build_tool_node(self, names: list[str], **kwargs: Any) -> Any:
         """统一构造受治理的 ToolNode，保证所有工具入口都挂上治理钩子。"""
@@ -208,12 +210,45 @@ def human_approval_factory(node: NodeSpec, ctx: BuildContext) -> Callable:
     return approval_node
 
 
-# ========== rag：知识库检索（占位） ==========
+# ========== rag：知识库检索与回答门禁 ==========
 def rag_factory(node: NodeSpec, ctx: BuildContext) -> Callable:
-    raise NotImplementedError(
-        f"节点 {node.id} (rag) 尚未实现：知识库检索将在第三期接入 pgvector。"
-        "可用 supervisor/agent/tool/condition/human_approval 先完成流程编排。"
-    )
+    if ctx.rag_service is None:
+        raise ValueError(f"节点 {node.id} (rag) 需要注入 rag_service")
+    config = node.config
+    query_field = config.get("query_field", "text")
+    principal_field = config.get("principal_field", "retrieval_principal")
+    category_field = config.get("category_field", "category")
+    risk_field = config.get("risk_field", "risk_level")
+    answer_field = config.get("answer_field", "draft_answer")
+    citations_field = config.get("citations_field", "citations")
+    auto_reply_field = config.get("auto_reply_field", "auto_reply")
+    reasons_field = config.get("reasons_field", "answer_reason_codes")
+    limit = int(config.get("limit", 8))
+    if limit < 1 or limit > 100:
+        raise ValueError(f"节点 {node.id} (rag) 的 limit 必须在 1 到 100 之间")
+
+    async def rag_node(state: dict[str, Any]) -> dict[str, Any]:
+        query = str(state.get(query_field) or "").strip()
+        principal = state.get(principal_field)
+        if not query:
+            raise ValueError(f"节点 {node.id} (rag) 缺少查询字段 {query_field}")
+        if principal is None:
+            raise ValueError(f"节点 {node.id} (rag) 缺少服务端检索主体 {principal_field}")
+        result = await ctx.rag_service.answer(
+            principal,
+            query,
+            category=str(state.get(category_field) or "other"),
+            risk_level=str(state.get(risk_field) or "low"),
+            limit=limit,
+        )
+        return {
+            answer_field: result.answer,
+            citations_field: [item.model_dump(mode="json") for item in result.citations],
+            auto_reply_field: result.auto_reply,
+            reasons_field: list(result.reason_codes),
+        }
+
+    return rag_node
 
 
 # ========== 注册表 ==========

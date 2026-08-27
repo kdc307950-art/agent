@@ -47,6 +47,19 @@ def test_oidc_rejects_empty_scope_and_production_requires_cors(monkeypatch):
         Settings.from_env()
 
 
+def test_channel_webhook_configuration_must_be_complete(monkeypatch):
+    _base_production(monkeypatch)
+    monkeypatch.setenv("WECOM_TENANT_ID", "tenant-a")
+    with pytest.raises(RuntimeError, match="WECOM_TENANT_ID"):
+        Settings.from_env()
+
+    _base_production(monkeypatch)
+    monkeypatch.delenv("WECOM_TENANT_ID", raising=False)
+    monkeypatch.setenv("DINGTALK_TENANT_ID", "tenant-a")
+    with pytest.raises(RuntimeError, match="DINGTALK_TENANT_ID"):
+        Settings.from_env()
+
+
 def test_production_budget_requires_nonzero_model_price(monkeypatch):
     _base_production(monkeypatch)
     monkeypatch.setenv("TENANT_DAILY_BUDGET_USD", "10")

@@ -131,6 +131,13 @@ class Settings:
     auto_setup: bool
     agent_graph_mode: str
     agent_workflow_path: str | None
+    webhook_replay_window_seconds: int
+    wecom_tenant_id: str | None
+    wecom_token: str | None
+    wecom_encoding_aes_key: str | None
+    wecom_corp_id: str | None
+    dingtalk_tenant_id: str | None
+    dingtalk_app_secret: str | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -194,6 +201,22 @@ class Settings:
         agent_workflow_path = os.getenv("AGENT_WORKFLOW_PATH", "").strip() or None
         if agent_graph_mode == "workflow" and not agent_workflow_path:
             raise RuntimeError("AGENT_GRAPH_MODE=workflow 必须配置 AGENT_WORKFLOW_PATH")
+        wecom_values = {
+            "tenant_id": os.getenv("WECOM_TENANT_ID", "").strip() or None,
+            "token": os.getenv("WECOM_TOKEN", "").strip() or None,
+            "encoding_aes_key": os.getenv("WECOM_ENCODING_AES_KEY", "").strip() or None,
+            "corp_id": os.getenv("WECOM_CORP_ID", "").strip() or None,
+        }
+        if any(wecom_values.values()) and not all(wecom_values.values()):
+            raise RuntimeError("企业微信 Webhook 必须完整配置 WECOM_TENANT_ID/TOKEN/ENCODING_AES_KEY/CORP_ID")
+        if wecom_values["encoding_aes_key"] and len(wecom_values["encoding_aes_key"]) != 43:
+            raise RuntimeError("WECOM_ENCODING_AES_KEY 必须为 43 个字符")
+        dingtalk_values = {
+            "tenant_id": os.getenv("DINGTALK_TENANT_ID", "").strip() or None,
+            "app_secret": os.getenv("DINGTALK_APP_SECRET", "").strip() or None,
+        }
+        if any(dingtalk_values.values()) and not all(dingtalk_values.values()):
+            raise RuntimeError("钉钉 Webhook 必须完整配置 DINGTALK_TENANT_ID/APP_SECRET")
         return cls(
             app_env=app_env,
             deepseek_api_key=_required("DEEPSEEK_API_KEY"),
@@ -238,4 +261,11 @@ class Settings:
             auto_setup=auto_setup_enabled,
             agent_graph_mode=agent_graph_mode,
             agent_workflow_path=agent_workflow_path,
+            webhook_replay_window_seconds=_int_setting("WEBHOOK_REPLAY_WINDOW_SECONDS", 300, 1),
+            wecom_tenant_id=wecom_values["tenant_id"],
+            wecom_token=wecom_values["token"],
+            wecom_encoding_aes_key=wecom_values["encoding_aes_key"],
+            wecom_corp_id=wecom_values["corp_id"],
+            dingtalk_tenant_id=dingtalk_values["tenant_id"],
+            dingtalk_app_secret=dingtalk_values["app_secret"],
         )
