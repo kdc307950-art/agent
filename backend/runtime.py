@@ -60,7 +60,14 @@ class AgentRuntime:
     graph_mode: str = "single"
 
 
-def build_graph(settings: Settings, *, checkpointer, store, tool_governance: ToolGovernance):
+def build_graph(
+    settings: Settings,
+    *,
+    checkpointer,
+    store,
+    tool_governance: ToolGovernance,
+    rag_service: AgenticRAGService | None = None,
+):
     """按 AGENT_GRAPH_MODE 构建生产图。
 
     - single：单 Agent（默认，历史行为）
@@ -80,6 +87,7 @@ def build_graph(settings: Settings, *, checkpointer, store, tool_governance: Too
             base_url=settings.llm_base_url,
             model_name=settings.llm_model,
             tool_call_wrapper=tool_governance.awrap_tool_call,
+            rag_service=rag_service,
         )
     return build_agent(
         checkpointer=checkpointer,
@@ -124,12 +132,6 @@ async def runtime_context(
             max_retry_attempts=settings.tool_retry_attempts,
             metrics=runtime_metrics,
         )
-        graph = build_graph(
-            settings,
-            checkpointer=checkpointer,
-            store=store,
-            tool_governance=tool_governance,
-        )
         knowledge = KnowledgeRepository(audit.pool)
         agentic_rag: AgenticRAGService | None = None
         if settings.deepseek_api_key:
@@ -167,6 +169,13 @@ async def runtime_context(
                 planner,
                 policy=AgenticRAGPolicy(allow_auto_reply=False),
             )
+        graph = build_graph(
+            settings,
+            checkpointer=checkpointer,
+            store=store,
+            tool_governance=tool_governance,
+            rag_service=agentic_rag,
+        )
         yield AgentRuntime(
             graph=graph,
             intake_graph=build_helpdesk_intake_graph(checkpointer=checkpointer, rag_service=agentic_rag),
