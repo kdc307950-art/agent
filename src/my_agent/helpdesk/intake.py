@@ -17,6 +17,19 @@ class TicketCategory(StrEnum):
     OTHER = "other"
 
 
+# IT 大类下的 8 个子分类，用于 it_policies 的 category 键（it.vpn / it.account ...）。
+IT_SUBCATEGORIES: tuple[str, ...] = (
+    "vpn",
+    "account",
+    "network",
+    "email",
+    "hardware",
+    "software",
+    "printer",
+    "mobile",
+)
+
+
 class RiskLevel(StrEnum):
     LOW = "low"
     MEDIUM = "medium"
@@ -30,6 +43,7 @@ class ClassificationResult(BaseModel):
     subcategory: str = Field(default="general", min_length=1, max_length=64)
     signals: tuple[str, ...] = ()
     needs_human_review: bool = False
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class DispatchDecision(BaseModel):
@@ -84,13 +98,34 @@ class IntakePolicy:
 
 
 class KeywordTicketClassifier:
-    """Explainable baseline classifier; replaceable by a calibrated classifier."""
+    """Explainable baseline classifier; replaceable by a calibrated classifier.
+
+    置信度规则（可解释、不依赖模型）：
+      - 大类信号 >= 2 个 -> 0.9；1 个 -> 0.6；
+      - IT 子分类关键字命中额外 +0.1（上限 1.0）；
+      - 多类并列 -> 0.5；无任何信号 -> 0.2；
+      - confidence < 0.5 或并列或未识别 -> needs_human_review=True（低置信度转人工）。
+    """
 
     _KEYWORDS: Mapping[TicketCategory, tuple[str, ...]] = {
-        TicketCategory.IT: ("登录", "密码", "网络", "电脑", "系统", "vpn", "sso", "故障"),
+        TicketCategory.IT: (
+            "登录", "密码", "网络", "断网", "电脑", "系统", "vpn", "sso", "故障",
+            "账号", "邮箱", "outlook", "邮件", "显示器", "软件", "打印机", "手机",
+        ),
         TicketCategory.FINANCE: ("报销", "发票", "付款", "工资", "财务", "费用"),
         TicketCategory.ADMIN: ("门禁", "工位", "会议室", "采购", "行政", "用印"),
         TicketCategory.PRODUCT: ("产品", "功能", "页面", "bug", "版本", "订单"),
+    }
+
+    _IT_SUBCATEGORY_KEYWORDS: Mapping[str, tuple[str, ...]] = {
+        "vpn": ("vpn", "远程接入", "无法联网", "外网"),
+        "account": ("账号", "登录", "密码", "sso", "锁定", "重置密码", "权限"),
+        "network": ("网络", "断网", "wifi", "局域网", "网速", "网关"),
+        "email": ("邮箱", "邮件", "outlook", "收不到邮件", "退信"),
+        "hardware": ("电脑", "显示器", "键盘", "鼠标", "主板", "硬件", "电源"),
+        "software": ("软件", "安装", "更新", "蓝屏", "系统崩溃", "应用"),
+        "printer": ("打印机", "打印", "复印", "硒鼓"),
+        "mobile": ("手机", "移动设备", "出差设备", "sim卡"),
     }
 
     async def classify(self, text: str, fields: Mapping[str, Any]) -> ClassificationResult:
@@ -106,13 +141,30 @@ class KeywordTicketClassifier:
                 category=TicketCategory.OTHER,
                 signals=(),
                 needs_human_review=True,
+                confidence=0.2,
             )
         category, signals = matches[0]
         tied = len(matches) > 1 and len(matches[1][1]) == len(signals)
+        if len(signals) >= 2:
+            confidence = 0.9
+        else:
+            confidence = 0.6
+        subcategory = "general"
+        if category == TicketCategory.IT:
+            for key, keywords in self._IT_SUBCATEGORY_KEYWORDS.items():
+                if any(keyword.casefold() in normalized for keyword in keywords):
+                    subcategory = key
+                    confidence = min(1.0, confidence + 0.1)
+                    break
+        if tied:
+            confidence = min(confidence, 0.5)
+        needs_review = tied or confidence < 0.5
         return ClassificationResult(
             category=category,
+            subcategory=subcategory,
             signals=tuple(signals),
-            needs_human_review=tied,
+            needs_human_review=needs_review,
+            confidence=confidence,
         )
 
 

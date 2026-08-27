@@ -15,11 +15,13 @@ from src.my_agent.helpdesk import (
 
 
 class FixedClassifier:
-    def __init__(self, category: TicketCategory, *, needs_review: bool = False):
+    def __init__(self, category: TicketCategory, *, needs_review: bool = False, subcategory: str = "general", confidence: float = 0.9):
         self.result = ClassificationResult(
             category=category,
+            subcategory=subcategory,
             signals=("test",),
             needs_human_review=needs_review,
+            confidence=confidence,
         )
         self.calls = 0
 
@@ -200,3 +202,88 @@ def test_invalid_clarification_resume_payload_is_rejected(resume, message):
 
     with pytest.raises(ValueError, match=message):
         invoke(graph, Command(resume=resume), run_config)
+
+
+# ========== 第三阶段：ItPolicyProvider 动态策略 ==========
+
+class FakeItPolicyProvider:
+    def __init__(self, policies: dict[str, dict]):
+        self.policies = policies
+        self.calls = []
+
+    async def get(self, tenant_id, category):
+        self.calls.append((tenant_id, category))
+        item = self.policies.get(category)
+        if item is None:
+            return None
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            category=category,
+            required_fields=item.get("required_fields", ()),
+            default_priority=item.get("default_priority", "normal"),
+            approval_required=item.get("approval_required", False),
+            auto_answer_enabled=item.get("auto_answer_enabled", False),
+        )
+
+
+def test_it_policy_provider_applies_required_fields_priority_and_approval():
+    provider = FakeItPolicyProvider(
+        {
+            "it.vpn": {
+                "required_fields": ("vpn_account",),
+                "default_priority": "high",
+                "approval_required": True,
+            }
+        }
+    )
+    classifier = FixedClassifier(TicketCategory.IT, subcategory="vpn")
+    graph = build_helpdesk_intake_graph(
+        classifier=classifier,
+        checkpointer=MemorySaver(),
+        it_policy_provider=provider,
+    )
+    run_config = config()
+    run_config["configurable"]["tenant_id"] = "tenant-a"
+
+    first = invoke(graph, base_input(), run_config)
+    assert "__interrupt__" in first
+    assert first["missing_fields"] == ["vpn_account"]
+
+    resume_input = {
+        "action": "provide_information",
+        "actor_type": "customer",
+        "actor_id": "customer-1",
+        "payload": {"fields": {"vpn_account": "zhang.san"}},
+    }
+    result = invoke(graph, Command(resume=resume_input), run_config)
+    assert result["priority"] == "high"
+    assert "approval_required" in result["dispatch_reason_codes"]
+    assert ("tenant-a", "it.vpn") in provider.calls
+
+
+def test_it_policy_falls_back_to_parent_category():
+    provider = FakeItPolicyProvider({"it": {"default_priority": "urgent"}})
+    classifier = FixedClassifier(TicketCategory.IT, subcategory="vpn")
+    graph = build_helpdesk_intake_graph(
+        classifier=classifier,
+        checkpointer=MemorySaver(),
+        it_policy_provider=provider,
+    )
+    run_config = config()
+    run_config["configurable"]["tenant_id"] = "tenant-a"
+
+    result = invoke(graph, base_input(), run_config)
+    assert result["priority"] == "urgent"
+    assert ("tenant-a", "it.vpn") in provider.calls
+    assert ("tenant-a", "it") in provider.calls
+
+
+def test_it_policy_provider_absent_uses_defaults():
+    classifier = FixedClassifier(TicketCategory.IT, subcategory="vpn")
+    graph = build_helpdesk_intake_graph(classifier=classifier, checkpointer=MemorySaver())
+    run_config = config()
+    run_config["configurable"]["tenant_id"] = "tenant-a"
+
+    result = invoke(graph, base_input(), run_config)
+    assert result["priority"] == "normal"
+    assert "approval_required" not in result["dispatch_reason_codes"]

@@ -32,6 +32,7 @@ class HelpdeskIntakeState(TypedDict, total=False):
     subcategory: str
     classification_signals: list[str]
     classification_needs_review: bool
+    classification_confidence: float
     missing_fields: list[str]
     clarification_rounds: int
     clarification_exhausted: bool
@@ -39,6 +40,12 @@ class HelpdeskIntakeState(TypedDict, total=False):
     priority: str
     risk_level: str
     dispatch_reason_codes: list[str]
+    # ItPolicyProvider 应用结果（动态租户策略，非启动时预编译）
+    policy_category: str | None
+    policy_required_fields: list[str]
+    policy_priority: str | None
+    approval_required: bool
+    auto_answer_enabled: bool
     draft_answer: str | None
     citations: list[dict[str, Any]]
     auto_reply: bool
@@ -52,7 +59,14 @@ def build_helpdesk_intake_graph(
     policy: IntakePolicy | None = None,
     checkpointer=None,
     rag_service=None,
+    it_policy_provider=None,
 ):
+    """构建受理图。
+
+    it_policy_provider：async get(tenant_id, category) -> TenantItPolicy | None。
+    分类完成后按当前 tenant_id 动态查询（it.vpn -> 回退 it -> 默认），
+    不在启动时为每个租户预编译图。
+    """
     classifier = classifier or KeywordTicketClassifier()
     policy = policy or IntakePolicy()
 
@@ -69,11 +83,42 @@ def build_helpdesk_intake_graph(
             "subcategory": result.subcategory,
             "classification_signals": list(result.signals),
             "classification_needs_review": result.needs_human_review,
+            "classification_confidence": result.confidence,
+        }
+
+    async def apply_policy_node(state: HelpdeskIntakeState, config: RunnableConfig) -> dict[str, Any]:
+        tenant_id = str((config.get("configurable") or {}).get("tenant_id") or "")
+        if not tenant_id or it_policy_provider is None:
+            return {"policy_category": None, "policy_required_fields": [], "policy_priority": None, "approval_required": False, "auto_answer_enabled": False}
+        category = state.get("category", "other")
+        subcategory = state.get("subcategory") or "general"
+        candidates = [category] if subcategory == "general" else [f"{category}.{subcategory}", category]
+        found = None
+        for key in candidates:
+            found = await it_policy_provider.get(tenant_id, key)
+            if found is not None:
+                break
+        if found is None:
+            return {"policy_category": None, "policy_required_fields": [], "policy_priority": None, "approval_required": False, "auto_answer_enabled": False}
+        return {
+            "policy_category": found.category,
+            "policy_required_fields": list(found.required_fields),
+            "policy_priority": found.default_priority,
+            "approval_required": found.approval_required,
+            "auto_answer_enabled": found.auto_answer_enabled,
         }
 
     def completeness_node(state: HelpdeskIntakeState) -> dict[str, Any]:
         category = TicketCategory(state.get("category", TicketCategory.OTHER.value))
-        missing = missing_required_fields(state.get("fields") or {}, category, policy)
+        extra = frozenset(state.get("policy_required_fields") or [])
+        fields = state.get("fields") or {}
+        missing = tuple(
+            sorted(
+                name
+                for name in (policy.required_fields(category) | extra)
+                if fields.get(name) in (None, "", [], {})
+            )
+        )
         rounds = int(state.get("clarification_rounds", 0))
         exhausted = bool(missing) and rounds >= policy.clarification_limit(category)
         return {
@@ -121,11 +166,15 @@ def build_helpdesk_intake_graph(
             clarification_exhausted=bool(state.get("clarification_exhausted", False)),
             policy=policy,
         )
+        priority = state.get("policy_priority") or decision.priority
+        reason_codes = list(decision.reason_codes)
+        if state.get("approval_required"):
+            reason_codes.append("approval_required")
         return {
             "dispatch_team_id": decision.team_id,
-            "priority": decision.priority,
+            "priority": priority,
             "risk_level": decision.risk_level.value,
-            "dispatch_reason_codes": list(decision.reason_codes),
+            "dispatch_reason_codes": reason_codes,
             "next": "finish",
         }
 
@@ -154,13 +203,15 @@ def build_helpdesk_intake_graph(
     graph = StateGraph(HelpdeskIntakeState)
     graph.add_node("normalize", normalize_node)
     graph.add_node("classify", classify_node)
+    graph.add_node("apply_policy", apply_policy_node)
     graph.add_node("check_completeness", completeness_node)
     graph.add_node("clarify", clarify_node)
     graph.add_node("dispatch", dispatch_node)
     graph.add_node("compose_answer", compose_answer_node)
     graph.add_edge(START, "normalize")
     graph.add_edge("normalize", "classify")
-    graph.add_edge("classify", "check_completeness")
+    graph.add_edge("classify", "apply_policy")
+    graph.add_edge("apply_policy", "check_completeness")
     graph.add_conditional_edges(
         "check_completeness",
         route_after_completeness,

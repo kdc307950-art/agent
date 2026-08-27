@@ -132,6 +132,7 @@ class FakeOperations:
         self.surveys = []
         self.responses = []
         self.outbound = []
+        self.sla_calls = []
 
     async def append_outbound_message(self, **kwargs):
         self.outbound.append(kwargs)
@@ -141,6 +142,7 @@ class FakeOperations:
         return {"sla": None, "survey": None, "messages": [], "assignments": []}
 
     async def ensure_sla_for_ticket(self, **kwargs):
+        self.sla_calls.append(kwargs)
         return False
 
     async def pause_sla(self, tenant_id, ticket_id, *, reason):
@@ -414,6 +416,30 @@ def test_channel_endpoint_requires_scope_and_uses_atomic_repository_method(monke
         "classify",
         "queue",
     ]
+
+
+def test_intake_completes_to_queued_and_creates_sla_instance(monkeypatch):
+    module, tickets, _intake = load_app(monkeypatch)
+    tickets.items[("tenant-a", "ticket-1")] = SimpleNamespace(
+        ticket_id="ticket-1", requester_id="user-1", version=0, status=TicketStatus.NEW, channel="web", category=None
+    )
+    with TestClient(module.app) as client:
+        response = client.post(
+            "/tickets/ticket-1/intake",
+            headers=headers("ticket:customer"),
+            json={
+                "operation_id": "op-sla-create",
+                "text": "VPN cannot connect",
+                "fields": {"title": "VPN", "description": "cannot connect"},
+                "expected_version": 0,
+            },
+        )
+    assert response.status_code == 200
+    assert response.json()["ticket"]["status"] == "queued"
+    assert tickets.operations.sla_calls
+    call = tickets.operations.sla_calls[0]
+    assert call["tenant_id"] == "tenant-a"
+    assert call["ticket_id"] == "ticket-1"
 
 
 def test_pending_interrupt_endpoint_rehydrates_checkpoint_after_refresh(monkeypatch):

@@ -181,7 +181,11 @@ async def runtime_context(
         )
         yield AgentRuntime(
             graph=graph,
-            intake_graph=build_helpdesk_intake_graph(checkpointer=checkpointer, rag_service=agentic_rag),
+            intake_graph=build_helpdesk_intake_graph(
+                checkpointer=checkpointer,
+                rag_service=agentic_rag,
+                it_policy_provider=ItPolicyRepository(audit.pool),
+            ),
             checkpointer=checkpointer,
             store=store,
             memory=LongTermMemoryRepository(store),

@@ -379,6 +379,13 @@ async def _persist_channel_event(runtime, event: NormalizedChannelEvent, *, acto
         scopes={"ticket:system"},
         operation_id=operation_id,
     )
+    if ticket.status in {TicketStatus.QUEUED, TicketStatus.ASSIGNED}:
+        await runtime.ticket_operations.ensure_sla_for_ticket(
+            tenant_id=event.tenant_id,
+            ticket_id=ticket.ticket_id,
+            channel=event.channel,
+            category=getattr(ticket, "category", None),
+        )
     snapshot = await runtime.intake_graph.aget_state(config)
     return {"created": True, "ticket_id": ticket.ticket_id, "ticket": ticket, "intake": _serialize_intake_result(ticket, result, snapshot)}
 
@@ -555,6 +562,13 @@ async def start_ticket_intake(
             commands = await _apply_operational_routing(runtime, commands, result, tenant_id=principal.tenant_id, channel=getattr(ticket, "channel", "web"))
             await runtime.tickets.record_workflow_intent(tenant_id=principal.tenant_id, ticket_id=ticket_id, operation_id=payload.operation_id, intent={"commands": _serialize_commands(commands), "result": {key: value for key, value in result.items() if key != "__interrupt__"}})
         ticket = await runtime.tickets.transition_many(principal.tenant_id, commands, scopes={"ticket:system"}, operation_id=payload.operation_id)
+        if ticket.status in {TicketStatus.QUEUED, TicketStatus.ASSIGNED}:
+            await runtime.ticket_operations.ensure_sla_for_ticket(
+                tenant_id=principal.tenant_id,
+                ticket_id=ticket.ticket_id,
+                channel=getattr(ticket, "channel", "web"),
+                category=getattr(ticket, "category", None),
+            )
         snapshot = await runtime.intake_graph.aget_state(_intake_config(principal.tenant_id, ticket_id))
         return _serialize_intake_result(ticket, result, snapshot)
     except Exception as exc:
@@ -622,6 +636,13 @@ async def resume_ticket_intake(
             scopes=principal.scopes | {"ticket:system"},
             operation_id=payload.operation_id,
         )
+        if ticket.status in {TicketStatus.QUEUED, TicketStatus.ASSIGNED}:
+            await runtime.ticket_operations.ensure_sla_for_ticket(
+                tenant_id=principal.tenant_id,
+                ticket_id=ticket.ticket_id,
+                channel=getattr(ticket, "channel", "web"),
+                category=getattr(ticket, "category", None),
+            )
         snapshot = await runtime.intake_graph.aget_state(config)
         return _serialize_intake_result(ticket, result, snapshot)
     except (ValueError, TicketPermissionDenied, TicketVersionConflict, InvalidTicketTransition) as exc:
