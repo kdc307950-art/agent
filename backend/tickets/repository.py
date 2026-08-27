@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Iterable
 
+import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
@@ -26,6 +27,10 @@ class TicketNotFound(LookupError):
 
 
 class TicketCapacityExceeded(RuntimeError):
+    pass
+
+
+class AssetBindingError(RuntimeError):
     pass
 
 
@@ -134,6 +139,41 @@ class TicketRepository:
                 )
                 row = await cursor.fetchone()
         return None if row is None else TicketRecord.model_validate(row)
+
+    async def bind_asset(self, tenant_id: str, ticket_id: str, asset_id: str) -> TicketRecord:
+        async with self.pool.connection() as connection:
+            async with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
+                try:
+                    await cursor.execute(
+                        """
+                        UPDATE tickets SET asset_id = %s, updated_at = now()
+                        WHERE tenant_id = %s AND ticket_id = %s
+                        RETURNING *
+                        """,
+                        (asset_id, tenant_id, ticket_id),
+                    )
+                except psycopg.errors.ForeignKeyViolation as exc:
+                    raise AssetBindingError("资产不存在或不属于当前租户") from exc
+                row = await cursor.fetchone()
+        if row is None:
+            raise TicketNotFound("工单不存在")
+        return TicketRecord.model_validate(row)
+
+    async def unbind_asset(self, tenant_id: str, ticket_id: str) -> TicketRecord:
+        async with self.pool.connection() as connection:
+            async with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE tickets SET asset_id = NULL, updated_at = now()
+                    WHERE tenant_id = %s AND ticket_id = %s
+                    RETURNING *
+                    """,
+                    (tenant_id, ticket_id),
+                )
+                row = await cursor.fetchone()
+        if row is None:
+            raise TicketNotFound("工单不存在")
+        return TicketRecord.model_validate(row)
 
     async def list_tickets(
         self,

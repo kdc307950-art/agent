@@ -4,6 +4,7 @@ from .models import CreateTicket, InboundEventResult, TicketRecord, TicketStatus
 from .operations import OperationsConflict, TicketOperationsRepository
 from .policies import ItPolicyNotFound, ItPolicyRepository, TenantItPolicy, UpsertItPolicy
 from .repository import (
+    AssetBindingError,
     InboundEventConflict,
     TicketAlreadyExists,
     TicketCapacityExceeded,
@@ -17,6 +18,7 @@ from .routing import RoutingDecision, RoutingRepository
 from .sla import BusinessCalendar
 
 __all__ = [
+    "AssetBindingError",
     "BusinessCalendar",
     "CreateTicket",
     "InboundEventConflict",

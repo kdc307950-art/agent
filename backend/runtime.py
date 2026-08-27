@@ -20,6 +20,7 @@ from src.my_agent.agent import build_agent
 from src.my_agent.helpdesk import build_helpdesk_intake_graph
 from src.my_agent.workflow import build_workflow_from_json
 
+from .assets import AssetRepository
 from .audit import AuditRepository, audit_context
 from .knowledge import (
     AgenticRAGPolicy,
@@ -37,7 +38,7 @@ from .metrics import RuntimeMetrics
 from .repositories import LongTermMemoryRepository
 from .schema import check_schema_ready, ensure_schema_version
 from .settings import Settings
-from .tickets import RoutingRepository, TicketOperationsRepository, TicketRepository
+from .tickets import ItPolicyRepository, RoutingRepository, TicketOperationsRepository, TicketRepository
 from .tool_governance import ToolGovernance
 from .workflow_loader import load_workflow_spec
 
@@ -53,6 +54,8 @@ class AgentRuntime:
     tickets: TicketRepository
     ticket_operations: TicketOperationsRepository
     routing: RoutingRepository
+    assets: AssetRepository
+    it_policies: ItPolicyRepository
     knowledge: KnowledgeRepository
     agentic_rag: AgenticRAGService | None
     tool_governance: ToolGovernance
@@ -186,6 +189,8 @@ async def runtime_context(
             tickets=TicketRepository(audit.pool),
             ticket_operations=TicketOperationsRepository(audit.pool),
             routing=RoutingRepository(audit.pool),
+            assets=AssetRepository(audit.pool),
+            it_policies=ItPolicyRepository(audit.pool),
             knowledge=knowledge,
             agentic_rag=agentic_rag,
             tool_governance=tool_governance,

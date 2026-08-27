@@ -44,6 +44,16 @@ class FakeTickets:
     async def get(self, tenant_id, ticket_id):
         return self.items.get((tenant_id, ticket_id))
 
+    async def bind_asset(self, tenant_id, ticket_id, asset_id):
+        record = self.items[(tenant_id, ticket_id)]
+        record.asset_id = asset_id
+        return record
+
+    async def unbind_asset(self, tenant_id, ticket_id):
+        record = self.items[(tenant_id, ticket_id)]
+        record.asset_id = None
+        return record
+
     async def list_tickets(self, tenant_id, **kwargs):
         self.list_calls.append((tenant_id, kwargs))
         return list(self.items.values())[: kwargs["limit"]]
@@ -157,6 +167,84 @@ class EmptyGraph:
             yield {}
 
 
+class FakeAssets:
+    def __init__(self):
+        self.items = {}
+        self.created = []
+        self.updated = []
+        self.deleted = []
+
+    async def list_assets(self, tenant_id, **kwargs):
+        return [item for (tid, _), item in self.items.items() if tid == tenant_id]
+
+    async def create(self, tenant_id, request):
+        self.created.append((tenant_id, request))
+        record = SimpleNamespace(
+            tenant_id=tenant_id,
+            asset_id=request.asset_id,
+            asset_no=request.asset_no,
+            asset_type=request.asset_type,
+            name=request.name,
+            hostname=request.hostname,
+            ip_address=request.ip_address,
+            status=request.status.value,
+            is_deleted=False,
+        )
+        self.items[(tenant_id, request.asset_id)] = record
+        return record
+
+    async def update(self, tenant_id, asset_id, changes):
+        record = self.items[(tenant_id, asset_id)]
+        self.updated.append((tenant_id, asset_id, changes))
+        for field, value in changes.model_dump(exclude_unset=True).items():
+            if field == "status" and value is not None:
+                value = value.value
+            setattr(record, field, value)
+        return record
+
+    async def soft_delete(self, tenant_id, asset_id):
+        record = self.items.get((tenant_id, asset_id))
+        if record is None:
+            return False
+        record.is_deleted = True
+        self.deleted.append((tenant_id, asset_id))
+        return True
+
+
+class FakeItPolicies:
+    def __init__(self):
+        self.items = {}
+
+    async def get(self, tenant_id, category):
+        return self.items.get((tenant_id, category))
+
+    async def upsert(self, tenant_id, policy):
+        record = SimpleNamespace(
+            tenant_id=tenant_id,
+            category=policy.category,
+            policy_id=policy.policy_id,
+            required_fields=policy.required_fields,
+            default_priority=policy.default_priority,
+            auto_answer_enabled=policy.auto_answer_enabled,
+            approval_required=policy.approval_required,
+            active=policy.active,
+        )
+        self.items[(tenant_id, policy.category)] = record
+        return record
+
+
+class FakeKnowledge:
+    def __init__(self):
+        self.put = []
+        self.published = []
+
+    async def put_document(self, tenant_id, document, chunks):
+        self.put.append((tenant_id, document, chunks))
+
+    async def publish_document_version(self, tenant_id, document_id, version):
+        self.published.append((tenant_id, document_id, version))
+
+
 def load_app(monkeypatch, *, dingtalk=False):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
     monkeypatch.setenv("TENANT_TOKEN_SECRET", SECRET)
@@ -179,6 +267,9 @@ def load_app(monkeypatch, *, dingtalk=False):
         tickets=tickets,
         intake_graph=intake,
         ticket_operations=operations,
+        assets=FakeAssets(),
+        it_policies=FakeItPolicies(),
+        knowledge=FakeKnowledge(),
     )
 
     @asynccontextmanager
@@ -657,3 +748,108 @@ def test_dingtalk_webhook_rejects_bad_signature_and_disabled_configuration(monke
             json=body,
         )
     assert disabled.status_code == 503
+
+
+# ========== 第二阶段：资产 / IT 策略 / 工单资产 / 知识文档管理接口 ==========
+
+def test_assets_api_enforces_scopes_and_supports_crud(monkeypatch):
+    module, _tickets, _intake = load_app(monkeypatch)
+    with TestClient(module.app) as client:
+        forbidden = client.post(
+            "/assets",
+            headers=headers("ticket:customer"),
+            json={"asset_id": "asset-1", "asset_no": "A-001", "asset_type": "laptop"},
+        )
+        created = client.post(
+            "/assets",
+            headers=headers("ticket:agent", "asset:read", "asset:write", "it-policy:read", "it-policy:write", "knowledge:write"),
+            json={"asset_id": "asset-1", "asset_no": "A-001", "asset_type": "laptop", "hostname": "host-a"},
+        )
+        listed = client.get("/assets", headers=headers("asset:read"))
+        cleared = client.patch(
+            "/assets/asset-1",
+            headers=headers("asset:read", "asset:write"),
+            json={"hostname": None},
+        )
+        deleted = client.delete("/assets/asset-1", headers=headers("asset:read", "asset:write"))
+
+    assert forbidden.status_code == 403
+    assert created.status_code == 201
+    assert created.json()["hostname"] == "host-a"
+    assert listed.json()["items"][0]["asset_id"] == "asset-1"
+    assert cleared.json()["hostname"] is None
+    assert deleted.json()["deleted"] is True
+
+
+def test_it_policy_admin_api_enforces_scopes_and_upserts(monkeypatch):
+    module, _tickets, _intake = load_app(monkeypatch)
+    admin_headers = headers("ticket:agent", "asset:read", "asset:write", "it-policy:read", "it-policy:write", "knowledge:write")
+    with TestClient(module.app) as client:
+        forbidden = client.get("/admin/it/policies/it.vpn", headers=headers("ticket:customer"))
+        missing = client.get("/admin/it/policies/it.vpn", headers=headers("it-policy:read"))
+        upserted = client.put(
+            "/admin/it/policies/it.vpn",
+            headers=admin_headers,
+            json={"category": "it.vpn", "policy_id": "sla-vpn", "default_priority": "high"},
+        )
+        fetched = client.get("/admin/it/policies/it.vpn", headers=headers("it-policy:read"))
+
+    assert forbidden.status_code == 403
+    assert missing.status_code == 404
+    assert upserted.status_code == 200
+    assert upserted.json()["policy_id"] == "sla-vpn"
+    assert fetched.json()["default_priority"] == "high"
+
+
+def test_ticket_asset_bind_and_unbind_require_agent_scope(monkeypatch):
+    module, tickets, _intake = load_app(monkeypatch)
+    tickets.items[("tenant-a", "ticket-1")] = SimpleNamespace(
+        ticket_id="ticket-1", requester_id="user-1", version=1, status=TicketStatus.IN_PROGRESS, asset_id=None
+    )
+    with TestClient(module.app) as client:
+        forbidden = client.post(
+            "/tickets/ticket-1/asset",
+            headers=headers("ticket:customer"),
+            json={"asset_id": "asset-1"},
+        )
+        bound = client.post(
+            "/tickets/ticket-1/asset",
+            headers=headers("ticket:agent"),
+            json={"asset_id": "asset-1"},
+        )
+        unbound = client.delete("/tickets/ticket-1/asset", headers=headers("ticket:agent"))
+
+    assert forbidden.status_code == 403
+    assert bound.json()["asset_id"] == "asset-1"
+    assert unbound.json()["asset_id"] is None
+
+
+def test_knowledge_documents_api_enforces_write_scope_and_publishes(monkeypatch):
+    module, _tickets, _intake = load_app(monkeypatch)
+    admin_headers = headers("ticket:agent", "asset:read", "asset:write", "it-policy:read", "it-policy:write", "knowledge:write")
+    with TestClient(module.app) as client:
+        forbidden = client.post(
+            "/knowledge/documents",
+            headers=headers("ticket:agent"),
+            json={
+                "document": {"document_id": "doc-1", "version": 1, "title": "VPN", "status": "draft"},
+                "chunks": [{"chunk_id": "c1", "ordinal": 0, "content": "vpn setup"}],
+            },
+        )
+        created = client.post(
+            "/knowledge/documents",
+            headers=admin_headers,
+            json={
+                "document": {"document_id": "doc-1", "version": 1, "title": "VPN", "status": "draft"},
+                "chunks": [{"chunk_id": "c1", "ordinal": 0, "content": "vpn setup"}],
+            },
+        )
+        published = client.post(
+            "/knowledge/documents/doc-1/publish",
+            headers=admin_headers,
+            json={"version": 1},
+        )
+
+    assert forbidden.status_code == 403
+    assert created.status_code == 201
+    assert published.json()["status"] == "published"

@@ -22,7 +22,7 @@ def main() -> None:
     parser.add_argument("--ttl", type=int, default=3600)
     parser.add_argument(
         "--role",
-        choices=("chat", "helpdesk-agent", "helpdesk-customer", "helpdesk-channel", "helpdesk-approver"),
+        choices=("chat", "helpdesk-agent", "helpdesk-customer", "helpdesk-channel", "helpdesk-approver", "helpdesk-it-admin"),
         default="helpdesk-agent",
         help="令牌角色及对应 scope 集合",
     )

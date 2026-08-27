@@ -34,17 +34,27 @@ from .channel_adapters import (
 )
 from .security import Principal, enforce_rate_limit, rate_limit_dependency
 from .tickets import (
+    AssetBindingError,
     CreateTicket,
     InboundEventConflict,
+    ItPolicyNotFound,
     TicketAlreadyExists,
     TicketCapacityExceeded,
     TicketNotFound,
     TicketVersionConflict,
+    UpsertItPolicy,
 )
 
 
 router = APIRouter(prefix="/tickets", tags=["tickets"])
 channel_router = APIRouter(prefix="/integrations", tags=["integrations"])
+admin_router = APIRouter(prefix="/admin/it", tags=["admin-it"])
+
+
+class BindAssetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
 
 
 class CreateTicketRequest(BaseModel):
@@ -823,3 +833,69 @@ async def receive_dingtalk_webhook(
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except Exception as exc:
         raise _map_domain_error(exc) from exc
+
+
+# ========== IT 策略管理（/admin/it/policies/{category}） ==========
+
+@admin_router.get("/policies/{category}")
+async def get_it_policy(
+    category: str,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    _require_scope(principal, "it-policy:read")
+    runtime = _runtime(request)
+    policy = await runtime.it_policies.get(principal.tenant_id, category)
+    if policy is None:
+        raise HTTPException(status_code=404, detail="策略不存在")
+    return policy
+
+
+@admin_router.put("/policies/{category}")
+async def upsert_it_policy(
+    category: str,
+    payload: UpsertItPolicy,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    _require_scope(principal, "it-policy:write")
+    runtime = _runtime(request)
+    if payload.category != category:
+        raise HTTPException(status_code=409, detail="路径与请求体中的 category 不一致")
+    try:
+        return await runtime.it_policies.upsert(principal.tenant_id, payload)
+    except ItPolicyNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ========== 工单资产绑定（POST/DELETE /tickets/{ticket_id}/asset） ==========
+
+@router.post("/{ticket_id}/asset")
+async def bind_ticket_asset(
+    ticket_id: str,
+    payload: BindAssetRequest,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    _require_scope(principal, "ticket:agent")
+    runtime = _runtime(request)
+    try:
+        return await runtime.tickets.bind_asset(principal.tenant_id, ticket_id, payload.asset_id)
+    except AssetBindingError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TicketNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.delete("/{ticket_id}/asset")
+async def unbind_ticket_asset(
+    ticket_id: str,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    _require_scope(principal, "ticket:agent")
+    runtime = _runtime(request)
+    try:
+        return await runtime.tickets.unbind_asset(principal.tenant_id, ticket_id)
+    except TicketNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

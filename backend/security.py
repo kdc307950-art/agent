@@ -201,10 +201,26 @@ def _b64url_decode(value: str) -> bytes:
 
 DEV_SCOPE_PROFILES: dict[str, tuple[str, ...]] = {
     "chat": ("chat:read", "chat:write", "chat:approve"),
-    "helpdesk-agent": ("chat:read", "chat:write", "ticket:customer", "ticket:agent"),
+    "helpdesk-agent": (
+        "chat:read",
+        "chat:write",
+        "ticket:customer",
+        "ticket:agent",
+        # 客服可查看资产与 IT 策略，读写权限交给 IT 管理员角色
+        "asset:read",
+        "it-policy:read",
+    ),
     "helpdesk-customer": ("ticket:customer",),
     "helpdesk-channel": ("ticket:channel",),
     "helpdesk-approver": ("ticket:agent", "ticket:approve"),
+    "helpdesk-it-admin": (
+        "ticket:agent",
+        "asset:read",
+        "asset:write",
+        "it-policy:read",
+        "it-policy:write",
+        "knowledge:write",
+    ),
 }
 
 
