@@ -249,6 +249,12 @@ uv run python -m backend.migrate_sqlite
 docker build -t langgraph-agent:local .
 ```
 
+构建时 uv 二进制默认从 `ghcr.io/astral-sh/uv:0.11` 获取；ghcr 网络受限时用镜像站覆盖：
+
+```bash
+docker build --build-arg UV_IMAGE=ghcr.nju.edu.cn/astral-sh/uv:0.11 -t langgraph-agent:local .
+```
+
 公网部署参考 `infra/k8s/agent-deployment.yaml` 与 `infra/gateway/nginx.conf`：TLS/WAF/JWT 粗校验应放在云 API Gateway 或 WAF，应用仍必须做完整 OIDC、scope、tenant 和撤销校验。Kubernetes Secret 只是接口示例，生产应由云 secrets manager 或 External Secrets 控制器注入，不要把真实密钥写入 YAML。YAML 里的 `image: ghcr.io/your-org/langgraph-agent:REPLACE` 需要替换成实际镜像仓库地址。
 
 ### Readiness 与恢复演练

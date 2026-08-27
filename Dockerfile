@@ -6,10 +6,14 @@
 # 容器启动不再依赖包管理器。infra/k8s 的 CronJob command 同步改成 python -m。
 
 # ─── Stage 1: 依赖 ───────────────────────────────────────────────────────────
+# uv 二进制源默认走 ghcr.io；ghcr 网络受限时可覆盖：
+#   docker build --build-arg UV_IMAGE=ghcr.nju.edu.cn/astral-sh/uv:0.11
+# COPY --from 不支持变量，所以先用 ARG 定义一个独立的 uv 源 stage。
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11
+FROM ${UV_IMAGE} AS uv-source
 FROM python:3.12-slim AS builder
 
-# 从官方镜像取 uv 二进制，避免在 builder 里额外装 curl/pip
-COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
+COPY --from=uv-source /uv /usr/local/bin/uv
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
