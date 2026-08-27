@@ -66,6 +66,7 @@ class CreateTicketRequest(BaseModel):
     title: str = Field(min_length=1, max_length=512)
     description: str = Field(default="", max_length=8_000)
     priority: Literal["low", "normal", "high", "urgent"] = "normal"
+    asset_id: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -422,6 +423,7 @@ async def create_ticket(
                 priority=payload.priority,
                 actor_type=ActorType.CUSTOMER,
                 actor_id=principal.user_id,
+                asset_id=payload.asset_id,
                 metadata=payload.metadata,
             ),
         )

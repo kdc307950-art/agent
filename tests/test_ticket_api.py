@@ -239,12 +239,17 @@ class FakeKnowledge:
     def __init__(self):
         self.put = []
         self.published = []
+        self.retired = []
 
     async def put_document(self, tenant_id, document, chunks):
         self.put.append((tenant_id, document, chunks))
 
     async def publish_document_version(self, tenant_id, document_id, version):
         self.published.append((tenant_id, document_id, version))
+
+    async def retire_document(self, tenant_id, document_id):
+        self.retired.append((tenant_id, document_id))
+        return True
 
 
 def load_app(monkeypatch, *, dingtalk=False):
@@ -875,7 +880,12 @@ def test_knowledge_documents_api_enforces_write_scope_and_publishes(monkeypatch)
             headers=admin_headers,
             json={"version": 1},
         )
+        retired = client.post(
+            "/knowledge/documents/doc-1/retire",
+            headers=admin_headers,
+        )
 
     assert forbidden.status_code == 403
     assert created.status_code == 201
     assert published.json()["status"] == "published"
+    assert retired.json()["status"] == "retired"

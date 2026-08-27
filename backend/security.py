@@ -210,7 +210,7 @@ DEV_SCOPE_PROFILES: dict[str, tuple[str, ...]] = {
         "asset:read",
         "it-policy:read",
     ),
-    "helpdesk-customer": ("ticket:customer",),
+    "helpdesk-customer": ("ticket:customer", "asset:read"),
     "helpdesk-channel": ("ticket:channel",),
     "helpdesk-approver": ("ticket:agent", "ticket:approve"),
     "helpdesk-it-admin": (

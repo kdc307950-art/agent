@@ -45,9 +45,12 @@ async def list_assets(
 ):
     _require_scope(principal, "asset:read")
     runtime = _runtime(request)
+    # 客户（无 ticket:agent）只能查看本人名下资产，避免跨用户资产泄露。
+    is_agent = "ticket:agent" in principal.scopes
+    resolved_owner = owner_user_id if is_agent else principal.user_id
     items = await runtime.assets.list_assets(
         principal.tenant_id,
-        owner_user_id=owner_user_id,
+        owner_user_id=resolved_owner,
         department=department,
         asset_type=asset_type,
         status=status,

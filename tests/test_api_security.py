@@ -9,7 +9,7 @@ from backend.security import make_tenant_token, scopes_for_dev_role
 
 def test_dev_scope_profiles_support_helpdesk_roles():
     assert "ticket:agent" in scopes_for_dev_role("helpdesk-agent")
-    assert scopes_for_dev_role("helpdesk-customer") == ("ticket:customer",)
+    assert scopes_for_dev_role("helpdesk-customer") == ("ticket:customer", "asset:read")
     assert scopes_for_dev_role("helpdesk-channel") == ("ticket:channel",)
     assert "ticket:approve" in scopes_for_dev_role("helpdesk-approver")
     agent_scopes = scopes_for_dev_role("helpdesk-agent")

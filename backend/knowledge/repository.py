@@ -121,6 +121,18 @@ class KnowledgeRepository:
                 if cursor.rowcount != 1:
                     raise ValueError("只能发布 draft 知识文档版本")
 
+    async def retire_document(self, tenant_id: str, document_id: str) -> bool:
+        async with self.pool.connection() as connection:
+            async with connection.transaction(), connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE knowledge_documents SET status = 'retired', updated_at = now()
+                    WHERE tenant_id = %s AND document_id = %s AND status = 'published'
+                    """,
+                    (tenant_id, document_id),
+                )
+                return cursor.rowcount > 0
+
     async def lexical_search(
         self,
         principal: RetrievalPrincipal,

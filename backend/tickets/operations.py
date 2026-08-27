@@ -229,7 +229,22 @@ class TicketOperationsRepository:
                     (tenant_id, ticket_id),
                 )
                 assignments = list(await cursor.fetchall())
-        return {"sla": sla, "survey": survey, "messages": messages, "assignments": assignments}
+                # RAG 建议引用：从最近一次已提交工作流意图中取 compose_answer 的 citations。
+                await cursor.execute(
+                    """
+                    SELECT intent FROM ticket_workflow_runs
+                    WHERE tenant_id = %s AND ticket_id = %s AND status = 'committed'
+                    ORDER BY committed_at DESC NULLS LAST, created_at DESC
+                    LIMIT 1
+                    """,
+                    (tenant_id, ticket_id),
+                )
+                run_row = await cursor.fetchone()
+        citations: list[dict[str, Any]] = []
+        if run_row and isinstance(run_row["intent"], dict):
+            result = run_row["intent"].get("result") or {}
+            citations = list(result.get("citations") or [])
+        return {"sla": sla, "survey": survey, "messages": messages, "assignments": assignments, "citations": citations}
 
     async def ensure_sla_for_ticket(
         self,

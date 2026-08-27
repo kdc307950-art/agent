@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertCircle,
+  BookOpen,
   Bot,
+  Boxes,
   CheckCircle2,
   ChevronLeft,
   CircleUserRound,
@@ -15,7 +17,7 @@ import {
   RefreshCw,
   Search,
   Send,
-  Settings,
+  SlidersHorizontal,
   Star,
   UserCheck,
   X,
@@ -79,6 +81,8 @@ function Sidebar({ view, setView, mobileOpen, onClose }) {
     ['mine', UserCheck, '我的处理'],
     ['resolved', CheckCircle2, '已解决'],
     ['assistant', Bot, '智能助手'],
+    ['assets', Boxes, '资产'],
+    ['knowledge', BookOpen, '知识库'],
   ]
   return (
     <aside className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`}>
@@ -91,7 +95,7 @@ function Sidebar({ view, setView, mobileOpen, onClose }) {
         ))}
       </nav>
       <div className="sidebar-bottom">
-        <button><Settings size={18} /><span>设置</span></button>
+        <button className={view === 'it-policies' ? 'nav-active' : ''} onClick={() => { setView('it-policies'); onClose() }}><SlidersHorizontal size={18} /><span>IT 策略设置</span></button>
         <div className="operator"><CircleUserRound size={24} /><div><strong>客服坐席</strong><span>在线</span></div></div>
       </div>
     </aside>
@@ -156,26 +160,123 @@ function TicketDetail({ ticket, overview, busy, pendingClarification, onTransiti
         </section>
         <section className="detail-section"><h3>问题描述</h3><p className="description">{ticket.description || '暂无问题描述'}</p></section>
         <section className="detail-section"><h3>请求人</h3><div className="requester"><CircleUserRound /><div><strong>{ticket.requester_id}</strong><span>{ticket.channel} · 创建于 {formatTime(ticket.created_at)}</span></div></div></section>
-        {overview?.sla && <section className="detail-section"><h3>SLA</h3><div className="ticket-meta"><span>首次响应 {formatTime(overview.sla.first_response_due_at)}</span><span>解决时限 {formatTime(overview.sla.resolution_due_at)}</span><span>{overview.sla.paused_at ? '已暂停' : '计时中'}</span></div></section>}{overview?.survey && <section className="detail-section"><h3>回访结果</h3><p className="description">{overview.survey.status === 'responded' ? `${overview.survey.score} 分 · ${overview.survey.feedback || '无文字反馈'}` : statusLabel[overview.survey.status] || overview.survey.status}</p></section>}{overview?.messages?.length > 0 && <section className="detail-section"><h3>消息流</h3>{overview.messages.map((message) => <div className="requester" key={message.message_id}><MessageSquareText /><div><strong>{message.actor_id}</strong><span>{message.content}</span></div></div>)}</section>}<section className="detail-section"><h3>处理记录</h3><div className="timeline"><div className="timeline-item"><span /><div><strong>工单已创建</strong><p>{ticket.channel} 渠道进入服务台</p><time>{formatTime(ticket.created_at)}</time></div></div>{ticket.resolved_at && <div className="timeline-item"><span /><div><strong>问题已解决</strong><p>等待关闭或回访</p><time>{formatTime(ticket.resolved_at)}</time></div></div>}</div></section>
+        {ticket.asset_id && <section className="detail-section"><h3>关联资产</h3><div className="requester"><Boxes /><div><strong>{ticket.asset_id}</strong><span>资产已绑定到本工单</span></div></div></section>}
+        {overview?.sla && <section className="detail-section"><h3>SLA</h3><div className="ticket-meta"><span>首次响应 {formatTime(overview.sla.first_response_due_at)}</span><span>解决时限 {formatTime(overview.sla.resolution_due_at)}</span><span>{overview.sla.paused_at ? '已暂停' : '计时中'}</span><span>{overview.sla.first_responded_at ? '已首次响应' : '尚未首响'}</span></div></section>}
+        {overview?.citations?.length > 0 && <section className="detail-section"><h3>知识引用</h3>{overview.citations.map((citation, index) => <div className="requester" key={`${citation.document_id}-${index}`}><BookOpen /><div><strong>{citation.title || citation.document_id}</strong><span>{citation.document_id} v{citation.document_version} · {citation.chunk_id}</span></div></div>)}</section>}{overview?.survey && <section className="detail-section"><h3>回访结果</h3><p className="description">{overview.survey.status === 'responded' ? `${overview.survey.score} 分 · ${overview.survey.feedback || '无文字反馈'}` : statusLabel[overview.survey.status] || overview.survey.status}</p></section>}{overview?.messages?.length > 0 && <section className="detail-section"><h3>消息流</h3>{overview.messages.map((message) => <div className="requester" key={message.message_id}><MessageSquareText /><div><strong>{message.actor_id}</strong><span>{message.content}</span></div></div>)}</section>}<section className="detail-section"><h3>处理记录</h3><div className="timeline"><div className="timeline-item"><span /><div><strong>工单已创建</strong><p>{ticket.channel} 渠道进入服务台</p><time>{formatTime(ticket.created_at)}</time></div></div>{ticket.resolved_at && <div className="timeline-item"><span /><div><strong>问题已解决</strong><p>等待关闭或回访</p><time>{formatTime(ticket.resolved_at)}</time></div></div>}</div></section>
       </div>
     </section>
   )
 }
 
 function CreateTicketDialog({ open, onClose, onCreated }) {
-  const [form, setForm] = useState({ title: '', description: '', priority: 'normal' })
+  const [form, setForm] = useState({ title: '', description: '', priority: 'normal', asset_id: '' })
+  const [assets, setAssets] = useState([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  useEffect(() => { if (!open) return; api('/assets').then((data) => setAssets(data.items || [])).catch(() => setAssets([])) }, [open])
   if (!open) return null
   const submit = async (event) => {
     event.preventDefault(); setBusy(true); setError('')
     try {
-      const ticket = await api('/tickets', { method: 'POST', body: JSON.stringify({ ...form, channel: 'web' }) })
+      const ticket = await api('/tickets', { method: 'POST', body: JSON.stringify({ ...form, channel: 'web', asset_id: form.asset_id || null }) })
       const intake = await api(`/tickets/${ticket.ticket_id}/intake`, { method: 'POST', body: JSON.stringify({ operation_id: crypto.randomUUID(), text: `${form.title}\n${form.description}`, fields: { title: form.title, description: form.description }, expected_version: ticket.version }) })
-      setForm({ title: '', description: '', priority: 'normal' }); onCreated(intake); onClose()
+      setForm({ title: '', description: '', priority: 'normal', asset_id: '' }); onCreated(intake); onClose()
     } catch (err) { setError(err.message) } finally { setBusy(false) }
   }
-  return <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><form className="modal" onSubmit={submit}><header><div><span className="eyebrow">新建工单</span><h2>提交服务请求</h2></div><button type="button" className="icon-button" onClick={onClose} aria-label="关闭"><X /></button></header><label>标题<input autoFocus required maxLength="512" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></label><label>问题描述<textarea required rows="5" maxLength="8000" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label><label>优先级<select value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}><option value="low">低</option><option value="normal">普通</option><option value="high">高</option><option value="urgent">紧急</option></select></label>{error && <div className="form-error"><AlertCircle size={16} />{error}</div>}<footer><button type="button" className="secondary-action" onClick={onClose}>取消</button><button className="primary-action" disabled={busy}>{busy ? '提交中…' : '提交工单'}</button></footer></form></div>
+  return <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><form className="modal" onSubmit={submit}><header><div><span className="eyebrow">新建工单</span><h2>提交服务请求</h2></div><button type="button" className="icon-button" onClick={onClose} aria-label="关闭"><X /></button></header><label>标题<input autoFocus required maxLength="512" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></label><label>问题描述<textarea required rows="5" maxLength="8000" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label><label>优先级<select value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}><option value="low">低</option><option value="normal">普通</option><option value="high">高</option><option value="urgent">紧急</option></select></label><label>关联资产<select value={form.asset_id} onChange={(e) => setForm({ ...form, asset_id: e.target.value })}><option value="">不关联</option>{assets.map((asset) => <option key={asset.asset_id} value={asset.asset_id}>{asset.name || asset.asset_id}（{asset.asset_no}）</option>)}</select></label>{error && <div className="form-error"><AlertCircle size={16} />{error}</div>}<footer><button type="button" className="secondary-action" onClick={onClose}>取消</button><button className="primary-action" disabled={busy}>{busy ? '提交中…' : '提交工单'}</button></footer></form></div>
+}
+
+function ItPoliciesView() {
+  const [form, setForm] = useState({ category: 'it.vpn', policy_id: '', required_fields: '', default_priority: 'normal', approval_required: false, auto_answer_enabled: false })
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [error, setError] = useState('')
+  const load = async () => {
+    if (!form.category.trim()) return
+    setBusy(true); setError(''); setNotice('')
+    try {
+      const item = await api(`/admin/it/policies/${encodeURIComponent(form.category)}`)
+      setForm({ ...form, policy_id: item.policy_id || '', required_fields: (item.required_fields || []).join(','), default_priority: item.default_priority || 'normal', approval_required: !!item.approval_required, auto_answer_enabled: !!item.auto_answer_enabled })
+      setNotice('已读取当前策略')
+    } catch (err) { setError(err.message) } finally { setBusy(false) }
+  }
+  const save = async (event) => {
+    event.preventDefault(); setBusy(true); setError(''); setNotice('')
+    try {
+      await api(`/admin/it/policies/${encodeURIComponent(form.category)}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          category: form.category,
+          policy_id: form.policy_id,
+          required_fields: form.required_fields.split(',').map((s) => s.trim()).filter(Boolean),
+          default_priority: form.default_priority,
+          approval_required: form.approval_required,
+          auto_answer_enabled: form.auto_answer_enabled,
+        }),
+      })
+      setNotice('策略已保存（policy_id 必须引用已存在的 SLA 策略）')
+    } catch (err) { setError(err.message) } finally { setBusy(false) }
+  }
+  return <main className="assistant-view"><header><div><span className="eyebrow">管理</span><h1>IT 策略配置</h1></div></header><div className="assistant-thread"><form className="modal" onSubmit={save}><label>分类（支持 it.vpn 等子分类）<input required value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></label><label>SLA 策略 ID（引用 sla_policies）<input required value={form.policy_id} onChange={(e) => setForm({ ...form, policy_id: e.target.value })} /></label><label>必填字段（逗号分隔）<input value={form.required_fields} onChange={(e) => setForm({ ...form, required_fields: e.target.value })} /></label><label>默认优先级<select value={form.default_priority} onChange={(e) => setForm({ ...form, default_priority: e.target.value })}><option value="low">低</option><option value="normal">普通</option><option value="high">高</option><option value="urgent">紧急</option></select></label><label><input type="checkbox" checked={form.approval_required} onChange={(e) => setForm({ ...form, approval_required: e.target.checked })} /> 需要审批</label><label><input type="checkbox" checked={form.auto_answer_enabled} onChange={(e) => setForm({ ...form, auto_answer_enabled: e.target.checked })} /> 允许自动回答</label>{notice && <div className="form-error" style={{ color: '#176b5b' }}>{notice}</div>}{error && <div className="form-error"><AlertCircle size={16} />{error}</div>}<footer><button type="button" className="secondary-action" onClick={load} disabled={busy}>读取</button><button className="primary-action" disabled={busy}>{busy ? '保存中…' : '保存策略'}</button></footer></form></div></main>
+}
+
+function AssetsView() {
+  const [items, setItems] = useState([])
+  const [form, setForm] = useState({ asset_id: '', asset_no: '', asset_type: 'laptop', name: '', hostname: '', department: '', owner_user_id: '' })
+  const [editingId, setEditingId] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const load = async () => { setError(''); try { const data = await api('/assets'); setItems(data.items || []) } catch (err) { setError(err.message) } }
+  useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const submit = async (event) => {
+    event.preventDefault(); setBusy(true); setError('')
+    try {
+      if (editingId) {
+        await api(`/assets/${editingId}`, { method: 'PATCH', body: JSON.stringify({ name: form.name || null, hostname: form.hostname || null, department: form.department || null, owner_user_id: form.owner_user_id || null }) })
+      } else {
+        await api('/assets', { method: 'POST', body: JSON.stringify(form) })
+      }
+      setForm({ asset_id: '', asset_no: '', asset_type: 'laptop', name: '', hostname: '', department: '', owner_user_id: '' })
+      setEditingId(null); await load()
+    } catch (err) { setError(err.message) } finally { setBusy(false) }
+  }
+  const startEdit = (item) => { setEditingId(item.asset_id); setForm({ asset_id: item.asset_id, asset_no: item.asset_no, asset_type: item.asset_type, name: item.name || '', hostname: item.hostname || '', department: item.department || '', owner_user_id: item.owner_user_id || '' }) }
+  const remove = async (assetId) => { try { await api(`/assets/${assetId}`, { method: 'DELETE' }); await load() } catch (err) { setError(err.message) } }
+  return <main className="assistant-view"><header><div><span className="eyebrow">资产台账</span><h1>IT 资产</h1></div><button className="icon-button" onClick={load} aria-label="刷新"><RefreshCw /></button></header><div className="assistant-thread"><form className="modal" onSubmit={submit}><span className="eyebrow">{editingId ? `编辑 ${editingId}` : '新建资产'}</span><label>资产编号<input required value={form.asset_no} onChange={(e) => setForm({ ...form, asset_no: e.target.value })} /></label><label>类型<select value={form.asset_type} onChange={(e) => setForm({ ...form, asset_type: e.target.value })}><option value="laptop">笔记本</option><option value="desktop">台式机</option><option value="mobile">手机</option><option value="printer">打印机</option><option value="other">其他</option></select></label>{!editingId && <label>资产 ID<input required value={form.asset_id} onChange={(e) => setForm({ ...form, asset_id: e.target.value })} /></label>}<label>名称<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label><label>主机名<input value={form.hostname} onChange={(e) => setForm({ ...form, hostname: e.target.value })} /></label><label>部门<input value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} /></label><label>使用人 ID<input value={form.owner_user_id} onChange={(e) => setForm({ ...form, owner_user_id: e.target.value })} /></label>{error && <div className="form-error"><AlertCircle size={16} />{error}</div>}<footer><button className="primary-action" disabled={busy}>{busy ? '提交中…' : editingId ? '保存修改' : '创建资产'}</button>{editingId && <button type="button" className="secondary-action" onClick={() => { setEditingId(null); setForm({ asset_id: '', asset_no: '', asset_type: 'laptop', name: '', hostname: '', department: '', owner_user_id: '' }) }}>取消</button>}</footer></form>{items.map((item) => <div key={item.asset_id} className="requester"><Boxes /><div><strong>{item.name || item.asset_id}</strong><span>{item.asset_no} · {item.hostname || '无主机名'} · {item.department || '未分部门'} · {item.owner_user_id || '未分配'}</span></div><button className="secondary-action" onClick={() => startEdit(item)}>编辑</button><button className="secondary-action" onClick={() => remove(item.asset_id)}>删除</button></div>)}</div></main>
+}
+
+function KnowledgeView() {
+  const [form, setForm] = useState({ document_id: '', version: 1, title: '', category: '', visibility: 'internal', allowed_departments: '', chunks: '' })
+  const [publishForm, setPublishForm] = useState({ document_id: '', version: 1 })
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const upload = async (event) => {
+    event.preventDefault(); setBusy(true); setError(''); setNotice('')
+    try {
+      const chunks = form.chunks.split('\n').map((line) => line.trim()).filter(Boolean).map((content, index) => ({ chunk_id: `c${index}`, ordinal: index, content }))
+      if (!chunks.length) throw new Error('至少输入一个知识分块（每行一段）')
+      await api('/knowledge/documents', {
+        method: 'POST',
+        body: JSON.stringify({
+          document: {
+            document_id: form.document_id,
+            version: Number(form.version),
+            title: form.title,
+            category: form.category || null,
+            visibility: form.visibility,
+            allowed_departments: form.allowed_departments.split(',').map((s) => s.trim()).filter(Boolean),
+            status: 'draft',
+          },
+          chunks,
+        }),
+      })
+      setNotice('文档已上传（草稿），发布后对检索可见')
+    } catch (err) { setError(err.message) } finally { setBusy(false) }
+  }
+  const publish = async () => { setBusy(true); setError(''); setNotice(''); try { await api(`/knowledge/documents/${encodeURIComponent(publishForm.document_id)}/publish`, { method: 'POST', body: JSON.stringify({ version: Number(publishForm.version) }) }); setNotice('文档已发布') } catch (err) { setError(err.message) } finally { setBusy(false) } }
+  const retire = async () => { setBusy(true); setError(''); setNotice(''); try { await api(`/knowledge/documents/${encodeURIComponent(publishForm.document_id)}/retire`, { method: 'POST' }); setNotice('文档已停用') } catch (err) { setError(err.message) } finally { setBusy(false) } }
+  return <main className="assistant-view"><header><div><span className="eyebrow">知识管理</span><h1>知识文档</h1></div></header><div className="assistant-thread"><form className="modal" onSubmit={upload}><span className="eyebrow">上传文档</span><label>文档 ID<input required value={form.document_id} onChange={(e) => setForm({ ...form, document_id: e.target.value })} /></label><label>版本<input required type="number" min="1" value={form.version} onChange={(e) => setForm({ ...form, version: Number(e.target.value) })} /></label><label>标题<input required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></label><label>分类（如 it.vpn）<input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></label><label>可见性<select value={form.visibility} onChange={(e) => setForm({ ...form, visibility: e.target.value })}><option value="public">public（所有人）</option><option value="internal">internal（客服）</option><option value="restricted">restricted（指定部门）</option></select></label><label>允许部门（逗号分隔）<input value={form.allowed_departments} onChange={(e) => setForm({ ...form, allowed_departments: e.target.value })} /></label><label>分块内容（每行一段）<textarea required rows="4" value={form.chunks} onChange={(e) => setForm({ ...form, chunks: e.target.value })} /></label>{notice && <div className="form-error" style={{ color: '#176b5b' }}>{notice}</div>}{error && <div className="form-error"><AlertCircle size={16} />{error}</div>}<button className="primary-action" disabled={busy}>{busy ? '上传中…' : '上传文档'}</button></form><form className="modal" onSubmit={(e) => { e.preventDefault(); publish() }}><span className="eyebrow">发布 / 停用</span><label>文档 ID<input required value={publishForm.document_id} onChange={(e) => setPublishForm({ ...publishForm, document_id: e.target.value })} /></label><label>版本<input required type="number" min="1" value={publishForm.version} onChange={(e) => setPublishForm({ ...publishForm, version: Number(e.target.value) })} /></label><footer><button className="primary-action" disabled={busy}>发布</button><button type="button" className="secondary-action" onClick={retire} disabled={busy}>停用</button></footer></form></div></main>
 }
 
 function AssistantView() {
@@ -252,6 +353,9 @@ function App() {
   }
 
   if (view === 'assistant') return <div className="app-shell"><Sidebar view={view} setView={setView} mobileOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} /><AssistantView /></div>
+  if (view === 'assets') return <div className="app-shell"><Sidebar view={view} setView={setView} mobileOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} /><AssetsView /></div>
+  if (view === 'knowledge') return <div className="app-shell"><Sidebar view={view} setView={setView} mobileOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} /><KnowledgeView /></div>
+  if (view === 'it-policies') return <div className="app-shell"><Sidebar view={view} setView={setView} mobileOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} /><ItPoliciesView /></div>
 
   return <div className="app-shell"><Sidebar view={view} setView={setView} mobileOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} /><main className={`workspace ${detailOpen ? 'show-detail' : ''}`}><section className="queue-pane"><header className="topbar"><button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="打开导航"><Menu /></button><div><span className="eyebrow">服务台</span><h1>{view === 'resolved' ? '已解决工单' : view === 'mine' ? '我的处理' : '工单队列'}</h1></div><button className="primary-action" onClick={() => setCreateOpen(true)}><Plus size={17} />新建</button></header><div className="filters"><div className="search-box"><Search size={16} /><input placeholder="搜索工单" value={filters.q} onChange={(e) => { setCursor(null); setFilters({ ...filters, q: e.target.value }) }} /></div><label><Filter size={15} /><select value={filters.status} onChange={(e) => { setCursor(null); setFilters({ ...filters, status: e.target.value }) }} disabled={view === 'resolved'}><option value="">全部状态</option><option value="new">新建</option><option value="queued">待分派</option><option value="assigned">已分派</option><option value="in_progress">处理中</option><option value="awaiting_customer">等待客户</option><option value="resolved">已解决</option></select></label><label><select value={filters.category} onChange={(e) => { setCursor(null); setFilters({ ...filters, category: e.target.value }) }}><option value="">全部类别</option>{Object.entries(categoryLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label><select value={filters.priority} onChange={(e) => { setCursor(null); setFilters({ ...filters, priority: e.target.value }) }}><option value="">全部优先级</option><option value="urgent">紧急</option><option value="high">高</option><option value="normal">普通</option><option value="low">低</option></select></label><button className="icon-button" onClick={() => loadTickets(false, null)} aria-label="刷新"><RefreshCw size={17} /></button></div>{error && <div className="error-banner"><AlertCircle size={16} /><span>{error}</span><button onClick={() => setError('')}><X size={15} /></button></div>}<TicketList tickets={tickets} selectedId={selectedId} onSelect={(id) => { setSelectedId(id); setDetailOpen(true) }} loading={loading} hasMore={Boolean(cursor)} onMore={() => loadTickets(true, cursor)} /></section><TicketDetail ticket={selected} overview={overview} busy={busy} pendingClarification={pendingClarification} onTransition={transition} onSurvey={survey} onResume={resumeClarification} onBack={() => setDetailOpen(false)} /></main><CreateTicketDialog open={createOpen} onClose={() => setCreateOpen(false)} onCreated={(result) => { const ticket = result.ticket || result; setTickets((items) => [ticket, ...items]); setSelectedId(ticket.ticket_id); setPendingClarification(result.interrupt || null); setDetailOpen(true) }} /></div>
 }

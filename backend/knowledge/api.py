@@ -71,3 +71,18 @@ async def publish_knowledge_document(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"document_id": document_id, "version": payload.version, "status": "published"}
+
+
+@router.post("/documents/{document_id}/retire")
+async def retire_knowledge_document(
+    document_id: str,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    _require_scope(principal, "knowledge:write")
+    runtime = _runtime(request)
+    repository: KnowledgeRepository = runtime.knowledge
+    retired = await repository.retire_document(principal.tenant_id, document_id)
+    if not retired:
+        raise HTTPException(status_code=404, detail="没有已发布的知识文档可停用")
+    return {"document_id": document_id, "status": "retired"}
