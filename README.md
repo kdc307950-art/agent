@@ -71,7 +71,7 @@ curl http://127.0.0.1:8000/readyz
 
 企业微信 `/integrations/wecom/webhook` 使用 SHA-1 验签、AES-CBC 解密、CorpID 与重放窗口校验；钉钉 `/integrations/dingtalk/webhook` 使用时间戳和 HMAC-SHA256。两个厂商端点以服务端配置绑定租户，不信任请求体 tenant。内部适配器也可使用带 `ticket:channel` scope 的 `/integrations/{channel}/events`。
 
-知识库按 tenant、发布状态、有效期和部门 ACL 过滤，全文与向量候选使用 RRF 融合。默认没有绑定具体向量供应商；没有双路证据、缺少有效引用、高风险或财务类问题都禁止自动回复并转人工。
+知识库采用 Agentic RAG：Agent 可在有界轮次内根据检索结果生成补充查询，所有查询都重复执行 tenant、发布状态、有效期和部门 ACL；全文与向量候选使用 RRF 融合。默认策略是建议回复，搜索耗尽后不会自动发送。没有双路证据、缺少有效引用、高风险或财务类问题都禁止自动回复并转人工。pgvector 为可选真实向量后端，未安装扩展时只使用全文并明确记录降级原因。
 
 ## 架构
 
@@ -214,10 +214,13 @@ uv run python -m backend.retention
 Outbox 使用独立常驻进程发送渠道消息、回访和 SLA 升级事件。Worker 通过 `FOR UPDATE SKIP LOCKED` 支持多副本，暂时性网络错误指数退避，超过最大次数进入 `dead`：
 
 ```powershell
+$env:OUTBOX_SHARED_SECRET="replace-with-service-to-service-secret"
 $env:OUTBOX_TICKET_MESSAGE_ENDPOINT="https://internal.example/messages"
 $env:OUTBOX_SURVEY_ENDPOINT="https://internal.example/surveys"
 $env:OUTBOX_SLA_ENDPOINT="https://internal.example/sla"
 uv run python -m backend.run_outbox_worker --poll-interval 1 --batch-size 20
+uv run python -m backend.run_sla_worker --interval 30 --batch-size 100
+uv run python -m backend.run_workflow_recovery --interval 30 --grace 30
 ```
 
 每个 Endpoint 都必须实现 `X-Idempotency-Key` 幂等语义；Worker 本身只保证数据库领取和状态转移，不替渠道服务解决重复请求。
@@ -276,6 +279,8 @@ $env:TEST_DATABASE_URL="postgresql://langgraph:integration_only_not_a_secret@127
 $env:DATABASE_URL=$env:TEST_DATABASE_URL
 $env:REDIS_URL="redis://127.0.0.1:56379/0"
 uv run python -m backend.migrations
+$env:KNOWLEDGE_EMBEDDING_DIMENSION="1536"
+uv run python -m backend.vector_migrations
 uv run pytest tests -q -m "not live_e2e"
 ```
 
@@ -283,7 +288,7 @@ uv run pytest tests -q -m "not live_e2e"
 
 命令行的环境变量优先于 `.env`（`conftest.py` 的 `load_dotenv()` 不覆盖已存在的变量），所以不必改本地配置。
 
-CI 使用 PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。本地还在 PostgreSQL 14 / Redis 6 上执行过兼容验证：schema v6 迁移成功，全部非 live 测试 `177 passed`。真实 HTTP 工单 E2E 验证了创建、缺字段中断、补充恢复、分类派单、处理、解决、回访和关闭，最终事件版本连续到 v9。
+CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。本地还在 PostgreSQL 14 + pgvector 0.8.1 / Redis 6 上执行过兼容验证：schema v9 和 HNSW 迁移成功，全部非 live 测试 `189 passed`。真实 HTTP 工单 E2E 验证了创建、缺字段中断、补充恢复、分类派单、处理、解决、回访和关闭，最终事件版本连续到 v9。
 
 真实 DeepSeek E2E 默认不运行，以免普通 CI 产生费用。手动 workflow `Live Agent E2E` 需要受保护环境中的 `DEEPSEEK_API_KEY`、`LIVE_AGENT_TOKEN` 和 `TENANT_TOKEN_SECRET`，覆盖文本 SSE、工具调用和同线程续聊。
 
@@ -295,7 +300,7 @@ CI 使用 PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少�
 |---|---|
 | 工作流存库 + 热编译 | 改 JSON 工作流仍需重启服务，所有租户共用一份定义 |
 | 挂起任务 TTL | 工单信息补全和旧审批尚未实现自动过期/取消策略 |
-| 向量供应商 | `VectorRetriever` 契约和 RRF 门禁已实现，但未绑定 embedding 模型、维度和向量数据库；默认安全转人工 |
+| Embedding 供应商 | pgvector、HNSW、入库流水线和 Agentic RAG 已实现；生产仍需选择 embedding 模型、固定维度并完成离线评测，默认建议回复而不自动发送 |
 | 附件安全链路 | 尚未接对象存储、病毒扫描、临时授权下载和内容解析隔离 |
 | PostgreSQL RLS | Repository 全部强制 tenant 条件，但数据库行级安全尚未启用 |
 | 工作台认证 | 本地 Vite 代理使用单个开发令牌；生产需接 IdP 并按客户/客服/审批人分配 scope |

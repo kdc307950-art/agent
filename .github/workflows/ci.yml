@@ -25,7 +25,7 @@ jobs:
       CORS_ALLOWED_ORIGINS: http://127.0.0.1:5173
     services:
       postgres:
-        image: postgres:17-alpine
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_DB: langgraph
           POSTGRES_USER: langgraph
@@ -61,6 +61,10 @@ jobs:
         # 见 backend/migrations.py）；没有超时的话会耗尽整个 job 的时限才失败。
         timeout-minutes: 3
         run: uv run python -m backend.migrations
+      - name: Initialize pgvector schema
+        env:
+          KNOWLEDGE_EMBEDDING_DIMENSION: "8"
+        run: uv run python -m backend.vector_migrations
       - name: Run Python tests
         run: uv run pytest -q
       - name: Build frontend

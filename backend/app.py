@@ -537,6 +537,8 @@ async def chat_stream(
     principal: Principal = Depends(rate_limit_dependency),
 ):
     """流式对话端点（Server-Sent Events）。"""
+    if "chat:write" not in principal.scopes:
+        raise HTTPException(status_code=403, detail="缺少 chat:write 权限")
     return await _execute_run(
         http_request=http_request,
         principal=principal,
@@ -557,6 +559,8 @@ async def chat_resume(
     在计费和限流上与 /chat/stream 同源，所以复用同一条依赖链（含 chat:write 校验），
     再额外要求 chat:approve —— 「能发消息」不等于「能替租户批准操作」。
     """
+    if "chat:write" not in principal.scopes:
+        raise HTTPException(status_code=403, detail="缺少 chat:write 权限")
     if "chat:approve" not in principal.scopes:
         raise HTTPException(status_code=403, detail="缺少 chat:approve 权限")
     graph = http_request.app.state.agent

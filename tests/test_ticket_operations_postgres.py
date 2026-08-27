@@ -69,8 +69,30 @@ def test_outbox_sla_and_survey_lifecycle(monkeypatch):
                 idempotency_key=f"ticket:{ticket_id}:received",
                 payload={"ticket_id": ticket_id},
             )
-            claimed = await operations.claim_outbox(limit=10, tenant_id=tenant_id)
-            completed = await operations.complete_outbox(tenant_id, "event-1")
+            claimed = await operations.claim_outbox(worker_id="worker-1", limit=10, tenant_id=tenant_id)
+            completed = await operations.complete_outbox(tenant_id, "event-1", worker_id="worker-1")
+            await operations.append_outbound_message(
+                tenant_id=tenant_id,
+                ticket_id=ticket_id,
+                message_id="message-lease",
+                actor_type="system",
+                actor_id="agent",
+                channel="wecom",
+                content="lease recovery",
+                event_id="event-lease",
+                idempotency_key=f"ticket:{ticket_id}:lease",
+                payload={"ticket_id": ticket_id},
+            )
+            first_lease = await operations.claim_outbox(worker_id="worker-crashed", lease_seconds=1, limit=10, tenant_id=tenant_id)
+            assert [event["event_id"] for event in first_lease] == ["event-lease"]
+            async with tickets.pool.connection() as connection:
+                await connection.execute(
+                    "UPDATE outbox_events SET lease_expires_at = now() - interval '1 second' WHERE tenant_id = %s AND event_id = 'event-lease'",
+                    (tenant_id,),
+                )
+            recovered_lease = await operations.claim_outbox(worker_id="worker-recovery", lease_seconds=60, limit=10, tenant_id=tenant_id)
+            stale_complete = await operations.complete_outbox(tenant_id, "event-lease", worker_id="worker-crashed")
+            recovered_complete = await operations.complete_outbox(tenant_id, "event-lease", worker_id="worker-recovery")
 
             calendar = BusinessCalendar(
                 timezone_name="UTC",
@@ -138,6 +160,8 @@ def test_outbox_sla_and_survey_lifecycle(monkeypatch):
                 duplicate,
                 claimed,
                 completed,
+                stale_complete,
+                recovered_complete,
                 paused,
                 resumed,
                 first_scan,
@@ -155,6 +179,8 @@ def test_outbox_sla_and_survey_lifecycle(monkeypatch):
         duplicate,
         claimed,
         completed,
+        stale_complete,
+        recovered_complete,
         paused,
         resumed,
         first_scan,
@@ -167,6 +193,8 @@ def test_outbox_sla_and_survey_lifecycle(monkeypatch):
     assert duplicate is False
     assert [item["event_id"] for item in claimed] == ["event-1"]
     assert completed is True
+    assert stale_complete is False
+    assert recovered_complete is True
     assert paused is True
     assert resumed is True
     assert first_scan == 2

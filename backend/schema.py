@@ -13,7 +13,7 @@ from psycopg import AsyncConnection
 
 
 APP_SCHEMA_NAME = "langgraph_agent"
-APP_SCHEMA_VERSION = 6
+APP_SCHEMA_VERSION = 9
 MIGRATION_LOCK_KEY = 891274631
 
 # These are the tables created by the pinned LangGraph PostgreSQL adapters and
@@ -40,6 +40,12 @@ REQUIRED_RELATIONS: tuple[str, ...] = (
     "sla_policies",
     "ticket_sla",
     "satisfaction_surveys",
+    "ticket_workflow_runs",
+    "support_teams",
+    "support_members",
+    "support_schedules",
+    "routing_rules",
+    "ticket_assignments",
 )
 
 
@@ -473,6 +479,120 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 """
             )
             current = 6
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 7:
+            await cursor.execute(
+                """
+                CREATE TABLE ticket_workflow_runs (
+                    tenant_id TEXT NOT NULL,
+                    ticket_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    command_type TEXT NOT NULL,
+                    expected_version INTEGER NOT NULL CHECK (expected_version >= 0),
+                    checkpoint_thread_id TEXT NOT NULL,
+                    checkpoint_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'started',
+                    intent JSONB,
+                    result_hash TEXT,
+                    error_code TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    committed_at TIMESTAMPTZ,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (tenant_id, ticket_id, operation_id),
+                    CONSTRAINT ticket_workflow_runs_ticket_fk
+                        FOREIGN KEY (tenant_id, ticket_id)
+                        REFERENCES tickets (tenant_id, ticket_id)
+                        ON DELETE CASCADE,
+                    CONSTRAINT ticket_workflow_runs_status_check
+                        CHECK (status IN ('started', 'intent_recorded', 'committed', 'failed'))
+                )
+                """
+            )
+            await cursor.execute(
+                """
+                CREATE INDEX idx_ticket_workflow_runs_recovery
+                ON ticket_workflow_runs (created_at)
+                WHERE status IN ('started', 'intent_recorded')
+                """
+            )
+            current = 7
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 8:
+            await cursor.execute(
+                "ALTER TABLE outbox_events ADD COLUMN IF NOT EXISTS worker_id TEXT"
+            )
+            await cursor.execute(
+                "ALTER TABLE outbox_events ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ"
+            )
+            await cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_outbox_events_reclaimable
+                ON outbox_events (lease_expires_at)
+                WHERE status = 'processing'
+                """
+            )
+            current = 8
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 9:
+            await cursor.execute("""
+                CREATE TABLE support_teams (
+                    tenant_id TEXT NOT NULL, team_id TEXT NOT NULL, name TEXT NOT NULL,
+                    department_id TEXT, active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (tenant_id, team_id)
+                )
+            """)
+            await cursor.execute("""
+                CREATE TABLE support_members (
+                    tenant_id TEXT NOT NULL, member_id TEXT NOT NULL, team_id TEXT NOT NULL,
+                    skills TEXT[] NOT NULL DEFAULT '{}', capacity INTEGER NOT NULL DEFAULT 10 CHECK (capacity >= 1),
+                    active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (tenant_id, member_id),
+                    FOREIGN KEY (tenant_id, team_id) REFERENCES support_teams (tenant_id, team_id)
+                )
+            """)
+            await cursor.execute("""
+                CREATE TABLE support_schedules (
+                    tenant_id TEXT NOT NULL, schedule_id TEXT NOT NULL, member_id TEXT NOT NULL,
+                    starts_at TIMESTAMPTZ NOT NULL, ends_at TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (tenant_id, schedule_id),
+                    FOREIGN KEY (tenant_id, member_id) REFERENCES support_members (tenant_id, member_id),
+                    CHECK (ends_at > starts_at)
+                )
+            """)
+            await cursor.execute("""
+                CREATE TABLE routing_rules (
+                    tenant_id TEXT NOT NULL, rule_id TEXT NOT NULL, priority INTEGER NOT NULL DEFAULT 100,
+                    category TEXT, subcategory TEXT, channel TEXT, department_id TEXT,
+                    required_skill TEXT, target_team_id TEXT NOT NULL, active BOOLEAN NOT NULL DEFAULT TRUE,
+                    PRIMARY KEY (tenant_id, rule_id),
+                    FOREIGN KEY (tenant_id, target_team_id) REFERENCES support_teams (tenant_id, team_id)
+                )
+            """)
+            await cursor.execute("""
+                CREATE TABLE ticket_assignments (
+                    tenant_id TEXT NOT NULL, assignment_id BIGINT GENERATED ALWAYS AS IDENTITY,
+                    ticket_id TEXT NOT NULL, team_id TEXT NOT NULL, member_id TEXT,
+                    reason_codes TEXT[] NOT NULL DEFAULT '{}', assigned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    ended_at TIMESTAMPTZ, PRIMARY KEY (tenant_id, assignment_id),
+                    FOREIGN KEY (tenant_id, ticket_id) REFERENCES tickets (tenant_id, ticket_id),
+                    FOREIGN KEY (tenant_id, team_id) REFERENCES support_teams (tenant_id, team_id),
+                    FOREIGN KEY (tenant_id, member_id) REFERENCES support_members (tenant_id, member_id)
+                )
+            """)
+            current = 9
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
                 (current, APP_SCHEMA_NAME),

@@ -4,7 +4,7 @@ name: langgraph-test
 # collisions with local development services and match the README test setup.
 services:
   postgres:
-    image: postgres:17-alpine
+    image: pgvector/pgvector:pg17
     environment:
       POSTGRES_DB: langgraph
       POSTGRES_USER: langgraph

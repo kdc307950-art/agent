@@ -11,6 +11,7 @@ from urllib.parse import quote
 from fastapi.testclient import TestClient
 from langgraph.types import Interrupt
 
+from backend.rate_limit import InMemoryRateLimiter
 from backend.security import make_tenant_token
 from src.my_agent.helpdesk import ActorType, TicketStatus
 
@@ -25,6 +26,8 @@ class FakeTickets:
         self.transitions = []
         self.inbound = []
         self.list_calls = []
+        self.workflow_runs = {}
+        self.fail_next_transition = False
 
     async def create(self, tenant_id, request):
         self.created.append((tenant_id, request))
@@ -45,10 +48,23 @@ class FakeTickets:
         self.list_calls.append((tenant_id, kwargs))
         return list(self.items.values())[: kwargs["limit"]]
 
+    async def start_workflow_operation(self, **kwargs):
+        key = (kwargs["tenant_id"], kwargs["ticket_id"], kwargs["operation_id"])
+        run = self.workflow_runs.setdefault(key, {"status": "started", "intent": None, **kwargs})
+        return run
+
+    async def get_workflow_operation(self, *, tenant_id, ticket_id, operation_id):
+        return self.workflow_runs.get((tenant_id, ticket_id, operation_id))
+
+    async def record_workflow_intent(self, *, tenant_id, ticket_id, operation_id, intent, checkpoint_id=None):
+        run = self.workflow_runs[(tenant_id, ticket_id, operation_id)]
+        run["status"] = "intent_recorded"
+        run["intent"] = intent
+
     async def transition(self, tenant_id, command, *, scopes):
         return await self.transition_many(tenant_id, [command], scopes=scopes)
 
-    async def transition_many(self, tenant_id, commands, *, scopes):
+    async def transition_many(self, tenant_id, commands, *, scopes, operation_id=None):
         next_status = {
             "start_intake": TicketStatus.INTAKING,
             "request_information": TicketStatus.AWAITING_CUSTOMER,
@@ -61,12 +77,20 @@ class FakeTickets:
             "close": TicketStatus.CLOSED,
             "cancel": TicketStatus.CANCELLED,
         }
+        if self.fail_next_transition:
+            self.fail_next_transition = False
+            raise RuntimeError("injected database failure")
         record = self.items[(tenant_id, commands[0].ticket_id)]
         for command in commands:
             self.transitions.append((tenant_id, command, scopes))
             record.status = next_status[command.action.value]
             record.version = command.expected_version + 1
+        if operation_id is not None:
+            self.workflow_runs[(tenant_id, record.ticket_id, operation_id)]["status"] = "committed"
         return record
+
+    async def list_status_events(self, tenant_id, ticket_id):
+        return []
 
     async def create_from_inbound_event(self, tenant_id, channel, external_event_id, event_payload, request):
         self.inbound.append((tenant_id, channel, external_event_id, event_payload, request))
@@ -97,6 +121,9 @@ class FakeOperations:
     def __init__(self):
         self.surveys = []
         self.responses = []
+
+    async def get_ticket_overview(self, tenant_id, ticket_id):
+        return {"sla": None, "survey": None, "messages": [], "assignments": []}
 
     async def create_survey(self, **kwargs):
         self.surveys.append(kwargs)
@@ -267,6 +294,7 @@ def test_intake_synchronizes_completed_graph_to_queued_ticket(monkeypatch):
             "/tickets/ticket-1/intake",
             headers=headers("ticket:customer"),
             json={
+                "operation_id": "op-intake-complete",
                 "text": "SSO login failure",
                 "fields": {"title": "SSO", "description": "failure"},
                 "expected_version": 0,
@@ -282,6 +310,31 @@ def test_intake_synchronizes_completed_graph_to_queued_ticket(monkeypatch):
         "queue",
     ]
     assert [entry[1].expected_version for entry in tickets.transitions] == [0, 1, 2]
+
+
+def test_intake_operation_retries_recorded_intent_without_rerunning_graph(monkeypatch):
+    module, tickets, intake = load_app(monkeypatch)
+    tickets.items[("tenant-a", "ticket-1")] = SimpleNamespace(
+        ticket_id="ticket-1", requester_id="user-1", version=0, status=TicketStatus.NEW
+    )
+    tickets.fail_next_transition = True
+    body = {
+        "operation_id": "op-fault-injection",
+        "text": "SSO login failure",
+        "fields": {"title": "SSO", "description": "failure"},
+        "expected_version": 0,
+    }
+    with TestClient(module.app) as client:
+        first = client.post("/tickets/ticket-1/intake", headers=headers("ticket:customer"), json=body)
+        second = client.post("/tickets/ticket-1/intake", headers=headers("ticket:customer"), json=body)
+
+    assert first.status_code == 500
+    assert second.status_code == 200
+    assert tickets.items[("tenant-a", "ticket-1")].status == TicketStatus.QUEUED
+    assert tickets.items[("tenant-a", "ticket-1")].version == 3
+    assert len(intake.inputs) == 1
+    assert [item[1].action.value for item in tickets.transitions] == ["start_intake", "classify", "queue"]
+    assert tickets.workflow_runs[("tenant-a", "ticket-1", "op-fault-injection")]["status"] == "committed"
 
 
 def test_intake_synchronizes_interrupt_to_awaiting_customer(monkeypatch):
@@ -306,7 +359,7 @@ def test_intake_synchronizes_interrupt_to_awaiting_customer(monkeypatch):
         response = client.post(
             "/tickets/ticket-1/intake",
             headers=headers("ticket:customer"),
-            json={"text": "SSO failure", "fields": {}, "expected_version": 0},
+            json={"operation_id": "op-intake-interrupt", "text": "SSO failure", "fields": {}, "expected_version": 0},
         )
 
     assert response.status_code == 200
@@ -334,6 +387,7 @@ def test_typed_resume_validates_real_interrupt_actor_and_version(monkeypatch):
         ),
     )
     body = {
+        "operation_id": "op-resume-complete",
         "interrupt_id": "interrupt-1",
         "ticket_id": "ticket-1",
         "actor_type": "customer",
@@ -378,6 +432,7 @@ def test_typed_resume_rejects_stale_version_and_non_customer_actor(monkeypatch):
             "/tickets/ticket-1/resume",
             headers=headers("ticket:customer"),
             json={
+                "operation_id": "op-resume-stale",
                 "interrupt_id": "interrupt-1",
                 "ticket_id": "ticket-1",
                 "actor_type": "customer",
@@ -390,6 +445,7 @@ def test_typed_resume_rejects_stale_version_and_non_customer_actor(monkeypatch):
             "/tickets/ticket-1/resume",
             headers=headers("ticket:customer", "ticket:agent"),
             json={
+                "operation_id": "op-resume-wrong-actor",
                 "interrupt_id": "interrupt-1",
                 "ticket_id": "ticket-1",
                 "actor_type": "agent",
@@ -464,6 +520,37 @@ def test_survey_create_and_response_enforce_roles_and_ownership(monkeypatch):
     assert responded.status_code == 200
     assert tickets.operations.surveys[0]["tenant_id"] == "tenant-a"
     assert tickets.operations.responses[0]["score"] == 5
+
+
+def test_ticket_api_is_rate_limited_per_authenticated_principal(monkeypatch):
+    module, tickets, _intake = load_app(monkeypatch)
+    tickets.items[("tenant-a", "ticket-1")] = SimpleNamespace(
+        ticket_id="ticket-1", requester_id="user-1", version=0, status=TicketStatus.NEW
+    )
+    with TestClient(module.app) as client:
+        module.app.state.rate_limiter = InMemoryRateLimiter(capacity=1, window_seconds=60)
+        allowed = client.get("/tickets/ticket-1", headers=headers("ticket:customer"))
+        rejected = client.get("/tickets/ticket-1", headers=headers("ticket:customer"))
+        other_tenant = client.get(
+            "/tickets/ticket-1",
+            headers=headers("ticket:customer", tenant="tenant-b"),
+        )
+
+    assert allowed.status_code == 200
+    assert rejected.status_code == 429
+    assert other_tenant.status_code == 404
+
+
+def test_vendor_webhook_rejects_oversized_body_before_signature(monkeypatch):
+    module, _tickets, _intake = load_app(monkeypatch, dingtalk=True)
+    timestamp = str(int(time.time() * 1000))
+    with TestClient(module.app) as client:
+        response = client.post(
+            f"/integrations/dingtalk/webhook?timestamp={timestamp}&sign=bad",
+            content=b"x" * (256 * 1024 + 1),
+            headers={"Content-Type": "application/json"},
+        )
+    assert response.status_code == 413
 
 
 def _dingtalk_sign(timestamp: str, secret: str) -> str:

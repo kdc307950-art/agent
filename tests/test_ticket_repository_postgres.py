@@ -111,6 +111,51 @@ def test_ticket_create_transition_is_tenant_scoped_and_optimistically_locked(mon
     ]
 
 
+def test_workflow_operation_commits_intent_once_and_retries_idempotently(monkeypatch):
+    tenant_id = f"tenant-{uuid4().hex}"
+    ticket_id = f"ticket-{uuid4().hex}"
+
+    async def run():
+        monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
+        await setup_postgres()
+        repository = await TicketRepository.connect(DATABASE_URL)
+        try:
+            await repository.create(tenant_id, create_request(ticket_id))
+            run = await repository.start_workflow_operation(
+                tenant_id=tenant_id,
+                ticket_id=ticket_id,
+                operation_id="operation-intake-1",
+                command_type="intake",
+                expected_version=0,
+                checkpoint_thread_id=f"helpdesk:{tenant_id}:{ticket_id}",
+            )
+            commands = [
+                TicketCommand(ticket_id=ticket_id, action=TicketAction.START_INTAKE, actor_type=ActorType.SYSTEM, actor_id="worker", expected_version=0),
+                TicketCommand(ticket_id=ticket_id, action=TicketAction.CLASSIFY, actor_type=ActorType.SYSTEM, actor_id="worker", expected_version=1, payload={"category": "it"}),
+                TicketCommand(ticket_id=ticket_id, action=TicketAction.QUEUE, actor_type=ActorType.SYSTEM, actor_id="worker", expected_version=2, payload={"team_id": "team-it"}),
+            ]
+            await repository.record_workflow_intent(
+                tenant_id=tenant_id,
+                ticket_id=ticket_id,
+                operation_id="operation-intake-1",
+                intent={"commands": [command.model_dump(mode="json") for command in commands]},
+            )
+            committed = await repository.transition_many(tenant_id, commands, scopes={"ticket:system"}, operation_id="operation-intake-1")
+            retried = await repository.transition_many(tenant_id, commands, scopes={"ticket:system"}, operation_id="operation-intake-1")
+            operation = await repository.get_workflow_operation(tenant_id=tenant_id, ticket_id=ticket_id, operation_id="operation-intake-1")
+            events = await repository.list_status_events(tenant_id, ticket_id)
+            return run, committed, retried, operation, events
+        finally:
+            await repository.close()
+
+    run, committed, retried, operation, events = asyncio.run(run())
+    assert run["status"] == "started"
+    assert committed.version == 3
+    assert retried.version == 3
+    assert operation["status"] == "committed"
+    assert [event.ticket_version for event in events] == [0, 1, 2, 3]
+
+
 def test_inbound_event_registration_is_idempotent_and_detects_payload_reuse(monkeypatch):
     tenant_id = f"tenant-{uuid4().hex}"
     event_id = f"event-{uuid4().hex}"

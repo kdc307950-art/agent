@@ -87,6 +87,33 @@ class KnowledgeRepository:
                         ),
                     )
 
+    async def publish_document_version(
+        self,
+        tenant_id: str,
+        document_id: str,
+        version: int,
+    ) -> None:
+        async with self.pool.connection() as connection:
+            async with connection.transaction(), connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE knowledge_documents SET status = 'retired', updated_at = now()
+                    WHERE tenant_id = %s AND document_id = %s
+                      AND version <> %s AND status = 'published'
+                    """,
+                    (tenant_id, document_id, version),
+                )
+                await cursor.execute(
+                    """
+                    UPDATE knowledge_documents SET status = 'published', updated_at = now()
+                    WHERE tenant_id = %s AND document_id = %s AND version = %s
+                      AND status = 'draft'
+                    """,
+                    (tenant_id, document_id, version),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("只能发布 draft 知识文档版本")
+
     async def lexical_search(
         self,
         principal: RetrievalPrincipal,

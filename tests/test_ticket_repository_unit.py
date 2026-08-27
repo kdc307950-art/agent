@@ -6,8 +6,8 @@ from backend.tickets import CreateTicket, canonical_payload_hash
 from src.my_agent.helpdesk import ActorType
 
 
-def test_schema_v6_requires_helpdesk_knowledge_and_operations_relations():
-    assert APP_SCHEMA_VERSION == 6
+def test_schema_v9_requires_workflow_and_routing_relations():
+    assert APP_SCHEMA_VERSION == 9
     assert {
         "tickets",
         "ticket_status_events",
@@ -19,6 +19,12 @@ def test_schema_v6_requires_helpdesk_knowledge_and_operations_relations():
         "sla_policies",
         "ticket_sla",
         "satisfaction_surveys",
+        "ticket_workflow_runs",
+        "support_teams",
+        "support_members",
+        "support_schedules",
+        "routing_rules",
+        "ticket_assignments",
     }.issubset(REQUIRED_RELATIONS)
 
 

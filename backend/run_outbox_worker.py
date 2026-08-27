@@ -17,6 +17,9 @@ async def run_worker(args: argparse.Namespace) -> None:
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url:
         raise RuntimeError("缺少 DATABASE_URL")
+    shared_secret = os.getenv("OUTBOX_SHARED_SECRET", "").strip()
+    if len(shared_secret) < 16:
+        raise RuntimeError("缺少至少 16 字符的 OUTBOX_SHARED_SECRET")
     senders = {}
     for event_type, env_name in {
         "ticket_message.send": "OUTBOX_TICKET_MESSAGE_ENDPOINT",
@@ -25,7 +28,7 @@ async def run_worker(args: argparse.Namespace) -> None:
     }.items():
         endpoint = os.getenv(env_name, "").strip()
         if endpoint:
-            senders[event_type] = HttpOutboxSender(endpoint)
+            senders[event_type] = HttpOutboxSender(endpoint, shared_secret=shared_secret)
     if not senders:
         raise RuntimeError("至少配置一个 OUTBOX_*_ENDPOINT")
 

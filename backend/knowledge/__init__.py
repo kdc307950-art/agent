@@ -1,5 +1,6 @@
 """Helpdesk knowledge retrieval package."""
 
+from .ingestion import DocumentEmbedder, IngestionPolicy, KnowledgeIngestionService
 from .models import (
     Citation,
     KnowledgeChunkInput,
@@ -7,6 +8,8 @@ from .models import (
     RetrievalHit,
     RetrievalPrincipal,
 )
+from .agentic import AgenticRAGPolicy, AgenticRAGService, RetrievalPlanner
+from .pgvector import EmbeddingProvider, PgVectorRetriever
 from .repository import KnowledgeRepository
 from .service import (
     AnswerDecision,
@@ -21,18 +24,26 @@ from .service import (
 )
 
 __all__ = [
+    "AgenticRAGPolicy",
+    "AgenticRAGService",
     "AnswerDecision",
     "AnswerGatePolicy",
     "AnswerGenerator",
     "Citation",
+    "DocumentEmbedder",
+    "EmbeddingProvider",
     "GeneratedAnswer",
     "GeneratedCitation",
+    "IngestionPolicy",
     "KnowledgeAnswerService",
+    "KnowledgeIngestionService",
     "KnowledgeChunkInput",
     "KnowledgeDocumentInput",
     "KnowledgeRepository",
     "NullVectorRetriever",
+    "PgVectorRetriever",
     "RetrievalHit",
+    "RetrievalPlanner",
     "RetrievalPrincipal",
     "VectorRetriever",
     "reciprocal_rank_fusion",

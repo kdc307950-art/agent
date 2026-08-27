@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Iterable
 
@@ -11,7 +12,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from src.my_agent.helpdesk import TicketCommand, TicketStatus, transition_ticket
+from src.my_agent.helpdesk import TicketAction, TicketCommand, TicketStatus, transition_ticket
 
 from .models import CreateTicket, InboundEventResult, TicketRecord, TicketStatusEvent
 
@@ -29,6 +30,10 @@ class TicketVersionConflict(RuntimeError):
 
 
 class InboundEventConflict(RuntimeError):
+    pass
+
+
+class WorkflowOperationConflict(RuntimeError):
     pass
 
 
@@ -133,6 +138,9 @@ class TicketRepository:
         statuses: tuple[TicketStatus, ...] = (),
         category: str | None = None,
         assigned_team_id: str | None = None,
+        assigned_user_id: str | None = None,
+        priority: str | None = None,
+        query_text: str | None = None,
         updated_before: tuple[Any, str] | None = None,
         limit: int = 50,
     ) -> list[TicketRecord]:
@@ -152,6 +160,16 @@ class TicketRepository:
         if assigned_team_id is not None:
             clauses.append("assigned_team_id = %s")
             params.append(assigned_team_id)
+        if assigned_user_id is not None:
+            clauses.append("assigned_user_id = %s")
+            params.append(assigned_user_id)
+        if priority is not None:
+            clauses.append("priority = %s")
+            params.append(priority)
+        if query_text is not None:
+            clauses.append("(title ILIKE %s OR description ILIKE %s)")
+            pattern = f"%{query_text}%"
+            params.extend((pattern, pattern))
         if updated_before is not None:
             clauses.append("(updated_at, ticket_id) < (%s, %s)")
             params.extend(updated_before)
@@ -166,6 +184,111 @@ class TicketRepository:
                 await cursor.execute(query, params)
                 rows = await cursor.fetchall()
         return [TicketRecord.model_validate(row) for row in rows]
+
+    async def start_workflow_operation(
+        self,
+        *,
+        tenant_id: str,
+        ticket_id: str,
+        operation_id: str,
+        command_type: str,
+        expected_version: int,
+        checkpoint_thread_id: str,
+    ) -> dict[str, Any]:
+        async with self.pool.connection() as connection:
+            async with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    INSERT INTO ticket_workflow_runs (
+                        tenant_id, ticket_id, operation_id, command_type,
+                        expected_version, checkpoint_thread_id
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (tenant_id, ticket_id, operation_id) DO NOTHING
+                    RETURNING *
+                    """,
+                    (tenant_id, ticket_id, operation_id, command_type, expected_version, checkpoint_thread_id),
+                )
+                row = await cursor.fetchone()
+                if row is not None:
+                    return row
+                await cursor.execute(
+                    """
+                    SELECT * FROM ticket_workflow_runs
+                    WHERE tenant_id = %s AND ticket_id = %s AND operation_id = %s
+                    FOR UPDATE
+                    """,
+                    (tenant_id, ticket_id, operation_id),
+                )
+                existing = await cursor.fetchone()
+                if existing is None or existing["command_type"] != command_type:
+                    raise WorkflowOperationConflict("operation_id 与已有工作流运行不匹配")
+                if int(existing["expected_version"]) != expected_version:
+                    raise WorkflowOperationConflict("operation_id 的工单版本不匹配")
+                return existing
+
+    async def get_workflow_operation(
+        self,
+        *,
+        tenant_id: str,
+        ticket_id: str,
+        operation_id: str,
+    ) -> dict[str, Any] | None:
+        async with self.pool.connection() as connection:
+            async with connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    SELECT * FROM ticket_workflow_runs
+                    WHERE tenant_id = %s AND ticket_id = %s AND operation_id = %s
+                    """,
+                    (tenant_id, ticket_id, operation_id),
+                )
+                return await cursor.fetchone()
+
+    async def record_workflow_intent(
+        self,
+        *,
+        tenant_id: str,
+        ticket_id: str,
+        operation_id: str,
+        intent: dict[str, Any],
+        checkpoint_id: str | None = None,
+    ) -> None:
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE ticket_workflow_runs
+                    SET status = 'intent_recorded', intent = %s,
+                        checkpoint_id = COALESCE(%s, checkpoint_id), updated_at = now()
+                    WHERE tenant_id = %s AND ticket_id = %s AND operation_id = %s
+                      AND status IN ('started', 'intent_recorded')
+                    """,
+                    (Jsonb(intent), checkpoint_id, tenant_id, ticket_id, operation_id),
+                )
+                if cursor.rowcount != 1:
+                    raise WorkflowOperationConflict("工作流运行不可记录意图")
+
+    async def list_recoverable_workflow_operations(
+        self,
+        *,
+        older_than: datetime | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit 必须在 1 到 1000 之间")
+        reference = older_than or datetime.now(timezone.utc)
+        async with self.pool.connection() as connection:
+            async with connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    SELECT * FROM ticket_workflow_runs
+                    WHERE status IN ('started', 'intent_recorded') AND created_at <= %s
+                    ORDER BY created_at
+                    LIMIT %s
+                    """,
+                    (reference, limit),
+                )
+                return list(await cursor.fetchall())
 
     async def transition(
         self,
@@ -182,6 +305,7 @@ class TicketRepository:
         commands: list[TicketCommand],
         *,
         scopes: Iterable[str],
+        operation_id: str | None = None,
     ) -> TicketRecord:
         if not commands:
             raise ValueError("至少需要一个工单动作")
@@ -204,6 +328,22 @@ class TicketRepository:
                 current = await cursor.fetchone()
                 if current is None:
                     raise TicketNotFound("工单不存在")
+                if operation_id is not None:
+                    await cursor.execute(
+                        """
+                        SELECT status, expected_version FROM ticket_workflow_runs
+                        WHERE tenant_id = %s AND ticket_id = %s AND operation_id = %s
+                        FOR UPDATE
+                        """,
+                        (tenant_id, ticket_id, operation_id),
+                    )
+                    workflow_run = await cursor.fetchone()
+                    if workflow_run is None:
+                        raise WorkflowOperationConflict("未登记的 operation_id")
+                    if workflow_run["status"] == "committed":
+                        return TicketRecord.model_validate(current)
+                    if int(workflow_run["expected_version"]) != commands[0].expected_version:
+                        raise WorkflowOperationConflict("operation_id 的工单版本不匹配")
                 if int(current["version"]) != commands[0].expected_version:
                     raise TicketVersionConflict("工单版本已变化，请刷新后重试")
 
@@ -261,6 +401,40 @@ class TicketRepository:
                     updated = await cursor.fetchone()
                     if updated is None:
                         raise TicketVersionConflict("工单版本已变化，请刷新后重试")
+                    if command.action == TicketAction.ASSIGN:
+                        await cursor.execute(
+                            """
+                            UPDATE ticket_assignments SET ended_at = now()
+                            WHERE tenant_id = %s AND ticket_id = %s AND ended_at IS NULL
+                            """,
+                            (tenant_id, ticket_id),
+                        )
+                        await cursor.execute(
+                            """
+                            INSERT INTO ticket_assignments (
+                                tenant_id, ticket_id, team_id, member_id, reason_codes
+                            )
+                            SELECT %s, %s, team_id, %s, %s
+                            FROM support_teams
+                            WHERE tenant_id = %s AND team_id = %s
+                              AND (%s::TEXT IS NULL OR EXISTS (
+                                  SELECT 1 FROM support_members
+                                  WHERE tenant_id = %s AND member_id = %s AND team_id = %s
+                              ))
+                            """,
+                            (
+                                tenant_id,
+                                ticket_id,
+                                command.payload.get("user_id"),
+                                list(command.payload.get("reason_codes") or []),
+                                tenant_id,
+                                command.payload.get("team_id"),
+                                command.payload.get("user_id"),
+                                tenant_id,
+                                command.payload.get("user_id"),
+                                command.payload.get("team_id"),
+                            ),
+                        )
                     await cursor.execute(
                         """
                         INSERT INTO ticket_status_events (
@@ -280,6 +454,22 @@ class TicketRepository:
                             Jsonb(command.payload),
                         ),
                     )
+                if operation_id is not None:
+                    result_hash = canonical_payload_hash(
+                        {"ticket_id": ticket_id, "version": int(updated["version"]), "status": updated["status"]}
+                    )
+                    await cursor.execute(
+                        """
+                        UPDATE ticket_workflow_runs
+                        SET status = 'committed', result_hash = %s,
+                            committed_at = now(), updated_at = now()
+                        WHERE tenant_id = %s AND ticket_id = %s AND operation_id = %s
+                          AND status IN ('started', 'intent_recorded')
+                        """,
+                        (result_hash, tenant_id, ticket_id, operation_id),
+                    )
+                    if cursor.rowcount != 1:
+                        raise WorkflowOperationConflict("工作流运行不可提交")
                 return TicketRecord.model_validate(updated)
 
     async def list_status_events(

@@ -116,7 +116,7 @@ function TicketList({ tickets, selectedId, onSelect, loading, hasMore, onMore })
   )
 }
 
-function TicketDetail({ ticket, busy, pendingClarification, onTransition, onSurvey, onResume, onBack }) {
+function TicketDetail({ ticket, overview, busy, pendingClarification, onTransition, onSurvey, onResume, onBack }) {
   const [clarificationFields, setClarificationFields] = useState({})
   if (!ticket) return <section className="detail detail-empty"><ClipboardList size={32} /><h2>选择一张工单</h2><p>从队列中选择工单查看处理上下文。</p></section>
   const nextAction = actionByStatus[ticket.status]
@@ -126,6 +126,7 @@ function TicketDetail({ ticket, busy, pendingClarification, onTransition, onSurv
     const complete = missingFields.every((name) => String(clarificationFields[name] || '').trim())
     if (!complete) return
     await onResume({
+      operation_id: crypto.randomUUID(),
       interrupt_id: pendingClarification.interrupt_id,
       ticket_id: ticket.ticket_id,
       actor_type: 'customer',
@@ -155,7 +156,7 @@ function TicketDetail({ ticket, busy, pendingClarification, onTransition, onSurv
         </section>
         <section className="detail-section"><h3>问题描述</h3><p className="description">{ticket.description || '暂无问题描述'}</p></section>
         <section className="detail-section"><h3>请求人</h3><div className="requester"><CircleUserRound /><div><strong>{ticket.requester_id}</strong><span>{ticket.channel} · 创建于 {formatTime(ticket.created_at)}</span></div></div></section>
-        <section className="detail-section"><h3>处理记录</h3><div className="timeline"><div className="timeline-item"><span /><div><strong>工单已创建</strong><p>{ticket.channel} 渠道进入服务台</p><time>{formatTime(ticket.created_at)}</time></div></div>{ticket.resolved_at && <div className="timeline-item"><span /><div><strong>问题已解决</strong><p>等待关闭或回访</p><time>{formatTime(ticket.resolved_at)}</time></div></div>}</div></section>
+        {overview?.sla && <section className="detail-section"><h3>SLA</h3><div className="ticket-meta"><span>首次响应 {formatTime(overview.sla.first_response_due_at)}</span><span>解决时限 {formatTime(overview.sla.resolution_due_at)}</span><span>{overview.sla.paused_at ? '已暂停' : '计时中'}</span></div></section>}{overview?.survey && <section className="detail-section"><h3>回访结果</h3><p className="description">{overview.survey.status === 'responded' ? `${overview.survey.score} 分 · ${overview.survey.feedback || '无文字反馈'}` : statusLabel[overview.survey.status] || overview.survey.status}</p></section>}{overview?.messages?.length > 0 && <section className="detail-section"><h3>消息流</h3>{overview.messages.map((message) => <div className="requester" key={message.message_id}><MessageSquareText /><div><strong>{message.actor_id}</strong><span>{message.content}</span></div></div>)}</section>}<section className="detail-section"><h3>处理记录</h3><div className="timeline"><div className="timeline-item"><span /><div><strong>工单已创建</strong><p>{ticket.channel} 渠道进入服务台</p><time>{formatTime(ticket.created_at)}</time></div></div>{ticket.resolved_at && <div className="timeline-item"><span /><div><strong>问题已解决</strong><p>等待关闭或回访</p><time>{formatTime(ticket.resolved_at)}</time></div></div>}</div></section>
       </div>
     </section>
   )
@@ -170,7 +171,7 @@ function CreateTicketDialog({ open, onClose, onCreated }) {
     event.preventDefault(); setBusy(true); setError('')
     try {
       const ticket = await api('/tickets', { method: 'POST', body: JSON.stringify({ ...form, channel: 'web' }) })
-      const intake = await api(`/tickets/${ticket.ticket_id}/intake`, { method: 'POST', body: JSON.stringify({ text: `${form.title}\n${form.description}`, fields: { title: form.title, description: form.description }, expected_version: ticket.version }) })
+      const intake = await api(`/tickets/${ticket.ticket_id}/intake`, { method: 'POST', body: JSON.stringify({ operation_id: crypto.randomUUID(), text: `${form.title}\n${form.description}`, fields: { title: form.title, description: form.description }, expected_version: ticket.version }) })
       setForm({ title: '', description: '', priority: 'normal' }); onCreated(intake); onClose()
     } catch (err) { setError(err.message) } finally { setBusy(false) }
   }
@@ -198,7 +199,8 @@ function App() {
   const [tickets, setTickets] = useState([])
   const [selectedId, setSelectedId] = useState(null)
   const [selected, setSelected] = useState(null)
-  const [filters, setFilters] = useState({ status: '', category: '' })
+  const [overview, setOverview] = useState(null)
+  const [filters, setFilters] = useState({ status: '', category: '', priority: '', q: '' })
   const [cursor, setCursor] = useState(null)
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -213,6 +215,9 @@ function App() {
     const status = view === 'resolved' ? 'resolved' : filters.status
     if (status) params.append('status', status)
     if (filters.category) params.set('category', filters.category)
+    if (filters.priority) params.set('priority', filters.priority)
+    if (filters.q.trim()) params.set('q', filters.q.trim())
+    if (view === 'mine') params.set('assigned_user_id', 'current_user')
     return params
   }, [view, filters])
 
@@ -228,8 +233,8 @@ function App() {
     } catch (err) { setError(err.message); if (!append) setTickets([]) } finally { setLoading(false) }
   }, [baseQuery, selectedId])
 
-  useEffect(() => { if (view !== 'assistant') loadTickets(false, null) }, [view, filters.status, filters.category]) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (!selectedId) { setSelected(null); return } api(`/tickets/${selectedId}`).then(setSelected).catch((err) => setError(err.message)) }, [selectedId])
+  useEffect(() => { if (view !== 'assistant') loadTickets(false, null) }, [view, filters.status, filters.category, filters.priority, filters.q]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!selectedId) { setSelected(null); setOverview(null); return } Promise.all([api(`/tickets/${selectedId}`), api(`/tickets/${selectedId}/overview`)]).then(([ticket, detail]) => { setSelected(ticket); setOverview(detail) }).catch((err) => setError(err.message)) }, [selectedId])
 
   const transition = async (action) => {
     setBusy(true); setError('')
@@ -248,7 +253,7 @@ function App() {
 
   if (view === 'assistant') return <div className="app-shell"><Sidebar view={view} setView={setView} mobileOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} /><AssistantView /></div>
 
-  return <div className="app-shell"><Sidebar view={view} setView={setView} mobileOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} /><main className={`workspace ${detailOpen ? 'show-detail' : ''}`}><section className="queue-pane"><header className="topbar"><button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="打开导航"><Menu /></button><div><span className="eyebrow">服务台</span><h1>{view === 'resolved' ? '已解决工单' : view === 'mine' ? '我的处理' : '工单队列'}</h1></div><button className="primary-action" onClick={() => setCreateOpen(true)}><Plus size={17} />新建</button></header><div className="filters"><div className="search-box"><Search size={16} /><input placeholder="搜索工单" disabled /></div><label><Filter size={15} /><select value={filters.status} onChange={(e) => { setCursor(null); setFilters({ ...filters, status: e.target.value }) }} disabled={view === 'resolved'}><option value="">全部状态</option><option value="new">新建</option><option value="queued">待分派</option><option value="assigned">已分派</option><option value="in_progress">处理中</option><option value="awaiting_customer">等待客户</option><option value="resolved">已解决</option></select></label><label><select value={filters.category} onChange={(e) => { setCursor(null); setFilters({ ...filters, category: e.target.value }) }}><option value="">全部类别</option>{Object.entries(categoryLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><button className="icon-button" onClick={() => loadTickets(false, null)} aria-label="刷新"><RefreshCw size={17} /></button></div>{error && <div className="error-banner"><AlertCircle size={16} /><span>{error}</span><button onClick={() => setError('')}><X size={15} /></button></div>}<TicketList tickets={tickets} selectedId={selectedId} onSelect={(id) => { setSelectedId(id); setDetailOpen(true) }} loading={loading} hasMore={Boolean(cursor)} onMore={() => loadTickets(true, cursor)} /></section><TicketDetail ticket={selected} busy={busy} pendingClarification={pendingClarification} onTransition={transition} onSurvey={survey} onResume={resumeClarification} onBack={() => setDetailOpen(false)} /></main><CreateTicketDialog open={createOpen} onClose={() => setCreateOpen(false)} onCreated={(result) => { const ticket = result.ticket || result; setTickets((items) => [ticket, ...items]); setSelectedId(ticket.ticket_id); setPendingClarification(result.interrupt || null); setDetailOpen(true) }} /></div>
+  return <div className="app-shell"><Sidebar view={view} setView={setView} mobileOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} /><main className={`workspace ${detailOpen ? 'show-detail' : ''}`}><section className="queue-pane"><header className="topbar"><button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="打开导航"><Menu /></button><div><span className="eyebrow">服务台</span><h1>{view === 'resolved' ? '已解决工单' : view === 'mine' ? '我的处理' : '工单队列'}</h1></div><button className="primary-action" onClick={() => setCreateOpen(true)}><Plus size={17} />新建</button></header><div className="filters"><div className="search-box"><Search size={16} /><input placeholder="搜索工单" value={filters.q} onChange={(e) => { setCursor(null); setFilters({ ...filters, q: e.target.value }) }} /></div><label><Filter size={15} /><select value={filters.status} onChange={(e) => { setCursor(null); setFilters({ ...filters, status: e.target.value }) }} disabled={view === 'resolved'}><option value="">全部状态</option><option value="new">新建</option><option value="queued">待分派</option><option value="assigned">已分派</option><option value="in_progress">处理中</option><option value="awaiting_customer">等待客户</option><option value="resolved">已解决</option></select></label><label><select value={filters.category} onChange={(e) => { setCursor(null); setFilters({ ...filters, category: e.target.value }) }}><option value="">全部类别</option>{Object.entries(categoryLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label><select value={filters.priority} onChange={(e) => { setCursor(null); setFilters({ ...filters, priority: e.target.value }) }}><option value="">全部优先级</option><option value="urgent">紧急</option><option value="high">高</option><option value="normal">普通</option><option value="low">低</option></select></label><button className="icon-button" onClick={() => loadTickets(false, null)} aria-label="刷新"><RefreshCw size={17} /></button></div>{error && <div className="error-banner"><AlertCircle size={16} /><span>{error}</span><button onClick={() => setError('')}><X size={15} /></button></div>}<TicketList tickets={tickets} selectedId={selectedId} onSelect={(id) => { setSelectedId(id); setDetailOpen(true) }} loading={loading} hasMore={Boolean(cursor)} onMore={() => loadTickets(true, cursor)} /></section><TicketDetail ticket={selected} overview={overview} busy={busy} pendingClarification={pendingClarification} onTransition={transition} onSurvey={survey} onResume={resumeClarification} onBack={() => setDetailOpen(false)} /></main><CreateTicketDialog open={createOpen} onClose={() => setCreateOpen(false)} onCreated={(result) => { const ticket = result.ticket || result; setTickets((items) => [ticket, ...items]); setSelectedId(ticket.ticket_id); setPendingClarification(result.interrupt || null); setDetailOpen(true) }} /></div>
 }
 
 export default App

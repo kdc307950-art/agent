@@ -85,44 +85,65 @@ class TicketOperationsRepository:
     async def claim_outbox(
         self,
         *,
+        worker_id: str,
+        lease_seconds: int = 60,
         limit: int = 20,
         tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        if limit < 1 or limit > 100:
-            raise ValueError("limit 必须在 1 到 100 之间")
+        if not worker_id or lease_seconds < 1 or limit < 1 or limit > 100:
+            raise ValueError("Outbox 租约参数无效")
         async with self.pool.connection() as connection:
             async with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
                 await cursor.execute(
                     """
                     WITH ready AS (
-                        SELECT tenant_id, event_id
+                        SELECT tenant_id, event_id, status AS previous_status
                         FROM outbox_events
-                        WHERE status = 'pending' AND available_at <= now()
-                          AND (%s::TEXT IS NULL OR tenant_id = %s)
+                        WHERE (
+                            (status = 'pending' AND available_at <= now())
+                            OR (status = 'processing' AND lease_expires_at < now())
+                        ) AND (%s::TEXT IS NULL OR tenant_id = %s)
                         ORDER BY available_at, created_at
                         FOR UPDATE SKIP LOCKED
                         LIMIT %s
                     )
                     UPDATE outbox_events AS o
-                    SET status = 'processing', claimed_at = now(), attempts = attempts + 1
+                    SET status = 'processing', claimed_at = now(), attempts = attempts + 1,
+                        worker_id = %s, lease_expires_at = now() + (%s * interval '1 second')
                     FROM ready
                     WHERE o.tenant_id = ready.tenant_id AND o.event_id = ready.event_id
-                    RETURNING o.*
+                    RETURNING o.*, (ready.previous_status = 'processing') AS lease_recovered
                     """,
-                    (tenant_id, tenant_id, limit),
+                    (tenant_id, tenant_id, limit, worker_id, lease_seconds),
                 )
                 return list(await cursor.fetchall())
 
-    async def complete_outbox(self, tenant_id: str, event_id: str) -> bool:
+    async def renew_outbox_lease(self, tenant_id: str, event_id: str, *, worker_id: str, lease_seconds: int = 60) -> bool:
         async with self.pool.connection() as connection:
             async with connection.cursor() as cursor:
                 await cursor.execute(
                     """
                     UPDATE outbox_events
-                    SET status = 'delivered', delivered_at = now(), last_error_code = NULL
+                    SET lease_expires_at = now() + (%s * interval '1 second')
                     WHERE tenant_id = %s AND event_id = %s AND status = 'processing'
+                      AND worker_id = %s AND lease_expires_at >= now()
                     """,
-                    (tenant_id, event_id),
+                    (lease_seconds, tenant_id, event_id, worker_id),
+                )
+                return cursor.rowcount == 1
+
+    async def complete_outbox(self, tenant_id: str, event_id: str, *, worker_id: str) -> bool:
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE outbox_events
+                    SET status = 'delivered', delivered_at = now(), last_error_code = NULL,
+                        worker_id = NULL, lease_expires_at = NULL
+                    WHERE tenant_id = %s AND event_id = %s AND status = 'processing'
+                      AND worker_id = %s AND lease_expires_at >= now()
+                    """,
+                    (tenant_id, event_id, worker_id),
                 )
                 return cursor.rowcount == 1
 
@@ -131,6 +152,7 @@ class TicketOperationsRepository:
         tenant_id: str,
         event_id: str,
         *,
+        worker_id: str,
         error_code: str,
         retry_at: datetime | None,
     ) -> bool:
@@ -141,12 +163,73 @@ class TicketOperationsRepository:
                     """
                     UPDATE outbox_events
                     SET status = %s, available_at = COALESCE(%s, available_at),
-                        claimed_at = NULL, last_error_code = %s
+                        claimed_at = NULL, worker_id = NULL, lease_expires_at = NULL,
+                        last_error_code = %s
                     WHERE tenant_id = %s AND event_id = %s AND status = 'processing'
+                      AND worker_id = %s AND lease_expires_at >= now()
                     """,
-                    (target_status, retry_at, error_code, tenant_id, event_id),
+                    (target_status, retry_at, error_code, tenant_id, event_id, worker_id),
                 )
                 return cursor.rowcount == 1
+
+    async def list_dead_outbox(self, *, tenant_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        async with self.pool.connection() as connection:
+            async with connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    SELECT * FROM outbox_events WHERE tenant_id = %s AND status = 'dead'
+                    ORDER BY created_at LIMIT %s
+                    """,
+                    (tenant_id, limit),
+                )
+                return list(await cursor.fetchall())
+
+    async def replay_dead_outbox(self, tenant_id: str, event_id: str) -> bool:
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE outbox_events
+                    SET status = 'pending', available_at = now(), claimed_at = NULL,
+                        worker_id = NULL, lease_expires_at = NULL, last_error_code = NULL
+                    WHERE tenant_id = %s AND event_id = %s AND status = 'dead'
+                    """,
+                    (tenant_id, event_id),
+                )
+                return cursor.rowcount == 1
+
+    async def get_ticket_overview(self, tenant_id: str, ticket_id: str) -> dict[str, Any]:
+        async with self.pool.connection() as connection:
+            async with connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    "SELECT * FROM ticket_sla WHERE tenant_id = %s AND ticket_id = %s",
+                    (tenant_id, ticket_id),
+                )
+                sla = await cursor.fetchone()
+                await cursor.execute(
+                    "SELECT * FROM satisfaction_surveys WHERE tenant_id = %s AND ticket_id = %s",
+                    (tenant_id, ticket_id),
+                )
+                survey = await cursor.fetchone()
+                await cursor.execute(
+                    """
+                    SELECT message_id, direction, actor_type, actor_id, channel, content, created_at
+                    FROM ticket_messages WHERE tenant_id = %s AND ticket_id = %s
+                    ORDER BY created_at, message_id LIMIT 200
+                    """,
+                    (tenant_id, ticket_id),
+                )
+                messages = list(await cursor.fetchall())
+                await cursor.execute(
+                    """
+                    SELECT assignment_id, team_id, member_id, reason_codes, assigned_at, ended_at
+                    FROM ticket_assignments WHERE tenant_id = %s AND ticket_id = %s
+                    ORDER BY assignment_id
+                    """,
+                    (tenant_id, ticket_id),
+                )
+                assignments = list(await cursor.fetchall())
+        return {"sla": sla, "survey": survey, "messages": messages, "assignments": assignments}
 
     async def create_sla(
         self,

@@ -10,15 +10,18 @@ class FakeRepository:
         self.completed = []
         self.failed = []
 
-    async def claim_outbox(self, *, limit, tenant_id=None):
+    async def claim_outbox(self, *, worker_id, lease_seconds, limit, tenant_id=None):
         return [event for event in self.events if tenant_id is None or event["tenant_id"] == tenant_id][:limit]
 
-    async def complete_outbox(self, tenant_id, event_id):
-        self.completed.append((tenant_id, event_id))
+    async def renew_outbox_lease(self, tenant_id, event_id, *, worker_id, lease_seconds):
         return True
 
-    async def fail_outbox(self, tenant_id, event_id, *, error_code, retry_at):
-        self.failed.append((tenant_id, event_id, error_code, retry_at))
+    async def complete_outbox(self, tenant_id, event_id, *, worker_id):
+        self.completed.append((tenant_id, event_id, worker_id))
+        return True
+
+    async def fail_outbox(self, tenant_id, event_id, *, worker_id, error_code, retry_at):
+        self.failed.append((tenant_id, event_id, worker_id, error_code, retry_at))
         return True
 
 
@@ -53,8 +56,9 @@ def test_worker_delivers_success_and_marks_unknown_type_dead():
     assert result.claimed == 2
     assert result.delivered == 1
     assert result.dead == 1
-    assert repository.completed == [("tenant-a", "ok")]
-    assert repository.failed[0][1:3] == ("unknown", "unsupported_event_type")
+    assert repository.completed[0][:2] == ("tenant-a", "ok")
+    assert repository.failed[0][1] == "unknown"
+    assert repository.failed[0][3] == "unsupported_event_type"
 
 
 def test_transient_failure_retries_with_backoff_then_becomes_dead():
@@ -71,9 +75,9 @@ def test_transient_failure_retries_with_backoff_then_becomes_dead():
     )
 
     assert retried.retried == 1
-    assert retry_repository.failed[0][3] > now
+    assert retry_repository.failed[0][4] > now
     assert dead.dead == 1
-    assert dead_repository.failed[0][3] is None
+    assert dead_repository.failed[0][4] is None
 
 
 def test_permanent_sender_failure_is_not_retried():
@@ -87,8 +91,8 @@ def test_permanent_sender_failure_is_not_retried():
     )
 
     assert result.dead == 1
-    assert repository.failed[0][2] == "ValueError"
-    assert repository.failed[0][3] is None
+    assert repository.failed[0][3] == "ValueError"
+    assert repository.failed[0][4] is None
 
 
 def test_worker_run_forever_stops_without_busy_wait():

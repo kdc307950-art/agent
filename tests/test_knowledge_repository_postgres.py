@@ -8,8 +8,10 @@ from backend.knowledge import (
     KnowledgeChunkInput,
     KnowledgeDocumentInput,
     KnowledgeRepository,
+    PgVectorRetriever,
     RetrievalPrincipal,
 )
+from backend.vector_migrations import setup_vector_schema
 from backend.migrations import setup_postgres
 from backend.tickets import TicketRepository
 

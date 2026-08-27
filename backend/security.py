@@ -299,22 +299,17 @@ async def authenticate(
     return principal
 
 
-async def rate_limit_dependency(
-    request: Request,
-    principal: Principal = Depends(authenticate),
-) -> Principal:
-    if "chat:write" not in principal.scopes:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="缺少 chat:write 权限")
+async def enforce_rate_limit(request: Request, principal_key: str, route_key: str) -> None:
     limiter = request.app.state.rate_limiter
     try:
-        retry_after = await limiter.check(principal.limiter_key, request.url.path)
+        retry_after = await limiter.check(principal_key, route_key)
     except Exception as exc:
         request.app.state.metrics.increment("rate_limit_errors_total")
         logger.exception("rate limiter failed")
         if request.app.state.settings.redis_fail_mode == "open":
             retry_after = await request.app.state.memory_rate_limiter.check(
-                principal.limiter_key,
-                request.url.path,
+                principal_key,
+                route_key,
             )
         else:
             raise HTTPException(status_code=503, detail="限流服务暂时不可用") from exc
@@ -326,4 +321,11 @@ async def rate_limit_dependency(
             headers={"Retry-After": str(retry_after)},
         )
     request.app.state.metrics.increment("rate_limit_allowed_total")
+
+
+async def rate_limit_dependency(
+    request: Request,
+    principal: Principal = Depends(authenticate),
+) -> Principal:
+    await enforce_rate_limit(request, principal.limiter_key, request.url.path)
     return principal

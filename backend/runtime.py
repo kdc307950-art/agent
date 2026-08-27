@@ -26,7 +26,7 @@ from .metrics import RuntimeMetrics
 from .repositories import LongTermMemoryRepository
 from .schema import check_schema_ready, ensure_schema_version
 from .settings import Settings
-from .tickets import TicketOperationsRepository, TicketRepository
+from .tickets import RoutingRepository, TicketOperationsRepository, TicketRepository
 from .tool_governance import ToolGovernance
 from .workflow_loader import load_workflow_spec
 
@@ -41,6 +41,7 @@ class AgentRuntime:
     audit: AuditRepository
     tickets: TicketRepository
     ticket_operations: TicketOperationsRepository
+    routing: RoutingRepository
     knowledge: KnowledgeRepository
     tool_governance: ToolGovernance
     metrics: RuntimeMetrics
@@ -126,6 +127,7 @@ async def runtime_context(
             audit=audit,
             tickets=TicketRepository(audit.pool),
             ticket_operations=TicketOperationsRepository(audit.pool),
+            routing=RoutingRepository(audit.pool),
             knowledge=KnowledgeRepository(audit.pool),
             tool_governance=tool_governance,
             metrics=runtime_metrics,

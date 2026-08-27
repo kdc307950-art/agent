@@ -31,7 +31,7 @@ from .channel_adapters import (
     WeComWebhookAdapter,
     WebhookVerificationError,
 )
-from .security import Principal, authenticate
+from .security import Principal, enforce_rate_limit, rate_limit_dependency
 from .tickets import (
     CreateTicket,
     InboundEventConflict,
@@ -69,19 +69,26 @@ class TransitionTicketRequest(BaseModel):
 class StartIntakeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    operation_id: str = Field(min_length=8, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
     text: str = Field(min_length=1, max_length=8_000)
     fields: dict[str, Any] = Field(default_factory=dict)
     expected_version: int = Field(ge=0)
 
 
 class ResumeIntakeRequest(TicketResumeCommand):
-    pass
+    operation_id: str = Field(min_length=8, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
 
 
 class CreateSurveyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     expires_in_days: int = Field(default=7, ge=1, le=90)
+
+
+class ReplayOutboxRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str = Field(min_length=1, max_length=128)
 
 
 class SurveyResponseRequest(BaseModel):
@@ -146,6 +153,17 @@ def _intake_config(tenant_id: str, ticket_id: str) -> dict[str, Any]:
     return {"configurable": {"thread_id": f"helpdesk:{tenant_id}:{ticket_id}", "checkpoint_ns": ""}}
 
 
+def _serialize_commands(commands: list[TicketCommand]) -> list[dict[str, Any]]:
+    return [command.model_dump(mode="json") for command in commands]
+
+
+def _deserialize_commands(intent: dict[str, Any]) -> list[TicketCommand]:
+    raw = intent.get("commands")
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("工作流意图缺少 commands")
+    return [TicketCommand.model_validate(item) for item in raw]
+
+
 def _intake_outcome_commands(
     *,
     ticket_id: str,
@@ -188,6 +206,47 @@ def _intake_outcome_commands(
     ]
 
 
+async def _apply_operational_routing(
+    runtime,
+    commands: list[TicketCommand],
+    result: dict[str, Any],
+    *,
+    tenant_id: str,
+    channel: str,
+) -> list[TicketCommand]:
+    if "__interrupt__" in result or not commands or not hasattr(runtime, "routing"):
+        return commands
+    decision = await runtime.routing.route(
+        tenant_id=tenant_id,
+        category=str(result.get("category") or "other"),
+        subcategory=result.get("subcategory"),
+        channel=channel,
+        department_id=None,
+        risk_level=str(result.get("risk_level") or "low"),
+    )
+    if decision.team_id is None:
+        return commands
+    updated = []
+    for command in commands:
+        if command.action == TicketAction.QUEUE:
+            payload = dict(command.payload)
+            payload.update({"team_id": decision.team_id, "reason_codes": list(decision.reason_codes)})
+            command = command.model_copy(update={"payload": payload})
+        updated.append(command)
+    if decision.member_id is not None:
+        updated.append(
+            TicketCommand(
+                ticket_id=commands[0].ticket_id,
+                action=TicketAction.ASSIGN,
+                actor_type=ActorType.SYSTEM,
+                actor_id="routing-agent",
+                expected_version=updated[-1].expected_version + 1,
+                payload={"team_id": decision.team_id, "user_id": decision.member_id, "reason_codes": list(decision.reason_codes)},
+            )
+        )
+    return updated
+
+
 def _serialize_intake_result(ticket, result: dict[str, Any], snapshot: object) -> dict[str, Any]:
     pending = None
     for task in getattr(snapshot, "tasks", ()) or ():
@@ -215,6 +274,18 @@ def _interrupt_payload(snapshot: object, interrupt_id: str) -> tuple[object, dic
                 if isinstance(value, dict):
                     return item, value
     raise HTTPException(status_code=409, detail="恢复标识已失效，请刷新后重试")
+
+
+async def _webhook_body(request: Request, channel: str) -> bytes:
+    source_ip = request.client.host if request.client is not None else "unknown"
+    await enforce_rate_limit(request, f"webhook:{channel}:{source_ip}", f"webhook:{channel}")
+    content_length = request.headers.get("content-length")
+    if content_length is not None and int(content_length) > 256 * 1024:
+        raise HTTPException(status_code=413, detail="Webhook 请求体超过 256 KB")
+    body = await request.body()
+    if len(body) > 256 * 1024:
+        raise HTTPException(status_code=413, detail="Webhook 请求体超过 256 KB")
+    return body
 
 
 async def _persist_channel_event(runtime, event: NormalizedChannelEvent, *, actor_id: str):
@@ -251,9 +322,18 @@ async def _persist_channel_event(runtime, event: NormalizedChannelEvent, *, acto
         "fields": {"title": event.title, "description": event.content, "requester_id": event.requester_id},
         "clarification_rounds": 0,
     }, config)
+    commands = _intake_outcome_commands(
+        ticket_id=ticket_id,
+        actor_id="intake-agent",
+        expected_version=ticket.version,
+        result=result,
+    )
+    commands = await _apply_operational_routing(
+        runtime, commands, result, tenant_id=event.tenant_id, channel=event.channel
+    )
     ticket = await runtime.tickets.transition_many(
         event.tenant_id,
-        _intake_outcome_commands(ticket_id=ticket_id, actor_id="intake-agent", expected_version=ticket.version, result=result),
+        commands,
         scopes={"ticket:system"},
     )
     snapshot = await runtime.intake_graph.aget_state(config)
@@ -274,7 +354,7 @@ def _map_domain_error(exc: Exception) -> HTTPException:
 async def create_ticket(
     payload: CreateTicketRequest,
     request: Request,
-    principal: Principal = Depends(authenticate),
+    principal: Principal = Depends(rate_limit_dependency),
 ):
     _require_scope(principal, "ticket:customer")
     runtime = _runtime(request)
@@ -302,10 +382,13 @@ async def create_ticket(
 @router.get("")
 async def list_tickets_api(
     request: Request,
-    principal: Principal = Depends(authenticate),
+    principal: Principal = Depends(rate_limit_dependency),
     statuses: list[TicketStatus] = Query(default=[], alias="status"),
     category: str | None = Query(default=None, max_length=64),
     assigned_team_id: str | None = Query(default=None, max_length=128),
+    assigned_user_id: str | None = Query(default=None, max_length=128),
+    priority: Literal["low", "normal", "high", "urgent"] | None = None,
+    q: str | None = Query(default=None, min_length=1, max_length=128),
     cursor: str | None = Query(default=None, max_length=512),
     limit: int = Query(default=50, ge=1, le=100),
 ):
@@ -319,6 +402,9 @@ async def list_tickets_api(
         statuses=tuple(statuses),
         category=category,
         assigned_team_id=assigned_team_id if is_agent else None,
+        assigned_user_id=(principal.user_id if assigned_user_id == "current_user" else assigned_user_id) if is_agent else None,
+        priority=priority if is_agent else None,
+        query_text=q,
         updated_before=_decode_cursor(cursor),
         limit=limit + 1,
     )
@@ -334,7 +420,7 @@ async def list_tickets_api(
 async def get_ticket(
     ticket_id: str,
     request: Request,
-    principal: Principal = Depends(authenticate),
+    principal: Principal = Depends(rate_limit_dependency),
 ):
     if not ({"ticket:customer", "ticket:agent"} & principal.scopes):
         raise HTTPException(status_code=403, detail="缺少工单读取权限")
@@ -347,12 +433,29 @@ async def get_ticket(
     return ticket
 
 
+@router.get("/{ticket_id}/overview")
+async def get_ticket_overview(
+    ticket_id: str,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    if not ({"ticket:customer", "ticket:agent"} & principal.scopes):
+        raise HTTPException(status_code=403, detail="缺少工单读取权限")
+    runtime = _runtime(request)
+    ticket = await runtime.tickets.get(principal.tenant_id, ticket_id)
+    if ticket is None or ("ticket:agent" not in principal.scopes and ticket.requester_id != principal.user_id):
+        raise HTTPException(status_code=404, detail="工单不存在")
+    overview = await runtime.ticket_operations.get_ticket_overview(principal.tenant_id, ticket_id)
+    overview["status_events"] = await runtime.tickets.list_status_events(principal.tenant_id, ticket_id)
+    return overview
+
+
 @router.post("/{ticket_id}/intake")
 async def start_ticket_intake(
     ticket_id: str,
     payload: StartIntakeRequest,
     request: Request,
-    principal: Principal = Depends(authenticate),
+    principal: Principal = Depends(rate_limit_dependency),
 ):
     _require_scope(principal, "ticket:customer")
     runtime = _runtime(request)
@@ -360,45 +463,41 @@ async def start_ticket_intake(
     if ticket is None or ticket.requester_id != principal.user_id:
         raise HTTPException(status_code=404, detail="工单不存在")
     if payload.expected_version != ticket.version:
+        existing = await runtime.tickets.get_workflow_operation(
+            tenant_id=principal.tenant_id, ticket_id=ticket_id, operation_id=payload.operation_id
+        )
+        if existing is not None and existing["status"] == "committed":
+            return _serialize_intake_result(ticket, {}, None)
         raise HTTPException(status_code=409, detail="工单版本已变化，请刷新后重试")
     try:
-        if ticket.status == TicketStatus.NEW:
-            ticket = await runtime.tickets.transition(
-                principal.tenant_id,
-                TicketCommand(
-                    ticket_id=ticket_id,
-                    action=TicketAction.START_INTAKE,
-                    actor_type=ActorType.SYSTEM,
-                    actor_id="intake-agent",
-                    expected_version=ticket.version,
-                ),
-                scopes={"ticket:system"},
-            )
-        elif ticket.status != TicketStatus.INTAKING:
-            raise InvalidTicketTransition(f"状态 {ticket.status} 不能启动受理")
-        config = _intake_config(principal.tenant_id, ticket_id)
-        result = await runtime.intake_graph.ainvoke(
-            {
-                "ticket_id": ticket_id,
-                "requester_id": principal.user_id,
-                "text": payload.text,
-                "fields": payload.fields,
-                "clarification_rounds": 0,
-            },
-            config,
-        )
-        commands = _intake_outcome_commands(
+        run = await runtime.tickets.start_workflow_operation(
+            tenant_id=principal.tenant_id,
             ticket_id=ticket_id,
-            actor_id="intake-agent",
+            operation_id=payload.operation_id,
+            command_type="intake",
             expected_version=ticket.version,
-            result=result,
+            checkpoint_thread_id=_intake_config(principal.tenant_id, ticket_id)["configurable"]["thread_id"],
         )
-        ticket = await runtime.tickets.transition_many(
-            principal.tenant_id,
-            commands,
-            scopes={"ticket:system"},
-        )
-        snapshot = await runtime.intake_graph.aget_state(config)
+        if run["status"] == "committed":
+            return _serialize_intake_result(ticket, {}, None)
+        if run["intent"] is not None:
+            commands = _deserialize_commands(run["intent"])
+            result = dict(run["intent"].get("result") or {})
+        else:
+            if ticket.status not in {TicketStatus.NEW, TicketStatus.INTAKING}:
+                raise InvalidTicketTransition(f"状态 {ticket.status} 不能启动受理")
+            config = _intake_config(principal.tenant_id, ticket_id)
+            result = await runtime.intake_graph.ainvoke(
+                {"ticket_id": ticket_id, "requester_id": principal.user_id, "text": payload.text, "fields": payload.fields, "clarification_rounds": 0},
+                config,
+            )
+            prefix = [] if ticket.status == TicketStatus.INTAKING else [TicketCommand(ticket_id=ticket_id, action=TicketAction.START_INTAKE, actor_type=ActorType.SYSTEM, actor_id="intake-agent", expected_version=ticket.version)]
+            next_version = ticket.version + len(prefix)
+            commands = [*prefix, *_intake_outcome_commands(ticket_id=ticket_id, actor_id="intake-agent", expected_version=next_version, result=result)]
+            commands = await _apply_operational_routing(runtime, commands, result, tenant_id=principal.tenant_id, channel=getattr(ticket, "channel", "web"))
+            await runtime.tickets.record_workflow_intent(tenant_id=principal.tenant_id, ticket_id=ticket_id, operation_id=payload.operation_id, intent={"commands": _serialize_commands(commands), "result": {key: value for key, value in result.items() if key != "__interrupt__"}})
+        ticket = await runtime.tickets.transition_many(principal.tenant_id, commands, scopes={"ticket:system"}, operation_id=payload.operation_id)
+        snapshot = await runtime.intake_graph.aget_state(_intake_config(principal.tenant_id, ticket_id))
         return _serialize_intake_result(ticket, result, snapshot)
     except Exception as exc:
         raise _map_domain_error(exc) from exc
@@ -409,7 +508,7 @@ async def resume_ticket_intake(
     ticket_id: str,
     payload: ResumeIntakeRequest,
     request: Request,
-    principal: Principal = Depends(authenticate),
+    principal: Principal = Depends(rate_limit_dependency),
 ):
     _require_scope(principal, "ticket:customer")
     if payload.ticket_id != ticket_id:
@@ -421,8 +520,23 @@ async def resume_ticket_intake(
     if ticket is None or ticket.requester_id != principal.user_id:
         raise HTTPException(status_code=404, detail="工单不存在")
     if payload.expected_version != ticket.version:
+        existing = await runtime.tickets.get_workflow_operation(
+            tenant_id=principal.tenant_id, ticket_id=ticket_id, operation_id=payload.operation_id
+        )
+        if existing is not None and existing["status"] == "committed":
+            return _serialize_intake_result(ticket, {}, None)
         raise HTTPException(status_code=409, detail="工单版本已变化，请刷新后重试")
     config = _intake_config(principal.tenant_id, ticket_id)
+    run = await runtime.tickets.start_workflow_operation(
+        tenant_id=principal.tenant_id,
+        ticket_id=ticket_id,
+        operation_id=payload.operation_id,
+        command_type="resume",
+        expected_version=ticket.version,
+        checkpoint_thread_id=config["configurable"]["thread_id"],
+    )
+    if run["status"] == "committed":
+        return _serialize_intake_result(ticket, {}, None)
     snapshot = await runtime.intake_graph.aget_state(config)
     _item, value = _interrupt_payload(snapshot, payload.interrupt_id)
     try:
@@ -433,22 +547,22 @@ async def resume_ticket_intake(
             expected_actor_id=value.get("expected_actor_id"),
             allowed_actions=value.get("allowed_actions") or [],
         )
-        server_command = payload.model_copy(update={"actor_id": principal.user_id})
-        validated = validate_resume_command(pending, server_command, scopes=principal.scopes)
-        result = await runtime.intake_graph.ainvoke(
-            Command(resume=validated.resume_payload),
-            config,
-        )
-        outcome = _intake_outcome_commands(
-            ticket_id=ticket_id,
-            actor_id="intake-agent",
-            expected_version=ticket.version + 1,
-            result=result,
-        )
+        if run["intent"] is not None:
+            commands = _deserialize_commands(run["intent"])
+            result = dict(run["intent"].get("result") or {})
+        else:
+            server_command = payload.model_copy(update={"actor_id": principal.user_id})
+            validated = validate_resume_command(pending, server_command, scopes=principal.scopes)
+            result = await runtime.intake_graph.ainvoke(Command(resume=validated.resume_payload), config)
+            outcome = _intake_outcome_commands(ticket_id=ticket_id, actor_id="intake-agent", expected_version=ticket.version + 1, result=result)
+            commands = [validated.ticket_command, *outcome]
+            commands = await _apply_operational_routing(runtime, commands, result, tenant_id=principal.tenant_id, channel=getattr(ticket, "channel", "web"))
+            await runtime.tickets.record_workflow_intent(tenant_id=principal.tenant_id, ticket_id=ticket_id, operation_id=payload.operation_id, intent={"commands": _serialize_commands(commands), "result": {key: value for key, value in result.items() if key != "__interrupt__"}})
         ticket = await runtime.tickets.transition_many(
             principal.tenant_id,
-            [validated.ticket_command, *outcome],
+            commands,
             scopes=principal.scopes | {"ticket:system"},
+            operation_id=payload.operation_id,
         )
         snapshot = await runtime.intake_graph.aget_state(config)
         return _serialize_intake_result(ticket, result, snapshot)
@@ -465,7 +579,7 @@ async def create_ticket_survey(
     ticket_id: str,
     payload: CreateSurveyRequest,
     request: Request,
-    principal: Principal = Depends(authenticate),
+    principal: Principal = Depends(rate_limit_dependency),
 ):
     _require_scope(principal, "ticket:agent")
     runtime = _runtime(request)
@@ -490,7 +604,7 @@ async def respond_ticket_survey(
     survey_id: str,
     payload: SurveyResponseRequest,
     request: Request,
-    principal: Principal = Depends(authenticate),
+    principal: Principal = Depends(rate_limit_dependency),
 ):
     _require_scope(principal, "ticket:customer")
     runtime = _runtime(request)
@@ -513,7 +627,7 @@ async def transition_ticket_api(
     ticket_id: str,
     payload: TransitionTicketRequest,
     request: Request,
-    principal: Principal = Depends(authenticate),
+    principal: Principal = Depends(rate_limit_dependency),
 ):
     scope = _actor_scope(payload.actor_type)
     _require_scope(principal, scope)
@@ -540,12 +654,35 @@ async def transition_ticket_api(
         raise _map_domain_error(exc) from exc
 
 
+@channel_router.get("/outbox/dead")
+async def list_dead_outbox_events(
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    _require_scope(principal, "ticket:agent")
+    return {"items": await _runtime(request).ticket_operations.list_dead_outbox(tenant_id=principal.tenant_id, limit=limit)}
+
+
+@channel_router.post("/outbox/replay")
+async def replay_dead_outbox_event(
+    payload: ReplayOutboxRequest,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    _require_scope(principal, "ticket:agent")
+    replayed = await _runtime(request).ticket_operations.replay_dead_outbox(principal.tenant_id, payload.event_id)
+    if not replayed:
+        raise HTTPException(status_code=404, detail="死信事件不存在")
+    return {"event_id": payload.event_id, "status": "pending"}
+
+
 @channel_router.post("/{channel}/events")
 async def receive_channel_event(
     channel: str,
     payload: InboundChannelRequest,
     request: Request,
-    principal: Principal = Depends(authenticate),
+    principal: Principal = Depends(rate_limit_dependency),
 ):
     _require_scope(principal, "ticket:channel")
     runtime = _runtime(request)
@@ -585,9 +722,10 @@ async def receive_wecom_webhook(
         corp_id=settings.wecom_corp_id,
         replay_window_seconds=settings.webhook_replay_window_seconds,
     )
+    body = await _webhook_body(request, "wecom")
     try:
         event = adapter.verify_and_parse(
-            await request.body(),
+            body,
             timestamp=timestamp,
             nonce=nonce,
             signature=msg_signature,
@@ -613,9 +751,10 @@ async def receive_dingtalk_webhook(
         app_secret=settings.dingtalk_app_secret,
         replay_window_seconds=settings.webhook_replay_window_seconds,
     )
+    body = await _webhook_body(request, "dingtalk")
     try:
         event = adapter.verify_and_parse(
-            await request.body(),
+            body,
             timestamp=timestamp,
             signature=sign,
         )

@@ -11,6 +11,7 @@ from .repository import (
     canonical_payload_hash,
     ticket_repository_context,
 )
+from .routing import RoutingDecision, RoutingRepository
 from .sla import BusinessCalendar
 
 __all__ = [
@@ -19,6 +20,8 @@ __all__ = [
     "InboundEventConflict",
     "InboundEventResult",
     "OperationsConflict",
+    "RoutingDecision",
+    "RoutingRepository",
     "TicketAlreadyExists",
     "TicketNotFound",
     "TicketOperationsRepository",
