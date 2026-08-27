@@ -121,9 +121,26 @@ class FakeOperations:
     def __init__(self):
         self.surveys = []
         self.responses = []
+        self.outbound = []
+
+    async def append_outbound_message(self, **kwargs):
+        self.outbound.append(kwargs)
+        return True
 
     async def get_ticket_overview(self, tenant_id, ticket_id):
         return {"sla": None, "survey": None, "messages": [], "assignments": []}
+
+    async def ensure_sla_for_ticket(self, **kwargs):
+        return False
+
+    async def pause_sla(self, tenant_id, ticket_id, *, reason):
+        return True
+
+    async def resume_sla(self, tenant_id, ticket_id, *, resumed_at):
+        return True
+
+    async def mark_first_response(self, tenant_id, ticket_id, *, at=None):
+        return True
 
     async def create_survey(self, **kwargs):
         self.surveys.append(kwargs)
@@ -175,6 +192,30 @@ def load_app(monkeypatch, *, dingtalk=False):
 def headers(*scopes, tenant="tenant-a", user="user-1"):
     token = make_tenant_token(tenant, user, SECRET, scopes=scopes)
     return {"Authorization": f"Bearer {token}"}
+
+
+def test_channel_intake_records_workflow_operation_and_sends_clarification(monkeypatch):
+    module, tickets, intake = load_app(monkeypatch)
+    intake.result = {"__interrupt__": (), "missing_fields": ["impact"]}
+    intake.pending = (Interrupt(id="interrupt-chan", value={"kind": "ticket_clarification", "question": "补充影响范围", "allowed_actions": ["provide_information"], "expected_actor": "customer", "expected_actor_id": "user-1", "ticket_id": "ticket-1"}),)
+    with TestClient(module.app) as client:
+        response = client.post(
+            "/integrations/wecom/events",
+            headers=headers("ticket:channel", user="wecom-adapter"),
+            json={
+                "external_event_id": "event-1",
+                "requester_id": "external-user",
+                "title": "Login failure",
+                "content": "Cannot sign in",
+                "payload": {"raw": "message"},
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["intake"]["interrupt"]["interrupt_id"] == "interrupt-chan"
+    assert tickets.workflow_runs[("tenant-a", response.json()["ticket_id"], "channel:event-1")]["status"] == "committed"
+    assert tickets.operations.outbound[0]["idempotency_key"] == "clarify:" + response.json()["ticket_id"]
+    assert "补充" in tickets.operations.outbound[0]["content"]
 
 
 def test_create_ticket_derives_tenant_requester_and_actor_from_token(monkeypatch):
@@ -282,6 +323,19 @@ def test_channel_endpoint_requires_scope_and_uses_atomic_repository_method(monke
         "classify",
         "queue",
     ]
+
+
+def test_pending_interrupt_endpoint_rehydrates_checkpoint_after_refresh(monkeypatch):
+    module, tickets, intake = load_app(monkeypatch)
+    tickets.items[("tenant-a", "ticket-1")] = SimpleNamespace(
+        ticket_id="ticket-1", requester_id="user-1", version=2, status=TicketStatus.AWAITING_CUSTOMER
+    )
+    intake.pending = (Interrupt(id="interrupt-refresh", value={"kind": "ticket_clarification", "ticket_id": "ticket-1", "question": "补充影响范围", "allowed_actions": ["provide_information"], "expected_actor": "customer", "expected_actor_id": "user-1"}),)
+    with TestClient(module.app) as client:
+        response = client.get("/tickets/ticket-1/pending-interrupt", headers=headers("ticket:customer"))
+    assert response.status_code == 200
+    assert response.json()["interrupt"]["interrupt_id"] == "interrupt-refresh"
+    assert response.json()["interrupt"]["question"] == "补充影响范围"
 
 
 def test_intake_synchronizes_completed_graph_to_queued_ticket(monkeypatch):

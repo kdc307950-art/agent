@@ -5,6 +5,7 @@ from .operations import OperationsConflict, TicketOperationsRepository
 from .repository import (
     InboundEventConflict,
     TicketAlreadyExists,
+    TicketCapacityExceeded,
     TicketNotFound,
     TicketRepository,
     TicketVersionConflict,
@@ -23,6 +24,7 @@ __all__ = [
     "RoutingDecision",
     "RoutingRepository",
     "TicketAlreadyExists",
+    "TicketCapacityExceeded",
     "TicketNotFound",
     "TicketOperationsRepository",
     "TicketRecord",

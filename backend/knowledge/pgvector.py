@@ -6,6 +6,7 @@ import math
 from collections.abc import Sequence
 from typing import Protocol
 
+import httpx
 from psycopg.rows import dict_row
 
 from .models import RetrievalHit, RetrievalPrincipal
@@ -14,6 +15,30 @@ from .repository import KnowledgeRepository
 
 class EmbeddingProvider(Protocol):
     async def embed_query(self, text: str) -> Sequence[float]: ...
+
+
+class HttpEmbeddingProvider:
+    def __init__(self, endpoint: str, *, dimension: int, timeout_seconds: float = 15.0) -> None:
+        if not endpoint.startswith(("http://", "https://")):
+            raise ValueError("Embedding endpoint 必须是 http(s) URL")
+        self.endpoint = endpoint
+        self.dimension = dimension
+        self.timeout = timeout_seconds
+
+    async def embed_query(self, text: str) -> Sequence[float]:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                self.endpoint,
+                json={"texts": [text]},
+                headers={"Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+        payload = response.json()
+        embeddings = payload.get("embeddings") or payload.get("data") or []
+        vector = embeddings[0] if embeddings else []
+        if len(vector) != self.dimension:
+            raise ValueError("embedding 维度与配置不一致")
+        return [float(value) for value in vector]
 
 
 class PgVectorRetriever:

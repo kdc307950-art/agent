@@ -231,6 +231,53 @@ class TicketOperationsRepository:
                 assignments = list(await cursor.fetchall())
         return {"sla": sla, "survey": survey, "messages": messages, "assignments": assignments}
 
+    async def ensure_sla_for_ticket(
+        self,
+        *,
+        tenant_id: str,
+        ticket_id: str,
+        channel: str | None = None,
+        category: str | None = None,
+        now: datetime | None = None,
+    ) -> bool:
+        reference = now or datetime.now(timezone.utc)
+        async with self.pool.connection() as connection:
+            async with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    SELECT policy_id, version, timezone, business_days, work_start, work_end,
+                           first_response_minutes, resolution_minutes
+                    FROM sla_policies
+                    WHERE tenant_id = %s AND active
+                    ORDER BY created_at, policy_id
+                    LIMIT 1
+                    FOR UPDATE
+                    """,
+                    (tenant_id,),
+                )
+                policy = await cursor.fetchone()
+                if policy is None:
+                    return False
+                calendar = BusinessCalendar(
+                    timezone_name=policy["timezone"],
+                    business_days=frozenset(policy["business_days"]),
+                    work_start=policy["work_start"],
+                    work_end=policy["work_end"],
+                )
+                first_due = calendar.add_business_minutes(reference, policy["first_response_minutes"])
+                resolution_due = calendar.add_business_minutes(reference, policy["resolution_minutes"])
+                await cursor.execute(
+                    """
+                    INSERT INTO ticket_sla (
+                        tenant_id, ticket_id, policy_id, policy_version,
+                        first_response_due_at, resolution_due_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (tenant_id, ticket_id) DO NOTHING
+                    """,
+                    (tenant_id, ticket_id, policy["policy_id"], policy["version"], first_due, resolution_due),
+                )
+                return cursor.rowcount == 1
+
     async def create_sla(
         self,
         *,
@@ -292,6 +339,20 @@ class TicketOperationsRepository:
                     WHERE tenant_id = %s AND ticket_id = %s
                     """,
                     (first_due, resolution_due, tenant_id, ticket_id),
+                )
+                return cursor.rowcount == 1
+
+    async def mark_first_response(self, tenant_id: str, ticket_id: str, *, at: datetime | None = None) -> bool:
+        reference = at or datetime.now(timezone.utc)
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE ticket_sla
+                    SET first_responded_at = %s, updated_at = now()
+                    WHERE tenant_id = %s AND ticket_id = %s AND first_responded_at IS NULL
+                    """,
+                    (reference, tenant_id, ticket_id),
                 )
                 return cursor.rowcount == 1
 

@@ -21,7 +21,18 @@ from src.my_agent.helpdesk import build_helpdesk_intake_graph
 from src.my_agent.workflow import build_workflow_from_json
 
 from .audit import AuditRepository, audit_context
-from .knowledge import KnowledgeRepository
+from .knowledge import (
+    AgenticRAGPolicy,
+    AgenticRAGService,
+    AnswerGatePolicy,
+    HttpEmbeddingProvider,
+    KnowledgeAnswerService,
+    KnowledgeRepository,
+    LlmAnswerGenerator,
+    LlmRetrievalPlanner,
+    NullVectorRetriever,
+    PgVectorRetriever,
+)
 from .metrics import RuntimeMetrics
 from .repositories import LongTermMemoryRepository
 from .schema import check_schema_ready, ensure_schema_version
@@ -43,6 +54,7 @@ class AgentRuntime:
     ticket_operations: TicketOperationsRepository
     routing: RoutingRepository
     knowledge: KnowledgeRepository
+    agentic_rag: AgenticRAGService | None
     tool_governance: ToolGovernance
     metrics: RuntimeMetrics
     graph_mode: str = "single"
@@ -118,9 +130,46 @@ async def runtime_context(
             store=store,
             tool_governance=tool_governance,
         )
+        knowledge = KnowledgeRepository(audit.pool)
+        agentic_rag: AgenticRAGService | None = None
+        if settings.deepseek_api_key:
+            generator = LlmAnswerGenerator(
+                api_key=settings.deepseek_api_key,
+                base_url=settings.llm_base_url,
+                model=settings.llm_model,
+            )
+            planner = LlmRetrievalPlanner(
+                api_key=settings.deepseek_api_key,
+                base_url=settings.llm_base_url,
+                model=settings.llm_model,
+            )
+            vector_retriever = NullVectorRetriever()
+            if (
+                settings.knowledge_embedding_endpoint
+                and settings.knowledge_embedding_dimension
+            ):
+                vector_retriever = PgVectorRetriever(
+                    knowledge,
+                    HttpEmbeddingProvider(
+                        settings.knowledge_embedding_endpoint,
+                        dimension=settings.knowledge_embedding_dimension,
+                    ),
+                    dimension=settings.knowledge_embedding_dimension,
+                )
+            answer_service = KnowledgeAnswerService(
+                knowledge,
+                vector_retriever,
+                generator,
+                gate_policy=AnswerGatePolicy(require_both_retrievers=True, sensitive_categories=frozenset({"finance"})),
+            )
+            agentic_rag = AgenticRAGService(
+                answer_service,
+                planner,
+                policy=AgenticRAGPolicy(allow_auto_reply=False),
+            )
         yield AgentRuntime(
             graph=graph,
-            intake_graph=build_helpdesk_intake_graph(checkpointer=checkpointer),
+            intake_graph=build_helpdesk_intake_graph(checkpointer=checkpointer, rag_service=agentic_rag),
             checkpointer=checkpointer,
             store=store,
             memory=LongTermMemoryRepository(store),
@@ -128,7 +177,8 @@ async def runtime_context(
             tickets=TicketRepository(audit.pool),
             ticket_operations=TicketOperationsRepository(audit.pool),
             routing=RoutingRepository(audit.pool),
-            knowledge=KnowledgeRepository(audit.pool),
+            knowledge=knowledge,
+            agentic_rag=agentic_rag,
             tool_governance=tool_governance,
             metrics=runtime_metrics,
             graph_mode=settings.agent_graph_mode,

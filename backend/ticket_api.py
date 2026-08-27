@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -36,6 +37,7 @@ from .tickets import (
     CreateTicket,
     InboundEventConflict,
     TicketAlreadyExists,
+    TicketCapacityExceeded,
     TicketNotFound,
     TicketVersionConflict,
 )
@@ -150,7 +152,7 @@ def _decode_cursor(value: str | None) -> tuple[datetime, str] | None:
 
 
 def _intake_config(tenant_id: str, ticket_id: str) -> dict[str, Any]:
-    return {"configurable": {"thread_id": f"helpdesk:{tenant_id}:{ticket_id}", "checkpoint_ns": ""}}
+    return {"configurable": {"thread_id": f"helpdesk:{tenant_id}:{ticket_id}", "tenant_id": tenant_id, "checkpoint_ns": ""}}
 
 
 def _serialize_commands(commands: list[TicketCommand]) -> list[dict[str, Any]]:
@@ -266,6 +268,11 @@ def _serialize_intake_result(ticket, result: dict[str, Any], snapshot: object) -
     }
 
 
+async def _pending_intake_interrupt(runtime, tenant_id: str, ticket_id: str) -> dict[str, Any] | None:
+    snapshot = await runtime.intake_graph.aget_state(_intake_config(tenant_id, ticket_id))
+    return _serialize_intake_result(None, {}, snapshot)["interrupt"]
+
+
 def _interrupt_payload(snapshot: object, interrupt_id: str) -> tuple[object, dict[str, Any]]:
     for task in getattr(snapshot, "tasks", ()) or ():
         for item in getattr(task, "interrupts", ()) or ():
@@ -309,32 +316,58 @@ async def _persist_channel_event(runtime, event: NormalizedChannelEvent, *, acto
     )
     if not created or ticket is None:
         return {"created": False, "ticket_id": None if ticket is None else ticket.ticket_id, "ticket": ticket, "intake": None}
-    ticket = await runtime.tickets.transition(
-        event.tenant_id,
-        TicketCommand(ticket_id=ticket_id, action=TicketAction.START_INTAKE, actor_type=ActorType.SYSTEM, actor_id="intake-agent", expected_version=ticket.version),
-        scopes={"ticket:system"},
-    )
+    operation_id = f"channel:{event.external_event_id}"
     config = _intake_config(event.tenant_id, ticket_id)
-    result = await runtime.intake_graph.ainvoke({
-        "ticket_id": ticket_id,
-        "requester_id": event.requester_id,
-        "text": event.content,
-        "fields": {"title": event.title, "description": event.content, "requester_id": event.requester_id},
-        "clarification_rounds": 0,
-    }, config)
-    commands = _intake_outcome_commands(
+    run = await runtime.tickets.start_workflow_operation(
+        tenant_id=event.tenant_id,
         ticket_id=ticket_id,
-        actor_id="intake-agent",
+        operation_id=operation_id,
+        command_type="channel_intake",
         expected_version=ticket.version,
-        result=result,
+        checkpoint_thread_id=config["configurable"]["thread_id"],
     )
-    commands = await _apply_operational_routing(
-        runtime, commands, result, tenant_id=event.tenant_id, channel=event.channel
-    )
+    if run["status"] == "committed":
+        snapshot = await runtime.intake_graph.aget_state(config)
+        return {"created": True, "ticket_id": ticket_id, "ticket": ticket, "intake": {"ticket": ticket, "state": {}, "interrupt": _serialize_intake_result(None, {}, snapshot)["interrupt"]}}
+    if run["intent"] is None:
+        result = await runtime.intake_graph.ainvoke({
+            "ticket_id": ticket_id,
+            "requester_id": event.requester_id,
+            "text": event.content,
+            "fields": {"title": event.title, "description": event.content, "requester_id": event.requester_id},
+            "clarification_rounds": 0,
+        }, config)
+        prefix = [TicketCommand(ticket_id=ticket_id, action=TicketAction.START_INTAKE, actor_type=ActorType.SYSTEM, actor_id="intake-agent", expected_version=ticket.version)]
+        commands = [*prefix, *_intake_outcome_commands(ticket_id=ticket_id, actor_id="intake-agent", expected_version=ticket.version + 1, result=result)]
+        commands = await _apply_operational_routing(runtime, commands, result, tenant_id=event.tenant_id, channel=event.channel)
+        await runtime.tickets.record_workflow_intent(
+            tenant_id=event.tenant_id,
+            ticket_id=ticket_id,
+            operation_id=operation_id,
+            intent={"commands": _serialize_commands(commands), "result": {key: value for key, value in result.items() if key != "__interrupt__"}},
+        )
+    else:
+        commands = _deserialize_commands(run["intent"])
+        result = dict(run["intent"].get("result") or {})
+    clarification = "、".join(result.get("missing_fields") or []) if "__interrupt__" in result else None
+    if clarification:
+        await runtime.ticket_operations.append_outbound_message(
+            tenant_id=event.tenant_id,
+            ticket_id=ticket_id,
+            message_id=f"clarify-{event.external_event_id}",
+            actor_type="system",
+            actor_id="intake-agent",
+            channel=event.channel,
+            content=f"请补充：{clarification}",
+            event_id=f"clarify-{event.external_event_id}",
+            idempotency_key=f"clarify:{ticket_id}",
+            payload={"ticket_id": ticket_id, "content": f"请补充：{clarification}"},
+        )
     ticket = await runtime.tickets.transition_many(
         event.tenant_id,
         commands,
         scopes={"ticket:system"},
+        operation_id=operation_id,
     )
     snapshot = await runtime.intake_graph.aget_state(config)
     return {"created": True, "ticket_id": ticket.ticket_id, "ticket": ticket, "intake": _serialize_intake_result(ticket, result, snapshot)}
@@ -345,7 +378,7 @@ def _map_domain_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=404, detail="工单不存在")
     if isinstance(exc, TicketPermissionDenied):
         return HTTPException(status_code=403, detail=str(exc))
-    if isinstance(exc, (TicketAlreadyExists, TicketVersionConflict, InboundEventConflict, InvalidTicketTransition)):
+    if isinstance(exc, (TicketAlreadyExists, TicketVersionConflict, TicketCapacityExceeded, InboundEventConflict, InvalidTicketTransition)):
         return HTTPException(status_code=409, detail=str(exc))
     return HTTPException(status_code=500, detail="工单服务内部错误")
 
@@ -450,6 +483,21 @@ async def get_ticket_overview(
     return overview
 
 
+@router.get("/{ticket_id}/pending-interrupt")
+async def get_pending_ticket_interrupt(
+    ticket_id: str,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    if not ({"ticket:customer", "ticket:agent"} & principal.scopes):
+        raise HTTPException(status_code=403, detail="缺少工单读取权限")
+    runtime = _runtime(request)
+    ticket = await runtime.tickets.get(principal.tenant_id, ticket_id)
+    if ticket is None or ("ticket:agent" not in principal.scopes and ticket.requester_id != principal.user_id):
+        raise HTTPException(status_code=404, detail="工单不存在")
+    return {"interrupt": await _pending_intake_interrupt(runtime, principal.tenant_id, ticket_id)}
+
+
 @router.post("/{ticket_id}/intake")
 async def start_ticket_intake(
     ticket_id: str,
@@ -467,7 +515,7 @@ async def start_ticket_intake(
             tenant_id=principal.tenant_id, ticket_id=ticket_id, operation_id=payload.operation_id
         )
         if existing is not None and existing["status"] == "committed":
-            return _serialize_intake_result(ticket, {}, None)
+            return {"ticket": ticket, "state": {}, "interrupt": await _pending_intake_interrupt(runtime, principal.tenant_id, ticket_id)}
         raise HTTPException(status_code=409, detail="工单版本已变化，请刷新后重试")
     try:
         run = await runtime.tickets.start_workflow_operation(
@@ -479,7 +527,7 @@ async def start_ticket_intake(
             checkpoint_thread_id=_intake_config(principal.tenant_id, ticket_id)["configurable"]["thread_id"],
         )
         if run["status"] == "committed":
-            return _serialize_intake_result(ticket, {}, None)
+            return {"ticket": ticket, "state": {}, "interrupt": await _pending_intake_interrupt(runtime, principal.tenant_id, ticket_id)}
         if run["intent"] is not None:
             commands = _deserialize_commands(run["intent"])
             result = dict(run["intent"].get("result") or {})
@@ -524,7 +572,7 @@ async def resume_ticket_intake(
             tenant_id=principal.tenant_id, ticket_id=ticket_id, operation_id=payload.operation_id
         )
         if existing is not None and existing["status"] == "committed":
-            return _serialize_intake_result(ticket, {}, None)
+            return {"ticket": ticket, "state": {}, "interrupt": await _pending_intake_interrupt(runtime, principal.tenant_id, ticket_id)}
         raise HTTPException(status_code=409, detail="工单版本已变化，请刷新后重试")
     config = _intake_config(principal.tenant_id, ticket_id)
     run = await runtime.tickets.start_workflow_operation(
@@ -536,7 +584,7 @@ async def resume_ticket_intake(
         checkpoint_thread_id=config["configurable"]["thread_id"],
     )
     if run["status"] == "committed":
-        return _serialize_intake_result(ticket, {}, None)
+        return {"ticket": ticket, "state": {}, "interrupt": await _pending_intake_interrupt(runtime, principal.tenant_id, ticket_id)}
     snapshot = await runtime.intake_graph.aget_state(config)
     _item, value = _interrupt_payload(snapshot, payload.interrupt_id)
     try:
@@ -638,7 +686,13 @@ async def transition_ticket_api(
     if payload.actor_type == ActorType.CUSTOMER and ticket.requester_id != principal.user_id:
         raise HTTPException(status_code=404, detail="工单不存在")
     try:
-        return await runtime.tickets.transition(
+        await runtime.ticket_operations.ensure_sla_for_ticket(
+            tenant_id=principal.tenant_id,
+            ticket_id=ticket_id,
+            channel=getattr(ticket, "channel", None),
+            category=getattr(ticket, "category", None),
+        )
+        updated = await runtime.tickets.transition(
             principal.tenant_id,
             TicketCommand(
                 ticket_id=ticket_id,
@@ -650,6 +704,12 @@ async def transition_ticket_api(
             ),
             scopes=principal.scopes,
         )
+        if updated.status == TicketStatus.AWAITING_CUSTOMER:
+            await runtime.ticket_operations.pause_sla(principal.tenant_id, ticket_id, reason="awaiting_customer")
+        elif updated.status in {TicketStatus.IN_PROGRESS, TicketStatus.RESOLVED}:
+            await runtime.ticket_operations.resume_sla(principal.tenant_id, ticket_id, resumed_at=datetime.now(timezone.utc))
+            await runtime.ticket_operations.mark_first_response(principal.tenant_id, ticket_id)
+        return updated
     except Exception as exc:
         raise _map_domain_error(exc) from exc
 

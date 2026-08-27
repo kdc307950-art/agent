@@ -138,6 +138,9 @@ class Settings:
     wecom_corp_id: str | None
     dingtalk_tenant_id: str | None
     dingtalk_app_secret: str | None
+    knowledge_embedding_model: str | None
+    knowledge_embedding_dimension: int | None
+    knowledge_embedding_endpoint: str | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -268,4 +271,11 @@ class Settings:
             wecom_corp_id=wecom_values["corp_id"],
             dingtalk_tenant_id=dingtalk_values["tenant_id"],
             dingtalk_app_secret=dingtalk_values["app_secret"],
+            knowledge_embedding_model=os.getenv("KNOWLEDGE_EMBEDDING_MODEL", "").strip() or None,
+            knowledge_embedding_dimension=(
+                _int_setting("KNOWLEDGE_EMBEDDING_DIMENSION", 1536, 8)
+                if os.getenv("KNOWLEDGE_EMBEDDING_DIMENSION", "").strip()
+                else None
+            ),
+            knowledge_embedding_endpoint=os.getenv("KNOWLEDGE_EMBEDDING_ENDPOINT", "").strip() or None,
         )

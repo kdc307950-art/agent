@@ -14,6 +14,54 @@ DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
 
 
+def test_ensure_sla_for_ticket_auto_creates_instance_once(monkeypatch):
+    tenant_id = f"tenant-{uuid4().hex}"
+    ticket_id = f"ticket-{uuid4().hex}"
+
+    async def run():
+        monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
+        await setup_postgres()
+        tickets = await TicketRepository.connect(DATABASE_URL)
+        operations = TicketOperationsRepository(tickets.pool)
+        try:
+            await tickets.create(
+                tenant_id,
+                CreateTicket(
+                    ticket_id=ticket_id,
+                    requester_id="customer-1",
+                    channel="wecom",
+                    title="Login failure",
+                    actor_type=ActorType.CUSTOMER,
+                    actor_id="customer-1",
+                ),
+            )
+            async with tickets.pool.connection() as connection:
+                await connection.execute(
+                    """
+                    INSERT INTO sla_policies (
+                        tenant_id, policy_id, name, timezone, business_days,
+                        work_start, work_end, first_response_minutes, resolution_minutes
+                    ) VALUES (%s, 'default', 'Default', 'UTC', %s, %s, %s, 30, 120)
+                    """,
+                    (tenant_id, [0, 1, 2, 3, 4], time(9), time(18)),
+                )
+            first = await operations.ensure_sla_for_ticket(tenant_id=tenant_id, ticket_id=ticket_id, channel="wecom")
+            second = await operations.ensure_sla_for_ticket(tenant_id=tenant_id, ticket_id=ticket_id, channel="wecom")
+            async with tickets.pool.connection() as connection:
+                rows = await (await connection.execute(
+                    "SELECT count(*) FROM ticket_sla WHERE tenant_id = %s AND ticket_id = %s",
+                    (tenant_id, ticket_id),
+                )).fetchone()
+            return first, second, int(rows[0])
+        finally:
+            await tickets.close()
+
+    first, second, count = asyncio.run(run())
+    assert first is True
+    assert second is False
+    assert count == 1
+
+
 def test_outbox_sla_and_survey_lifecycle(monkeypatch):
     tenant_id = f"tenant-{uuid4().hex}"
     ticket_id = f"ticket-{uuid4().hex}"

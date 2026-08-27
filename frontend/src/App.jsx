@@ -234,7 +234,7 @@ function App() {
   }, [baseQuery, selectedId])
 
   useEffect(() => { if (view !== 'assistant') loadTickets(false, null) }, [view, filters.status, filters.category, filters.priority, filters.q]) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (!selectedId) { setSelected(null); setOverview(null); return } Promise.all([api(`/tickets/${selectedId}`), api(`/tickets/${selectedId}/overview`)]).then(([ticket, detail]) => { setSelected(ticket); setOverview(detail) }).catch((err) => setError(err.message)) }, [selectedId])
+  useEffect(() => { if (!selectedId) { setSelected(null); setOverview(null); return } Promise.all([api(`/tickets/${selectedId}`), api(`/tickets/${selectedId}/overview`), api(`/tickets/${selectedId}/pending-interrupt`)]).then(([ticket, detail, pending]) => { setSelected(ticket); setOverview(detail); setPendingClarification(pending.interrupt || null) }).catch((err) => setError(err.message)) }, [selectedId])
 
   const transition = async (action) => {
     setBusy(true); setError('')

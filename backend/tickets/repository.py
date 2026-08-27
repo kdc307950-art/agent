@@ -25,6 +25,10 @@ class TicketNotFound(LookupError):
     pass
 
 
+class TicketCapacityExceeded(RuntimeError):
+    pass
+
+
 class TicketVersionConflict(RuntimeError):
     pass
 
@@ -268,6 +272,27 @@ class TicketRepository:
                 if cursor.rowcount != 1:
                     raise WorkflowOperationConflict("工作流运行不可记录意图")
 
+    async def mark_workflow_operation_failed(
+        self,
+        *,
+        tenant_id: str,
+        ticket_id: str,
+        operation_id: str,
+        error_code: str,
+    ) -> bool:
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE ticket_workflow_runs
+                    SET status = 'failed', error_code = %s, updated_at = now()
+                    WHERE tenant_id = %s AND ticket_id = %s AND operation_id = %s
+                      AND status IN ('started', 'intent_recorded')
+                    """,
+                    (error_code, tenant_id, ticket_id, operation_id),
+                )
+                return cursor.rowcount == 1
+
     async def list_recoverable_workflow_operations(
         self,
         *,
@@ -402,6 +427,26 @@ class TicketRepository:
                     if updated is None:
                         raise TicketVersionConflict("工单版本已变化，请刷新后重试")
                     if command.action == TicketAction.ASSIGN:
+                        member_id = command.payload.get("user_id")
+                        if member_id is not None:
+                            await cursor.execute(
+                                """
+                                SELECT m.capacity,
+                                       (SELECT count(*) FROM tickets AS t
+                                        WHERE t.tenant_id = m.tenant_id
+                                          AND t.assigned_user_id = m.member_id
+                                          AND t.status IN ('assigned', 'in_progress')) AS current_load
+                                FROM support_members AS m
+                                WHERE m.tenant_id = %s AND m.member_id = %s
+                                FOR UPDATE
+                                """,
+                                (tenant_id, member_id),
+                            )
+                            member_row = await cursor.fetchone()
+                            if member_row is None:
+                                raise TicketCapacityExceeded("指派成员不存在")
+                            if int(member_row["current_load"]) >= int(member_row["capacity"]):
+                                raise TicketCapacityExceeded("指派成员容量已满")
                         await cursor.execute(
                             """
                             UPDATE ticket_assignments SET ended_at = now()

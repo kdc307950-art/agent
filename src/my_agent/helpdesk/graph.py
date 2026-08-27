@@ -7,6 +7,7 @@ from typing import Any
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
+from langchain_core.runnables import RunnableConfig
 from typing_extensions import TypedDict
 
 from .domain import ActorType, ResumeAction
@@ -38,6 +39,10 @@ class HelpdeskIntakeState(TypedDict, total=False):
     priority: str
     risk_level: str
     dispatch_reason_codes: list[str]
+    draft_answer: str | None
+    citations: list[dict[str, Any]]
+    auto_reply: bool
+    answer_reason_codes: list[str]
     next: str
 
 
@@ -46,6 +51,7 @@ def build_helpdesk_intake_graph(
     classifier: TicketClassifier | None = None,
     policy: IntakePolicy | None = None,
     checkpointer=None,
+    rag_service=None,
 ):
     classifier = classifier or KeywordTicketClassifier()
     policy = policy or IntakePolicy()
@@ -123,6 +129,25 @@ def build_helpdesk_intake_graph(
             "next": "finish",
         }
 
+    async def compose_answer_node(state: HelpdeskIntakeState, config: RunnableConfig) -> dict[str, Any]:
+        if rag_service is None:
+            return {}
+        from backend.knowledge import RetrievalPrincipal
+
+        tenant_id = str((config.get("configurable") or {}).get("tenant_id") or "")
+        decision = await rag_service.answer(
+            RetrievalPrincipal(tenant_id=tenant_id, departments=frozenset()),
+            state.get("text", ""),
+            category=state.get("category", "other"),
+            risk_level=state.get("risk_level", "low"),
+        )
+        return {
+            "draft_answer": decision.answer,
+            "citations": [item.model_dump(mode="json") for item in decision.citations],
+            "auto_reply": decision.auto_reply,
+            "answer_reason_codes": list(decision.reason_codes),
+        }
+
     def route_after_completeness(state: HelpdeskIntakeState) -> str:
         return state["next"]
 
@@ -132,6 +157,7 @@ def build_helpdesk_intake_graph(
     graph.add_node("check_completeness", completeness_node)
     graph.add_node("clarify", clarify_node)
     graph.add_node("dispatch", dispatch_node)
+    graph.add_node("compose_answer", compose_answer_node)
     graph.add_edge(START, "normalize")
     graph.add_edge("normalize", "classify")
     graph.add_edge("classify", "check_completeness")
@@ -141,5 +167,6 @@ def build_helpdesk_intake_graph(
         {"clarify": "clarify", "dispatch": "dispatch"},
     )
     graph.add_edge("clarify", "check_completeness")
-    graph.add_edge("dispatch", END)
+    graph.add_edge("dispatch", "compose_answer")
+    graph.add_edge("compose_answer", END)
     return graph.compile(checkpointer=checkpointer or MemorySaver())

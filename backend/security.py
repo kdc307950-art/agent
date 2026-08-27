@@ -327,5 +327,7 @@ async def rate_limit_dependency(
     request: Request,
     principal: Principal = Depends(authenticate),
 ) -> Principal:
-    await enforce_rate_limit(request, principal.limiter_key, request.url.path)
+    route = getattr(getattr(request, "scope", {}).get("route"), "path", None)
+    route_key = route if isinstance(route, str) and route else request.url.path
+    await enforce_rate_limit(request, principal.limiter_key, route_key)
     return principal

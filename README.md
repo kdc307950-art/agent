@@ -71,7 +71,7 @@ curl http://127.0.0.1:8000/readyz
 
 企业微信 `/integrations/wecom/webhook` 使用 SHA-1 验签、AES-CBC 解密、CorpID 与重放窗口校验；钉钉 `/integrations/dingtalk/webhook` 使用时间戳和 HMAC-SHA256。两个厂商端点以服务端配置绑定租户，不信任请求体 tenant。内部适配器也可使用带 `ticket:channel` scope 的 `/integrations/{channel}/events`。
 
-知识库采用 Agentic RAG：Agent 可在有界轮次内根据检索结果生成补充查询，所有查询都重复执行 tenant、发布状态、有效期和部门 ACL；全文与向量候选使用 RRF 融合。默认策略是建议回复，搜索耗尽后不会自动发送。没有双路证据、缺少有效引用、高风险或财务类问题都禁止自动回复并转人工。pgvector 为可选真实向量后端，未安装扩展时只使用全文并明确记录降级原因。
+知识库采用 Agentic RAG：Agent 可在有界轮次内根据检索结果生成补充查询，所有查询都重复执行 tenant、发布状态、有效期和部门 ACL；全文与向量候选使用 RRF 融合。运行时已装配 `AgenticRAGService`、`KnowledgeAnswerService` 和可选 `PgVectorRetriever`，受理图在派单后调用回答门禁生成建议回复。默认策略是建议回复，搜索耗尽后不会自动发送。没有双路证据、缺少有效引用、高风险或财务类问题都禁止自动回复并转人工。pgvector 为可选真实向量后端，未安装扩展或未配置 embedding 端点时只使用全文并明确记录降级原因。
 
 ## 架构
 
@@ -288,7 +288,7 @@ uv run pytest tests -q -m "not live_e2e"
 
 命令行的环境变量优先于 `.env`（`conftest.py` 的 `load_dotenv()` 不覆盖已存在的变量），所以不必改本地配置。
 
-CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。本地还在 PostgreSQL 14 + pgvector 0.8.1 / Redis 6 上执行过兼容验证：schema v9 和 HNSW 迁移成功，全部非 live 测试 `189 passed`。真实 HTTP 工单 E2E 验证了创建、缺字段中断、补充恢复、分类派单、处理、解决、回访和关闭，最终事件版本连续到 v9。
+CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。本地还在 PostgreSQL 14 + pgvector 0.8.1 / Redis 6 上执行过兼容验证：schema v9 和 HNSW 迁移成功，全部非 live 测试 `192 passed`。真实 HTTP 工单 E2E 验证了创建、缺字段中断、补充恢复、分类派单、处理、解决、回访和关闭，最终事件版本连续到 v9。
 
 真实 DeepSeek E2E 默认不运行，以免普通 CI 产生费用。手动 workflow `Live Agent E2E` 需要受保护环境中的 `DEEPSEEK_API_KEY`、`LIVE_AGENT_TOKEN` 和 `TENANT_TOKEN_SECRET`，覆盖文本 SSE、工具调用和同线程续聊。
 
