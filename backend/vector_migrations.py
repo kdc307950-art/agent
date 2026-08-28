@@ -16,6 +16,8 @@ async def setup_vector_schema(*, dimension: int | None = None) -> None:
         raise RuntimeError("KNOWLEDGE_EMBEDDING_DIMENSION 必须在 8 到 4096 之间")
     async with await AsyncConnection.connect(database_url_from_env(), autocommit=True) as connection:
         await connection.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        # 中文检索兜底（与 schema v12 幂等一致）。
+        await connection.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
         await connection.execute(
             sql.SQL("ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS embedding vector({})").format(
                 sql.Literal(dimension)

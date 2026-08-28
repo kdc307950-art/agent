@@ -313,6 +313,12 @@ uv run python -m backend.run_knowledge_eval --embed
 
 输出量化报告：**Top1 命中率 / Recall@k / MRR@k**，按分类分项；并统计「无检索命中」用例数——这些用例在受理链路中触发门禁转人工，不会自动发送。`--topk 5 --seed --limit N` 可调参。配置 embedding 服务：`KNOWLEDGE_EMBEDDING_MODEL` / `KNOWLEDGE_EMBEDDING_DIMENSION` / `KNOWLEDGE_EMBEDDING_ENDPOINT`（POST `{"texts": [...]}` 返回 `{"embeddings": [...]}`），并先执行 `uv run python -m backend.vector_migrations` 与 embedding 导入流水线。
 
+### 中文分词全文检索（lexical-only 基线）
+
+全文检索使用 **jieba + 自定义 IT 词典**（`backend/knowledge/tokenizer.py`）在入库与查询两侧做同一分词，`search_text` 存分词文本，`search_vector` 基于分词结果生成（schema v12），pg_trgm 提供错别字/短词兜底。查询侧为三路召回：`plainto_tsquery`（AND 精确）∪ `to_tsquery`（OR 覆盖率）∪ `trigram` 相似度，排序按命中 token 数（子串匹配，对中文分词上下文不一致鲁棒）→ ts_rank → 相似度。所有召回均强制 tenant / published / 有效期 / visibility / 部门 ACL 过滤。
+
+当前内置 42 条评测集（8 个 IT 子分类 + 跨文档用例）在演示数据上的 **lexical-only 基线：Top1 100%、Recall@5 100%、MRR@5 1.000、无命中 0 条**。配置 embedding 后 `--embed` 出 hybrid（RRF 融合 + 分类加权）对比。
+
 ## 渠道沙箱验证（企业微信）
 
 验签/解密/幂等/追问/门禁的自动化测试覆盖见 `tests/test_channel_adapters.py` 与 `tests/test_ticket_api.py`（`test_wecom_webhook_*`、`test_dingtalk_webhook_*`）。真实沙箱端到端验证步骤、验证矩阵与验收清单见 [docs/CHANNEL_SANDBOX.md](docs/CHANNEL_SANDBOX.md)：企业微信自建应用回调 URL 校验（echostr）、文本建单、同 `MsgId` 幂等、缺字段追问进 Outbox、`run_outbox_worker` 回调投递、无引用/高风险转人工。

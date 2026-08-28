@@ -6,8 +6,8 @@ from backend.tickets import CreateTicket, canonical_payload_hash
 from src.my_agent.helpdesk import ActorType
 
 
-def test_schema_v11_requires_workflow_routing_and_it_service_relations():
-    assert APP_SCHEMA_VERSION == 11
+def test_schema_v12_requires_workflow_routing_and_it_service_relations():
+    assert APP_SCHEMA_VERSION == 12
     assert {
         "tickets",
         "ticket_status_events",

@@ -15,7 +15,7 @@ from psycopg import AsyncConnection, sql
 from backend.audit import audit_context
 from backend.run_context import RunContext
 from backend.runtime import runtime_context
-from backend.schema import ensure_schema_version
+from backend.schema import APP_SCHEMA_VERSION, ensure_schema_version
 from backend.settings import Settings
 
 
@@ -168,13 +168,13 @@ def test_schema_v2_migrates_status_constraint_and_helpdesk_tables_to_current_ver
                 )
 
     version, constraint_definition, relations = asyncio.run(run())
-    assert version == 11
+    assert version == APP_SCHEMA_VERSION
     assert "awaiting_approval" in constraint_definition
     assert all(relation is not None for relation in relations)
 
 
-def test_schema_v9_migrates_to_v11_and_is_repeatable():
-    """v9 → v10 → v11 迁移可重复执行：从 v9 版本号一次升到 v11，
+def test_schema_v9_migrates_to_current_and_is_repeatable():
+    """v9 → 当前版本迁移可重复执行：从 v9 版本号一次升到当前版本，
     再次对同一 schema 运行迁移不报错、版本号不变、关系仍在。"""
 
     async def run():
@@ -235,8 +235,8 @@ def test_schema_v9_migrates_to_v11_and_is_repeatable():
                 )
 
     first_version, second_version, relations = asyncio.run(run())
-    assert first_version == 11
-    assert second_version == 11
+    assert first_version == APP_SCHEMA_VERSION
+    assert second_version == APP_SCHEMA_VERSION
     assert all(relation is not None for relation in relations)
 
 

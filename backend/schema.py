@@ -13,7 +13,7 @@ from psycopg import AsyncConnection
 
 
 APP_SCHEMA_NAME = "langgraph_agent"
-APP_SCHEMA_VERSION = 11
+APP_SCHEMA_VERSION = 12
 MIGRATION_LOCK_KEY = 891274631
 
 # These are the tables created by the pinned LangGraph PostgreSQL adapters and
@@ -819,6 +819,57 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 """
             )
             current = 11
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 12:
+            # v12: 中文分词全文检索 —— knowledge_chunks 增加 search_text（jieba 分词后
+            # 的文本）与 embedding 状态列；search_vector 从「content 生成列」改为
+            # 基于 search_text 的普通列，由入库/分词路径写入；pg_trgm 提供错别字与
+            # 短词兜底。权限/租户过滤仍由 repository 查询强制，不在此放宽。
+            await cursor.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+            await cursor.execute(
+                "ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS search_text TEXT NOT NULL DEFAULT ''"
+            )
+            await cursor.execute(
+                "ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS embedding_status TEXT NOT NULL DEFAULT 'pending'"
+            )
+            await cursor.execute(
+                "ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS embedding_error TEXT"
+            )
+            await cursor.execute(
+                "ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS embedding_updated_at TIMESTAMPTZ"
+            )
+            # search_vector 改为普通列：DROP 生成列后重建，避免触发器的 content 分词
+            # 与 search_text 分词不一致。v5 曾定义为 GENERATED STORED 列。
+            await cursor.execute("ALTER TABLE knowledge_chunks DROP COLUMN IF EXISTS search_vector")
+            await cursor.execute("ALTER TABLE knowledge_chunks ADD COLUMN search_vector TSVECTOR")
+            await cursor.execute("DROP INDEX IF EXISTS idx_knowledge_chunks_search")
+            await cursor.execute(
+                """
+                CREATE INDEX idx_knowledge_chunks_search
+                ON knowledge_chunks USING GIN (search_vector)
+                """
+            )
+            await cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_search_text_trgm
+                ON knowledge_chunks USING GIN (search_text gin_trgm_ops)
+                """
+            )
+            # 存量回填：旧行按原始 content 生成（行为不退化的兜底），新写入路径会
+            # 用 jieba 分词覆盖 search_text / search_vector。
+            await cursor.execute(
+                """
+                UPDATE knowledge_chunks
+                SET search_text = content,
+                    search_vector = to_tsvector('simple', content)
+                WHERE search_text = ''
+                """
+            )
+            current = 12
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
                 (current, APP_SCHEMA_NAME),

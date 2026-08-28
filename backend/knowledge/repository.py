@@ -12,11 +12,15 @@ from .models import (
     RetrievalHit,
     RetrievalPrincipal,
 )
+from .tokenizer import tokenize_for_search
 
 
 class KnowledgeRepository:
-    def __init__(self, pool: AsyncConnectionPool) -> None:
+    def __init__(self, pool: AsyncConnectionPool, *, trigram_threshold: float = 0.1) -> None:
         self.pool = pool
+        if not 0.0 <= trigram_threshold <= 1.0:
+            raise ValueError("trigram_threshold 必须在 0 到 1 之间")
+        self.trigram_threshold = trigram_threshold
 
     async def put_document(
         self,
@@ -73,13 +77,15 @@ class KnowledgeRepository:
                     (tenant_id, document.document_id, document.version),
                 )
                 for chunk in chunks:
+                    tokenized = tokenize_for_search(chunk.content)
                     await cursor.execute(
                         """
                         INSERT INTO knowledge_chunks (
                             tenant_id, document_id, document_version, chunk_id,
-                            ordinal, content, embedding_ref, embedding_model, metadata
+                            ordinal, content, search_text, search_vector,
+                            embedding_ref, embedding_model, metadata
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, to_tsvector('simple', %s), %s, %s, %s)
                         """,
                         (
                             tenant_id,
@@ -88,6 +94,8 @@ class KnowledgeRepository:
                             chunk.chunk_id,
                             chunk.ordinal,
                             chunk.content,
+                            tokenized,
+                            tokenized,
                             chunk.embedding_ref,
                             chunk.embedding_model,
                             Jsonb(chunk.metadata),
@@ -169,6 +177,12 @@ class KnowledgeRepository:
             return []
         if limit < 1 or limit > 100:
             raise ValueError("limit 必须在 1 到 100 之间")
+        # 查询与入库使用同一分词器：tokenize_for_search(query) 与 search_text 对齐。
+        tokenized = tokenize_for_search(query)
+        tsquery_text = tokenized or query
+        # OR 路：分词 token 用 | 连接，命中任一 token 即召回，ts_rank 按覆盖率排序，
+        # 解决「排查 vs 排查顺序」「错误 vs 错误码」等分词不一致导致 AND 全空的问题。
+        or_tsquery = " | ".join(tsquery_text.split())
         async with self.pool.connection() as connection:
             async with connection.cursor(row_factory=dict_row) as cursor:
                 await cursor.execute(
@@ -177,7 +191,13 @@ class KnowledgeRepository:
                         SELECT
                             c.tenant_id, c.document_id, c.document_version,
                             c.chunk_id, d.title, c.content, d.source_uri,
-                            ts_rank_cd(c.search_vector, websearch_to_tsquery('simple', %s)) AS rank
+                            (
+                                SELECT count(*)
+                                FROM unnest(string_to_array(lower(%s), ' ')) AS q
+                                WHERE position(q IN lower(c.content)) > 0
+                            ) AS token_hits,
+                            ts_rank_cd(c.search_vector, to_tsquery('simple', %s)) AS or_rank,
+                            similarity(c.search_text, %s) AS trgm_rank
                         FROM knowledge_chunks AS c
                         JOIN knowledge_documents AS d
                           ON d.tenant_id = c.tenant_id
@@ -200,23 +220,36 @@ class KnowledgeRepository:
                               cardinality(d.allowed_departments) = 0
                               OR d.allowed_departments && %s::TEXT[]
                           )
-                          AND c.search_vector @@ websearch_to_tsquery('simple', %s)
+                          AND (
+                              c.search_vector @@ plainto_tsquery('simple', %s)
+                              OR c.search_vector @@ to_tsquery('simple', %s)
+                              OR similarity(c.search_text, %s) > %s
+                          )
                     )
                     SELECT tenant_id, document_id, document_version, chunk_id,
                            title, content, source_uri,
-                           row_number() OVER (ORDER BY rank DESC, document_id, chunk_id) AS source_rank
+                           row_number() OVER (
+                               ORDER BY token_hits DESC, or_rank DESC, trgm_rank DESC,
+                                        document_id, chunk_id
+                           ) AS source_rank
                     FROM ranked
-                    ORDER BY rank DESC, document_id, chunk_id
+                    ORDER BY token_hits DESC, or_rank DESC, trgm_rank DESC,
+                             document_id, chunk_id
                     LIMIT %s
                     """,
                     (
-                        query,
+                        tokenized,
+                        or_tsquery,
+                        tokenized,
                         principal.tenant_id,
                         principal.internal,
                         principal.internal,
                         list(principal.departments),
                         list(principal.departments),
-                        query,
+                        tsquery_text,
+                        or_tsquery,
+                        tokenized,
+                        self.trigram_threshold,
                         limit,
                     ),
                 )
