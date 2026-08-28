@@ -10,23 +10,112 @@
 先接**企业微信**：回调为「加密 XML + SHA-1 签名」，与本仓库 `WeComWebhookAdapter`
 的验签/解密实现一一对应；钉钉随后再接（适配器与测试已就绪）。
 
-## 前置条件
+## 从零开始：完整准备步骤（约 30 分钟）
 
-1. 企业微信管理后台 → 应用管理 → 创建**自建应用**，记录：
-   - CorpID（企业 ID）
-   - AgentId + Secret（回调验签不需要 AgentId，但发消息需要）
-2. 应用 → 接收消息 → 设置回调 URL（需公网可达，可用内网穿透工具）：
-   - URL：`https://your-domain/integrations/wecom/webhook`
-   - Token：任意随机串（对应 `WECOM_TOKEN`）
-   - EncodingAESKey：管理后台生成（43 字符，对应 `WECOM_ENCODING_AES_KEY`）
-3. 配置环境变量（`AUTH_MODE=dev` 即可，webhook 不依赖租户令牌）：
+### Step 1：注册企业微信
 
+1. 打开 https://work.weixin.qq.com/ →「企业注册」。
+2. 用**个人微信扫码**，按提示填企业名称（个人开发者可自拟，如「XX 工作室」）、行业、规模，注册免费版即可，无需付费。
+3. 注册完成后进入管理后台：https://work.weixin.qq.com/wework_admin/frame
+
+### Step 2：创建自建应用
+
+1. 管理后台 → **应用管理** →「自建」→「创建应用」。
+2. 填应用名称（如 `IT 服务台沙箱`）、Logo，**可见范围**选择「全部成员」（否则发消息的人不在可见范围，消息不会进回调）。
+3. 创建后进入应用详情，记下两个值：
+   - **AgentId**（应用 ID）
+   - **Secret**（应用密钥）——点「查看」并复制
+4. 管理后台 →「我的企业」→「企业信息」，记下 **CorpID**（企业 ID）。
+
+### Step 3：准备回调凭据（Token / EncodingAESKey）
+
+1. 在应用详情页 →「接收消息」→「设置 API 接收」。
+2. **先不要点保存**（保存会立即触发 GET 验证，需后端已就绪，见 Step 7）。
+3. 准备好三个值：
+   - **URL**：`https://<你的公网域名>/integrations/wecom/webhook`（公网域名见 Step 4）
+   - **Token**：随机串，例如 PowerShell 生成：
+     ```powershell
+     -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 24 | ForEach-Object {[char]$_})
+     ```
+   - **EncodingAESKey**：页面上的「随机生成」按钮（43 个字符）
+4. 把这三个值 + CorpID 填进后端环境变量（Step 6），**Token 和 EncodingAESKey 只在两端各存一份**。
+
+### Step 4：开通公网回调地址（内网穿透）
+
+后端默认监听 `127.0.0.1:8000`，企业微信需要公网 HTTPS。推荐 **Cloudflare Tunnel 快速版**（免费、无需注册）：
+
+```powershell
+# 下载 cloudflared（Windows）后执行：
+cloudflared tunnel --url http://127.0.0.1:8000
+```
+
+输出会给出一个 `https://<随机名>.trycloudflare.com`，把回调 URL 填为：
+
+```
+https://<随机名>.trycloudflare.com/integrations/wecom/webhook
+```
+
+备选：**ngrok**（需注册）`ngrok http 8000` → `https://xxx.ngrok-free.app`；或自备服务器用 frp。
+
+> ⚠️ 临时隧道域名每次重启会变化：**保存回调 URL 成功后不要再重启穿透进程**。
+> 若必须固定域名，用 Cloudflare 命名隧道 / ngrok 固定子域名。
+
+### Step 5：启动后端并注入环境变量
+
+```powershell
+# 方式 A：Docker demo 栈（含 postgres/redis/migrate/agent，暴露 127.0.0.1:8000）
+docker compose -f infra/compose.demo.yml up --build -d
+
+# 方式 B：本地后端（需自己起 Postgres/Redis）
+uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --loop backend.uvicorn_loop:selector_event_loop_factory
+
+# 注入回调凭据（webhook 不依赖租户令牌，AUTH_MODE=dev 即可）
+$env:WECOM_TENANT_ID="demo"
+$env:WECOM_TOKEN="<Step 3 的 Token>"
+$env:WECOM_ENCODING_AES_KEY="<Step 3 的 EncodingAESKey>"
+$env:WECOM_CORP_ID="<Step 2 的 CorpID>"
+$env:WEBHOOK_REPLAY_WINDOW_SECONDS="300"
+```
+
+> 环境变量必须在启动进程前设置（或写入 `.env` 后重启服务）。确认四个值**同时存在**，
+> 只配一部分时回调端点返回 503。
+
+### Step 6：导入演示数据（可选，便于验证追问/派单）
+
+```powershell
+uv run python -m backend.seed_demo --tenant demo
+```
+
+### Step 7：保存回调 URL（触发 GET echostr 验证）
+
+1. 回到 Step 3 的「设置 API 接收」页面，填入 URL / Token / EncodingAESKey，点「保存」。
+2. 企业微信向 `GET /integrations/wecom/webhook?msg_signature=&timestamp=&nonce=&echostr=` 发起验证。
+3. 预期：页面提示**「保存成功」**；后端日志无异常。若失败见 [排查清单](#排查清单)。
+
+### Step 8：真实消息闭环
+
+1. 手机企业微信 App →「工作台」→ 找到刚建的应用 → 进入聊天框。
+2. 发送 `VPN 无法连接，错误码 809`：
+   - 后端日志出现 `POST /integrations/wecom/webhook`；
+   - `tickets` 表新增工单（`channel=wecom`，`requester_id=你的企业微信外部 ID`，`category=it.vpn`）；
+   - 前端客服工作台（`agent-1` 令牌）可见该工单与 SLA。
+3. 立刻**原样重发同一条消息**（或后台消息重试）：第二次不产生新工单（幂等）。
+4. 发送 `VPN 连不上`（缺 device/error_message）：工单进入 `awaiting_customer`，`outbox_events` 出现澄清消息。
+5. 启动 Outbox worker 观察投递：
    ```powershell
-   $env:WECOM_TENANT_ID="demo"                       # 回调消息归属的租户
-   $env:WECOM_TOKEN="<回调 Token>"
-   $env:WECOM_ENCODING_AES_KEY="<EncodingAESKey>"
-   $env:WECOM_CORP_ID="<CorpID>"
+   uv run python -m backend.run_outbox_worker --poll-interval 2 --batch-size 20
    ```
+6. 客服完成接单 → 处理 → 解决 → 回访 → 关闭，闭环完成。
+
+### 排查清单
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 保存 URL 提示失败 | Token / EncodingAESKey / CorpID 不一致，或服务器时间偏差 > 300s | 核对三项配置与两端一致性；检查 `GET` 返回 401 与日志 |
+| 后端返回 503 | 四个 `WECOM_*` 变量未配齐 | 补全后重启服务 |
+| 返回 401 且日志「签名无效」 | Token/时间戳/密文不匹配 | 核对 Token；确认服务器时间与北京时间偏差 |
+| 保存成功但发消息无回调 | 应用可见范围不含发消息者；回调 URL 已过期（临时域名重启） | 调整可见范围；重新保存 URL |
+| 消息进来了但没建单 | 内容为空/事件类型不支持 | 看日志事件类型，`Content`/`Event` 兜底为空时被拒 |
 
 ## 验证矩阵
 
