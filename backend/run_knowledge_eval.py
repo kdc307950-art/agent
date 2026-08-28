@@ -71,6 +71,16 @@ def _metrics(hits: list[RetrievalHit], expected: tuple[str, ...], topk: int) -> 
     return top1, recall, mrr
 
 
+def resolve_eval_mode(*, embed: bool, embedding_endpoint: str) -> str:
+    """评测模式：'hybrid'（配置/强制 embedding）或 'lexical-only'。
+
+    --embed 但未配置 KNOWLEDGE_EMBEDDING_ENDPOINT 时抛错，禁止伪称 hybrid。
+    """
+    if embed and not embedding_endpoint:
+        raise SystemExit("--embed 需要配置 KNOWLEDGE_EMBEDDING_ENDPOINT")
+    return "hybrid" if (embed or embedding_endpoint) else "lexical-only"
+
+
 async def _run_eval(
     conninfo: str,
     *,
@@ -92,9 +102,8 @@ async def _run_eval(
     except ValueError as exc:
         raise SystemExit("KNOWLEDGE_EMBEDDING_DIMENSION 必须是整数") from exc
 
-    use_embedding = bool(embed or embedding_endpoint)
-    if embed and not embedding_endpoint:
-        raise SystemExit("--embed 需要配置 KNOWLEDGE_EMBEDDING_ENDPOINT")
+    mode = resolve_eval_mode(embed=embed, embedding_endpoint=embedding_endpoint)
+    use_embedding = mode == "hybrid"
 
     pool = AsyncConnectionPool(conninfo, min_size=1, max_size=2, open=False, name="knowledge-eval")
     await pool.open(wait=True)
