@@ -1,4 +1,6 @@
-"""单 Agent 命令行演示入口 —— P1(基础 Agent) + P2(智能摘要) + P5(状态追踪)。
+"""【legacy-demo】单 Agent 命令行演示入口 —— P1(基础 Agent) + P2(智能摘要) + P5(状态追踪)。
+
+遗留演示：不经过鉴权、审计、限流和预算。生产 IT 服务台入口是 `backend/app.py`。
 
 运行：uv run python main.py
 功能：

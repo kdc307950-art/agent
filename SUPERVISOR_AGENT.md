@@ -15,7 +15,7 @@
 以及高风险操作人工确认。
 
 硬编码版本是 `src/my_agent/supervisor_agent.py`（本文主要描述对象）；
-等价的 JSON 配置版本是 `workflows/helpdesk_supervisor.json`，由
+等价的 JSON 配置版本是 `workflows/legacy-demo.json`，由
 `src/my_agent/workflow/` 编译，那条路径已接入生产后端。
 
 > 与原有 `agent.py` 的 `build_agent()` **互不影响**，可并行使用。

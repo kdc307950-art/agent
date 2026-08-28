@@ -1,4 +1,7 @@
-"""Supervisor 多 Agent 命令行演示入口 —— 含 Human-in-the-loop 人工审批。
+"""【legacy-demo】Supervisor 多 Agent 命令行演示入口 —— 含 Human-in-the-loop 人工审批。
+
+遗留演示：天气/计算路由 + 进程内阻塞审批，不经过鉴权、审计、限流。
+生产 IT 服务台入口是 `backend/app.py`；JSON 等价图见 `workflows/legacy-demo.json`。
 
 运行：uv run python main_supervisor.py
 功能：

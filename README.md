@@ -1,10 +1,12 @@
-# LangGraph Agent
+# 多租户 IT 服务台工单系统（Helpdesk）
 
 [![CI](https://github.com/kdc307950-art/agent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kdc307950-art/agent/actions/workflows/ci.yml)
 
-一个具备生产化基础设施骨架的 LangGraph 客服工单系统：确定性工单状态机负责流程一致性，Agent 负责受理、分类和知识回答，受治理工具负责副作用。系统运行在多租户隔离、PostgreSQL Checkpoint、审计、Redis 限流、预算和 Outbox 之上。
+面向中小企业客服、IT、行政支持部门的多租户工单自动处置系统骨架，首个落地形态是**内部 IT 服务台**：员工通过 Web / 企业微信提交工单，系统自动分类（`it.vpn` / `it.account` / `it.network` 等子分类）、按租户 IT 策略追问必填字段、加载对应 SLA、规则派单，Agent 检索知识库生成带引用的建议，客服在响应式工作台上完成接单、处理、回访与关闭。
 
-工单支持跨请求信息补全、规则派单、知识检索门禁、企业微信/钉钉 Webhook、SLA、回访和响应式客服工作台；原有 JSON 多 Agent 编排与跨请求人工审批继续保留。
+技术底座：确定性工单状态机 + LangGraph 受理/补全/分类/派单图 + Agentic RAG 引用门禁，运行在多租户隔离、PostgreSQL Checkpoint、审计、Redis 限流、预算和 Outbox 之上。
+
+> 仓库根目录的 `main.py` / `main_supervisor.py` / `main_workflow.py` 与 `workflows/legacy-demo.json` 是早期通用聊天/天气/计算 Demo，统一标记为 **legacy-demo**，仅供试跑图结构，与生产工单链路无关；产品定位与入口见下文。
 
 ## 5 分钟跑起来
 
@@ -23,26 +25,44 @@ curl http://127.0.0.1:8000/readyz
 预期 `{"status": "ready", "checks": {"agent": "ok", "postgres": "ok", "redis": "ok"}}`。
 接口文档在 http://127.0.0.1:8000/docs ，指标在 `/metrics`。
 
-没填 `DEEPSEEK_API_KEY` 也能起来——服务健康、接口可看，只是真发消息会失败。想真对话就在 shell 里 `export DEEPSEEK_API_KEY=sk-xxx` 再 `up`。想看 supervisor 路由和人工审批，把 `infra/compose.demo.yml` 里 `AGENT_GRAPH_MODE` 那两行的注释去掉。
+没填 `DEEPSEEK_API_KEY` 也能起来——服务健康、接口可看，只是自动分类和知识建议会失败。想完整演示就在 shell 里 `export DEEPSEEK_API_KEY=sk-xxx` 再 `up`。
 
 用完 `docker compose -f infra/compose.demo.yml down -v` 清干净。这份 compose 里的密码是写死的弱口令且不暴露数据库端口，**仅供本地演示，不要用于任何联网环境**。
+
+## 10 分钟演示：跑通 IT 服务台完整闭环
+
+一条命令生成幂等演示数据（租户 `demo`：SLA、`it.vpn` 策略、客服团队/成员/排班/路由、8 篇知识文档、5 台资产）：
+
+```powershell
+uv run python -m backend.seed_demo
+```
+
+演示账号（签发开发令牌，`AUTH_MODE=dev`）：
+
+```powershell
+uv run python -m backend.issue_dev_token demo customer-1 --role helpdesk-customer   # 员工
+uv run python -m backend.issue_dev_token demo agent-1    --role helpdesk-agent       # IT 客服
+uv run python -m backend.issue_dev_token demo admin-1    --role helpdesk-it-admin    # IT 管理员
+```
+
+把令牌分别粘贴到工作台，演示脚本与验收检查点见 [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md)：客户提交「VPN 无法连接」→ 自动分类 `it.vpn` → 追问缺失字段 → 命中 `sla-vpn` → 派单给 team-it → 知识建议带引用 → 客服接单处理 → 回访关闭。
 
 ## 仓库里的入口
 
 **生产路径只有一条：`backend/app.py`。** 本文档其余部分讲的都是它——多租户、审计、预算、限流、工具治理、跨请求人工审批都在这条路径上。
 
-根目录还有三个 CLI 脚本，是编排层接入生产链路（提交 `88b6c89`）**之前**的演示程序，保留下来用于快速试跑图结构：
+根目录还有三个 CLI 脚本与一个 JSON 工作流，是早期通用聊天/天气/计算 Demo（**legacy-demo**），保留用于快速试跑图结构，**不是**产品入口：
 
 | 入口 | 用途 | 与生产路径的关系 |
 | --- | --- | --- |
-| `backend/app.py` | **生产服务**，FastAPI + SSE | 唯一受支持的部署形态 |
-| `main.py` | 单 Agent 命令行对话，带消息摘要 | 不经过鉴权、审计、限流和预算 |
-| `main_supervisor.py` | 硬编码的 supervisor 图 + 命令行审批 | 审批是进程内 `input()` 阻塞，**不是**生产的跨请求审批 |
-| `main_workflow.py` | 从 JSON 加载图 + 命令行审批 | 用本地 `checkpoints.db`，图结构与生产 `workflow` 模式一致 |
+| `backend/app.py` | **生产服务**，FastAPI + SSE（IT 服务台） | 唯一受支持的部署形态 |
+| `main.py` | legacy-demo：单 Agent 命令行对话，带消息摘要 | 不经过鉴权、审计、限流和预算 |
+| `main_supervisor.py` | legacy-demo：硬编码 supervisor 图 + 命令行审批 | 审批是进程内 `input()` 阻塞，**不是**生产的跨请求审批 |
+| `main_workflow.py` | legacy-demo：从 JSON 加载图 + 命令行审批 | 用本地 `checkpoints.db`，加载 `workflows/legacy-demo.json` |
 
 三个 CLI 的价值是改完 `workflows/*.json` 后不起容器就能验证图跑不跑得通。**但人工审批的真实实现不在它们里面**——CLI 里审批是同一个进程同一次调用中的阻塞输入，生产里是两次 HTTP 请求、两条 SSE 流、状态落在 PostgreSQL checkpoint 上，见 [人工审批为什么是两次请求](#人工审批为什么是两次请求)。
 
-`SUPERVISOR_AGENT.md` 是同一时期写的说明书，其中的 HITL 部分已被生产链路取代，只作为图结构和路由逻辑的补充阅读。
+`SUPERVISOR_AGENT.md` 是同一时期写的说明书（legacy-demo），其中的 HITL 部分已被生产链路取代，只作为图结构和路由逻辑的补充阅读。
 
 ## 工单业务链路
 
@@ -83,7 +103,7 @@ flowchart LR
     AUTH --> TICKET[工单领域状态机]
     TICKET --> INTAKE[受理 / 补全 / 分类 / 派单图]
     INTAKE --> RAG[ACL 检索 / 引用门禁]
-    API --> CHAT[旧 Chat / JSON 多 Agent 编排]
+    API --> CHAT[legacy-demo<br/>旧 Chat / JSON 多 Agent 编排]
     TICKET --> PG[(PostgreSQL<br/>工单 / 事件 / Checkpoint / Outbox)]
     API --> REDIS[(Redis<br/>限流 / 预算 / 撤销)]
     PG --> WORKER[Outbox / SLA / 回访任务]
@@ -115,16 +135,18 @@ sequenceDiagram
 
 前端靠 **`end` 事件的缺席**区分「答完了」和「等你批」，状态机因此少一个变量。挂起的那一轮审计状态是 `awaiting_approval` 而不是 `completed`——一次挂起的运行没有完成，记成完成会让运行成功率指标失真。
 
-## 编排模式与人工审批
+## 编排模式与人工审批（legacy-demo）
 
-后端支持两种图形态，由 `AGENT_GRAPH_MODE` 切换，**默认 `single`**（单 Agent，与历史行为一致）：
+> 以下 `workflow` 图形态与 `/chat/*` 审批链路是早期通用聊天 Demo 的遗留能力（**legacy-demo**），与生产 IT 服务台工单链路无关。工单受理图由 `src/my_agent/helpdesk/graph.py` 定义，不依赖 `AGENT_GRAPH_MODE`。
+
+后端仍保留两种图形态，由 `AGENT_GRAPH_MODE` 切换，**默认 `single`**：
 
 ```dotenv
 AGENT_GRAPH_MODE=workflow
-AGENT_WORKFLOW_PATH=workflows/helpdesk_supervisor.json
+AGENT_WORKFLOW_PATH=workflows/legacy-demo.json
 ```
 
-`workflow` 模式由 JSON 定义编译出图，支持 supervisor 路由、子 Agent 和 `human_approval` 审批节点。配置缺失或 spec 不合法时服务在启动阶段直接失败，不会带病启动。
+`workflow` 模式由 JSON 定义编译出图，支持 supervisor 路由、子 Agent 和 `human_approval` 审批节点。配置缺失或 spec 不合法时服务在启动阶段直接失败，不会带病启动。示例图 `workflows/legacy-demo.json` 是天气/计算路由，仅用于试跑 JSON 编译层。
 
 图停在审批节点时，`POST /chat/stream` 的 SSE 流下发一条 interrupt 事件并结束，**不发 `end`**：
 

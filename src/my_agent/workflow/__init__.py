@@ -7,7 +7,7 @@
 
 用法：
     from my_agent.workflow import build_workflow_from_json
-    graph = build_workflow_from_json("workflows/helpdesk_supervisor.json")
+    graph = build_workflow_from_json("workflows/legacy-demo.json")
     await graph.ainvoke({"messages": [HumanMessage(content="北京天气？")]}, config=...)
 """
 

@@ -24,7 +24,7 @@ from src.my_agent.workflow import (
 from src.my_agent.workflow.nodes import condition_factory, rag_factory
 from src.my_agent.workflow.schema import NodeSpec
 
-WORKFLOW_PATH = "workflows/helpdesk_supervisor.json"
+WORKFLOW_PATH = "workflows/legacy-demo.json"
 
 
 def _fake_model():
@@ -56,7 +56,7 @@ def test_load_spec_from_dict():
 
 def test_load_spec_from_file():
     spec = load_spec(WORKFLOW_PATH)
-    assert spec.name == "helpdesk_supervisor"
+    assert spec.name == "legacy-demo"
     node_types = {n.type for n in spec.nodes}
     assert {"supervisor", "human_approval", "agent"} <= node_types
 

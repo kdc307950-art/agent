@@ -8,7 +8,7 @@
 示例：
 {
   "schema_version": 1,
-  "name": "helpdesk_supervisor",
+  "name": "legacy-demo",
   "state": {
     "messages": {"type": "messages", "reducer": "add_messages", "required": true},
     "next": {"type": "str"}

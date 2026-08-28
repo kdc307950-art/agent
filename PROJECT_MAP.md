@@ -18,7 +18,7 @@
 main.py              单 Agent 交互入口（含智能摘要，最简 Demo）
 main_supervisor.py   Supervisor 多 Agent 交互入口（HITL 审批 Demo）
 main_workflow.py     JSON 工作流交互入口（同一能力、配置驱动版）
-workflows/           JSON 工作流定义文件（如 helpdesk_supervisor.json）
+workflows/           JSON 工作流定义文件（如 legacy-demo.json）
 
 src/my_agent/        ★ 核心包
 ├── agent.py         单 Agent 图：model + tools → StateGraph（agent⇄tools 循环）
@@ -75,7 +75,7 @@ uv run python main.py
 uv run python main_supervisor.py
 
 # JSON 工作流
-uv run python main_workflow.py workflows/helpdesk_supervisor.json
+uv run python main_workflow.py workflows/legacy-demo.json
 
 # API 服务（生产化形态，需要 Postgres/Redis/.env 齐全）
 uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --workers 1

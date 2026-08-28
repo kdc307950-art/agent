@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "name": "helpdesk_supervisor",
-  "description": "客服分诊：Supervisor 路由 + 人工审批 + 天气/计算子 Agent（等价于 main_supervisor.py 的硬编码图）",
+  "name": "legacy-demo",
+  "description": "遗留演示（legacy-demo）：天气/计算 Supervisor 路由 + 人工审批，等价于 main_supervisor.py 的硬编码图。仅供试跑 JSON 工作流编译层，与生产 IT 服务台工单链路无关。",
   "state": {
     "messages": { "type": "messages", "reducer": "add_messages", "required": true },
     "next": { "type": "str" }
