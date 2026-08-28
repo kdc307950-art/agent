@@ -10,6 +10,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from langgraph.types import Command
@@ -817,6 +818,41 @@ async def receive_channel_event(
         )
     except Exception as exc:
         raise _map_domain_error(exc) from exc
+
+
+@channel_router.get("/wecom/webhook", response_class=PlainTextResponse)
+async def verify_wecom_webhook(
+    request: Request,
+    timestamp: str = Query(min_length=1, max_length=20),
+    nonce: str = Query(min_length=1, max_length=128),
+    msg_signature: str = Query(min_length=1, max_length=128),
+    echostr: str = Query(min_length=1, max_length=4096),
+):
+    """企业微信后台「保存回调 URL」的 GET 验证：验签 + AES 解密 echostr 并原样回显。
+
+    只做验证与解密，不建单、不访问业务表；失败统一 401（不暴露配置差异）。
+    """
+    settings = request.app.state.settings
+    if not all((settings.wecom_tenant_id, settings.wecom_token, settings.wecom_encoding_aes_key, settings.wecom_corp_id)):
+        raise HTTPException(status_code=503, detail="企业微信 Webhook 未配置")
+    adapter = WeComWebhookAdapter(
+        tenant_id=settings.wecom_tenant_id,
+        token=settings.wecom_token,
+        encoding_aes_key=settings.wecom_encoding_aes_key,
+        corp_id=settings.wecom_corp_id,
+        replay_window_seconds=settings.webhook_replay_window_seconds,
+    )
+    try:
+        return PlainTextResponse(
+            adapter.verify_url(
+                timestamp=timestamp,
+                nonce=nonce,
+                signature=msg_signature,
+                echostr=echostr,
+            )
+        )
+    except WebhookVerificationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
 @channel_router.post("/wecom/webhook")

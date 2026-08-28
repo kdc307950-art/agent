@@ -920,6 +920,41 @@ def test_wecom_webhook_verifies_signature_decrypts_and_is_idempotent(monkeypatch
     assert disabled.status_code == 503
 
 
+def test_wecom_webhook_get_verifies_echostr(monkeypatch):
+    module, _tickets, _intake = load_app(monkeypatch, wecom=True)
+    plaintext = "echostr-value"
+    encrypted = _encrypt_wecom(plaintext.encode("utf-8"), "corp-1")
+    timestamp = str(int(time.time()))
+    nonce = "nonce-get"
+    signature = hashlib.sha1("".join(sorted(("wecom-token", timestamp, nonce, encrypted))).encode()).hexdigest()
+    with TestClient(module.app) as client:
+        ok = client.get(
+            "/integrations/wecom/webhook",
+            params={"timestamp": timestamp, "nonce": nonce, "msg_signature": signature, "echostr": encrypted},
+        )
+        bad_signature = client.get(
+            "/integrations/wecom/webhook",
+            params={"timestamp": timestamp, "nonce": nonce, "msg_signature": "bad", "echostr": encrypted},
+        )
+        expired = client.get(
+            "/integrations/wecom/webhook",
+            params={"timestamp": str(int(time.time()) - 3600), "nonce": nonce, "msg_signature": signature, "echostr": encrypted},
+        )
+        disabled_module, _tickets, _intake = load_app(monkeypatch, wecom=False)
+        with TestClient(disabled_module.app) as client_disabled:
+            disabled = client_disabled.get(
+                "/integrations/wecom/webhook",
+                params={"timestamp": timestamp, "nonce": nonce, "msg_signature": signature, "echostr": encrypted},
+            )
+
+    assert ok.status_code == 200
+    assert ok.headers["content-type"].startswith("text/plain")
+    assert ok.text == "echostr-value"
+    assert bad_signature.status_code == 401
+    assert expired.status_code == 401
+    assert disabled.status_code == 503
+
+
 # ========== 第二阶段：资产 / IT 策略 / 工单资产 / 知识文档管理接口 ==========
 
 def test_assets_api_enforces_scopes_and_supports_crud(monkeypatch):

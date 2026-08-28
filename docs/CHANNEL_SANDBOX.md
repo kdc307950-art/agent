@@ -32,14 +32,16 @@
 
 | # | 场景 | 操作 | 预期 |
 |---|---|---|---|
-| 1 | 回调 URL 验证 | 管理后台「保存」回调设置（微信会发 URL 验证请求） | 保存成功；应用收到 200 且返回明文 `echostr` 校验通过 |
-| 2 | 验签失败 | 篡改请求体或签名后重放 | 响应 401 `WebhookVerificationError`；不入库、不建单 |
+| 1 | 回调 URL 验证（GET echostr） | 管理后台「保存」回调设置，微信发 GET（msg_signature/timestamp/nonce/echostr） | 返回 200 + 明文 echostr（`text/plain`），后台提示配置成功 |
+| 2 | 验签失败 | 篡改 `msg_signature` 或过期 `timestamp` 重放 | 响应 401 `WebhookVerificationError`；不入库、不建单 |
 | 3 | 文本建单 | 员工在企业微信向应用发「VPN 无法连接」 | 返回 200；`tickets` 新增工单（channel=wecom，requester=员工外部 ID） |
 | 4 | 幂等建单 | 同一消息由微信重试推送/手动重放相同 `MsgId` | 第二次返回 `created: false`，不产生新工单（`inbound_events` 幂等键） |
 | 5 | 自动分类 | 查看工单 category | 识别为 `it.vpn`（关键词分类；真实准确率依赖模型，关键词基线为确定性兜底） |
 | 6 | 必填字段追问 | 工单进入受理后缺少 device / error_message | 工单 `awaiting_customer`；`outbox_events` 出现澄清消息，worker 投递到回调端点 |
 | 7 | Outbox 回调 | 运行 `run_outbox_worker` 观察投递 | 回调端点收到 `X-Idempotency-Key`；重复投递被渠道侧去重 |
 | 8 | 门禁转人工 | 内容无检索证据 / 含高风险词 | 不自动发送建议；工单进人工队列（`reason_codes` 含 `missing_citations` / `sensitive_or_high_risk`） |
+
+> **GET 验证**：`GET /integrations/wecom/webhook` 只验签 + 解密 echostr 并原样回显（`text/plain`），不建单、不访问业务表。失败统一 401，未配置返回 503。若后台提示「URL 未通过安全校验」，优先检查 Token / EncodingAESKey / CorpID 是否与服务端一致、服务器时间偏差是否超过 `WEBHOOK_REPLAY_WINDOW_SECONDS`（默认 300 秒）。
 
 ## 观察命令
 

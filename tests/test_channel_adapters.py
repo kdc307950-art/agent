@@ -104,6 +104,92 @@ def test_wecom_rejects_bad_signature_expired_timestamp_corp_and_dangerous_xml():
         )
 
 
+def test_wecom_verify_url_returns_decrypted_echostr():
+    plaintext = b"echostr-value"
+    timestamp = "1700000000"
+    nonce = "nonce-1"
+    token = "token-1"
+    encrypted = encrypt_wecom(plaintext, "corp-1")
+    signature = hashlib.sha1("".join(sorted((token, timestamp, nonce, encrypted))).encode()).hexdigest()
+    adapter = WeComWebhookAdapter(
+        tenant_id="tenant-a",
+        token=token,
+        encoding_aes_key=WECOM_ENCODING_KEY,
+        corp_id="corp-1",
+    )
+
+    result = adapter.verify_url(
+        timestamp=timestamp,
+        nonce=nonce,
+        signature=signature,
+        echostr=encrypted,
+        now=1700000000,
+    )
+
+    assert result == "echostr-value"
+
+
+def test_wecom_verify_url_rejects_bad_signature_expired_wrong_corp_and_bad_cipher():
+    plaintext = b"echostr-value"
+    timestamp = "1700000000"
+    nonce = "nonce-1"
+    token = "token-1"
+    encrypted = encrypt_wecom(plaintext, "corp-1")
+    signature = hashlib.sha1("".join(sorted((token, timestamp, nonce, encrypted))).encode()).hexdigest()
+    adapter = WeComWebhookAdapter(
+        tenant_id="tenant-a",
+        token=token,
+        encoding_aes_key=WECOM_ENCODING_KEY,
+        corp_id="corp-1",
+        replay_window_seconds=60,
+    )
+
+    with pytest.raises(WebhookVerificationError, match="签名"):
+        adapter.verify_url(timestamp=timestamp, nonce=nonce, signature="bad", echostr=encrypted, now=1700000000)
+    with pytest.raises(WebhookVerificationError, match="过期"):
+        adapter.verify_url(timestamp=timestamp, nonce=nonce, signature=signature, echostr=encrypted, now=1700001000)
+
+    wrong_encrypted = encrypt_wecom(plaintext, "other-corp")
+    wrong_signature = hashlib.sha1("".join(sorted((token, timestamp, nonce, wrong_encrypted))).encode()).hexdigest()
+    with pytest.raises(WebhookVerificationError, match="CorpID"):
+        adapter.verify_url(timestamp=timestamp, nonce=nonce, signature=wrong_signature, echostr=wrong_encrypted, now=1700000000)
+
+    # 坏密文需配对应签名才能通过验签，随后在解密阶段被拒。
+    bad_encrypted = "not-valid-ciphertext"
+    bad_signature = hashlib.sha1("".join(sorted((token, timestamp, nonce, bad_encrypted))).encode()).hexdigest()
+    with pytest.raises(WebhookVerificationError, match="密文"):
+        adapter.verify_url(timestamp=timestamp, nonce=nonce, signature=bad_signature, echostr=bad_encrypted, now=1700000000)
+
+
+def test_wecom_verify_url_does_not_parse_post_xml():
+    """GET 验证阶段禁止走 POST 的 XML 解析：传入 XML 密文应解密失败而非解析出事件。"""
+    _body, encrypted = wecom_body()
+    timestamp = "1700000000"
+    nonce = "nonce-1"
+    token = "token-1"
+    signature = hashlib.sha1("".join(sorted((token, timestamp, nonce, encrypted))).encode()).hexdigest()
+    adapter = WeComWebhookAdapter(
+        tenant_id="tenant-a",
+        token=token,
+        encoding_aes_key=WECOM_ENCODING_KEY,
+        corp_id="corp-1",
+    )
+
+    # XML 明文解密出的内容不是 echostr 语义，但 verify_url 只负责解密回显：
+    # 返回的是逐字节的 XML 明文，而不是解析出的 NormalizedChannelEvent。
+    plaintext = adapter.verify_url(
+        timestamp=timestamp,
+        nonce=nonce,
+        signature=signature,
+        echostr=encrypted,
+        now=1700000000,
+    )
+    assert plaintext == (
+        "<xml><FromUserName>user-1</FromUserName><MsgId>msg-1</MsgId>"
+        "<Content>SSO login failed</Content></xml>"
+    )
+
+
 def dingtalk_signature(timestamp: str, secret: str) -> str:
     value = hmac.new(
         secret.encode(),

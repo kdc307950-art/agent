@@ -85,6 +85,30 @@ class WeComWebhookAdapter:
         self.corp_id = corp_id.encode("utf-8")
         self.replay_window_seconds = replay_window_seconds
 
+    def verify_url(
+        self,
+        *,
+        timestamp: str,
+        nonce: str,
+        signature: str,
+        echostr: str,
+        now: int | None = None,
+    ) -> str:
+        """企业微信后台「保存回调 URL」时的 GET 验证。
+
+        只验证签名并解密 echostr 回显明文，不创建工单、不访问业务表、
+        不调用 LLM。与 POST 消息共用 _verify_timestamp / _decrypt，
+        租户来自服务端配置，不接受请求参数中的 tenant_id。
+        """
+        _verify_timestamp(timestamp, now=now, replay_window_seconds=self.replay_window_seconds)
+        expected = hashlib.sha1(
+            "".join(sorted((self.token, timestamp, nonce, echostr))).encode("utf-8")
+        ).hexdigest()
+        if not hmac.compare_digest(expected, signature):
+            raise WebhookVerificationError("企业微信签名无效")
+        plaintext = self._decrypt(echostr)
+        return plaintext.decode("utf-8")
+
     def verify_and_parse(
         self,
         body: bytes,
