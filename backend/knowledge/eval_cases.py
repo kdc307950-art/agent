@@ -69,6 +69,17 @@ EVAL_CASES: tuple[EvalCase, ...] = (
     # ---------- 跨文档（症状关联两个分类） ----------
     {"query": "打印机装不上驱动，网络也断着", "expected_document_ids": ("printer-001", "network-001")},
     {"query": "电脑报修顺便申请权限开通", "expected_document_ids": ("hardware-001", "permission-001")},
+    # ---------- 补充：口语/场景问法（50+ 门禁） ----------
+    {"query": "办公室 Wi-Fi 连不上，一直转圈", "expected_document_ids": ("network-001",)},
+    {"query": "SSO 账号被锁定进不去了", "expected_document_ids": ("password-001",)},
+    {"query": "在家远程办公连不上公司内网", "expected_document_ids": ("vpn-001",)},
+    {"query": "Outlook 发邮件失败提示 SMTP", "expected_document_ids": ("email-001",)},
+    {"query": "软件中心装不了会议软件", "expected_document_ids": ("software-001",)},
+    {"query": "申请共享文件夹的访问权限", "expected_document_ids": ("permission-001",)},
+    {"query": "键盘鼠标突然没反应", "expected_document_ids": ("hardware-001",)},
+    {"query": "打印机打印出来全是黑白，需要彩色", "expected_document_ids": ("printer-001",)},
+    {"query": "VPN 登录后频繁掉线", "expected_document_ids": ("vpn-001",)},
+    {"query": "邮箱一直提示容量已满", "expected_document_ids": ("email-001",)},
 )
 
 

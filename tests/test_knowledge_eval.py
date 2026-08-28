@@ -77,9 +77,9 @@ def test_resolve_eval_mode_rejects_embed_without_endpoint():
 
 
 def test_eval_cases_data_contract():
-    """评测集完整性：数量在 30-50 区间，query 非空，期望文档全部可解析到分类。"""
+    """评测集完整性：数量 >= 50，query 非空，期望文档全部可解析到分类。"""
     count = eval_case_count()
-    assert 30 <= count <= 50
+    assert count >= 50
     categories = document_ids_by_category()
     known_documents = {doc_id for docs in categories.values() for doc_id in docs}
     for case in EVAL_CASES:

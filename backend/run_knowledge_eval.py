@@ -186,6 +186,9 @@ def main() -> None:
     parser.add_argument("--seed", action="store_true", help="评测前先导入幂等种子数据")
     parser.add_argument("--embed", action="store_true", help="强制启用 embedding 检索（需 KNOWLEDGE_EMBEDDING_ENDPOINT）")
     parser.add_argument("--database-url", default=None, help="PostgreSQL 连接串（默认读 DATABASE_URL / .env）")
+    parser.add_argument("--fail-under-top1", type=float, default=None, help="Top1 门禁阈值（低于则非零退出，如 0.80）")
+    parser.add_argument("--fail-under-recall5", type=float, default=None, help="Recall@5 门禁阈值（如 0.90）")
+    parser.add_argument("--fail-under-mrr", type=float, default=None, help="MRR@5 门禁阈值（如 0.75）")
     args = parser.parse_args()
 
     load_dotenv()
@@ -203,6 +206,24 @@ def main() -> None:
         )
     )
     _print_report(report)
+    _enforce_gate(report, args)
+
+
+def _enforce_gate(report: dict, args: argparse.Namespace) -> None:
+    """评测门禁：低于阈值时非零退出（CI 用）。"""
+    totals = report["totals"]
+    checks = [
+        (args.fail_under_top1, totals["top1"], "Top1"),
+        (args.fail_under_recall5, totals["recall"], f"Recall@{report['topk']}"),
+        (args.fail_under_mrr, totals["mrr"], f"MRR@{report['topk']}"),
+    ]
+    failures = [
+        f"{name}={value * 100:.1f}% < {threshold * 100:.1f}%" if name != f"MRR@{report['topk']}" else f"{name}={value:.3f} < {threshold}"
+        for threshold, value, name in checks
+        if threshold is not None and value < threshold
+    ]
+    if failures:
+        raise SystemExit(f"评测门禁未达标: {', '.join(failures)}")
 
 
 if __name__ == "__main__":
