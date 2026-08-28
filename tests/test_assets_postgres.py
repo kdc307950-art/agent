@@ -8,7 +8,7 @@ import pytest
 from backend.assets import AssetAlreadyExists, AssetRepository
 from backend.assets.models import AssetStatus, CreateAsset, UpdateAsset
 from backend.migrations import setup_postgres
-from backend.tickets import CreateTicket, TicketRepository
+from backend.tickets import AssetBindingError, CreateTicket, TicketRepository
 from src.my_agent.helpdesk import ActorType
 
 
@@ -100,6 +100,8 @@ def test_ticket_asset_composite_fk_is_tenant_scoped(monkeypatch):
                 ),
             )
             with pytest.raises(psycopg.errors.ForeignKeyViolation):
+                # SYSTEM actor 绕过应用层归属校验，直接触达数据库复合外键：
+                # 不存在的资产引用被 FK 拒绝。
                 await tickets.create(
                     tenant,
                     CreateTicket(
@@ -107,13 +109,13 @@ def test_ticket_asset_composite_fk_is_tenant_scoped(monkeypatch):
                         requester_id="user-1",
                         channel="web",
                         title="Broken asset",
-                        actor_type=ActorType.CUSTOMER,
-                        actor_id="user-1",
+                        actor_type=ActorType.SYSTEM,
+                        actor_id="worker",
                         asset_id="no-such-asset",
                     ),
                 )
             with pytest.raises(psycopg.errors.ForeignKeyViolation):
-                # 跨租户引用：other 租户的工单不能绑定 tenant 的资产
+                # 跨租户引用：other 租户的工单不能绑定 tenant 的资产（FK 租户作用域）。
                 await tickets.create(
                     other,
                     CreateTicket(
@@ -121,8 +123,8 @@ def test_ticket_asset_composite_fk_is_tenant_scoped(monkeypatch):
                         requester_id="user-2",
                         channel="web",
                         title="Cross tenant asset",
-                        actor_type=ActorType.CUSTOMER,
-                        actor_id="user-2",
+                        actor_type=ActorType.SYSTEM,
+                        actor_id="worker",
                         asset_id=asset.asset_id,
                     ),
                 )
@@ -131,3 +133,82 @@ def test_ticket_asset_composite_fk_is_tenant_scoped(monkeypatch):
             await tickets.close()
 
     asyncio.run(run())
+
+
+def test_customer_asset_binding_ownership_is_enforced_before_insert(monkeypatch):
+    tenant = f"tenant-{uuid4().hex}"
+
+    async def run():
+        monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
+        await setup_postgres()
+        assets = await AssetRepository.connect(DATABASE_URL)
+        tickets = await TicketRepository.connect(DATABASE_URL)
+        try:
+            mine = await assets.create(tenant, create_request(f"asset-{uuid4().hex}", "A-OWN-001"))
+            other_asset = await assets.create(tenant, create_request(f"asset-{uuid4().hex}", "A-OWN-002"))
+            await assets.update(tenant, other_asset.asset_id, UpdateAsset(owner_user_id="user-2"))
+            unassigned = await assets.create(tenant, create_request(f"asset-{uuid4().hex}", "A-OWN-003"))
+            await assets.update(tenant, unassigned.asset_id, UpdateAsset(owner_user_id=None))
+
+            # 客户绑定不存在的资产 -> 应用层更早抛 AssetBindingError（而非 FK 错误）。
+            with pytest.raises(AssetBindingError):
+                await tickets.create(
+                    tenant,
+                    CreateTicket(
+                        ticket_id=f"ticket-{uuid4().hex}",
+                        requester_id="user-1",
+                        channel="web",
+                        title="Missing asset",
+                        actor_type=ActorType.CUSTOMER,
+                        actor_id="user-1",
+                        asset_id="no-such-asset",
+                    ),
+                )
+            # 客户绑定他人资产 -> AssetBindingError。
+            with pytest.raises(AssetBindingError):
+                await tickets.create(
+                    tenant,
+                    CreateTicket(
+                        ticket_id=f"ticket-{uuid4().hex}",
+                        requester_id="user-1",
+                        channel="web",
+                        title="Others asset",
+                        actor_type=ActorType.CUSTOMER,
+                        actor_id="user-1",
+                        asset_id=other_asset.asset_id,
+                    ),
+                )
+            # 客户绑定未分配使用人的资产 -> AssetBindingError。
+            with pytest.raises(AssetBindingError):
+                await tickets.create(
+                    tenant,
+                    CreateTicket(
+                        ticket_id=f"ticket-{uuid4().hex}",
+                        requester_id="user-1",
+                        channel="web",
+                        title="Unassigned asset",
+                        actor_type=ActorType.CUSTOMER,
+                        actor_id="user-1",
+                        asset_id=unassigned.asset_id,
+                    ),
+                )
+            # 客户绑定本人资产 -> 成功。
+            created = await tickets.create(
+                tenant,
+                CreateTicket(
+                    ticket_id=f"ticket-{uuid4().hex}",
+                    requester_id="user-1",
+                    channel="web",
+                    title="Own asset",
+                    actor_type=ActorType.CUSTOMER,
+                    actor_id="user-1",
+                    asset_id=mine.asset_id,
+                ),
+            )
+            return created
+        finally:
+            await assets.close()
+            await tickets.close()
+
+    created = asyncio.run(run())
+    assert created.asset_id == mine.asset_id

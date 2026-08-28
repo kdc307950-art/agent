@@ -16,6 +16,18 @@ class OperationsConflict(RuntimeError):
     pass
 
 
+def sla_policy_candidates(category: str | None) -> tuple[str, ...]:
+    """从完整分类推导 SLA 策略匹配键，逐级回退。
+
+    "it.vpn" -> ("it.vpn", "it");"it" -> ("it",);None -> ()。
+    与受理图中 it_policy_provider 的候选顺序一致（先精确子分类，再父分类）。
+    """
+    if not category:
+        return ()
+    parts = category.split(".")
+    return tuple(".".join(parts[:i]) for i in range(len(parts), 0, -1))
+
+
 class TicketOperationsRepository:
     def __init__(self, pool: AsyncConnectionPool) -> None:
         self.pool = pool
@@ -258,19 +270,7 @@ class TicketOperationsRepository:
         reference = now or datetime.now(timezone.utc)
         async with self.pool.connection() as connection:
             async with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
-                await cursor.execute(
-                    """
-                    SELECT policy_id, version, timezone, business_days, work_start, work_end,
-                           first_response_minutes, resolution_minutes
-                    FROM sla_policies
-                    WHERE tenant_id = %s AND active
-                    ORDER BY created_at, policy_id
-                    LIMIT 1
-                    FOR UPDATE
-                    """,
-                    (tenant_id,),
-                )
-                policy = await cursor.fetchone()
+                policy = await self._resolve_sla_policy(cursor, tenant_id, category)
                 if policy is None:
                     return False
                 calendar = BusinessCalendar(
@@ -292,6 +292,49 @@ class TicketOperationsRepository:
                     (tenant_id, ticket_id, policy["policy_id"], policy["version"], first_due, resolution_due),
                 )
                 return cursor.rowcount == 1
+
+    async def _resolve_sla_policy(self, cursor, tenant_id: str, category: str | None) -> dict | None:
+        """按分类链解析 SLA 策略：子分类策略 -> 父分类策略 -> 租户默认 SLA。
+
+        不再取租户第一条 SLA：it.vpn 命中 sla-vpn，无子分类策略回退 it 策略，
+        it 策略也未配置（或引用的 SLA 停用/缺失）时使用租户默认 SLA。
+        """
+        for key in sla_policy_candidates(category):
+            await cursor.execute(
+                """
+                SELECT policy_id FROM tenant_it_policies
+                WHERE tenant_id = %s AND category = %s AND active
+                """,
+                (tenant_id, key),
+            )
+            row = await cursor.fetchone()
+            policy_id = None if row is None else row["policy_id"]
+            if not policy_id:
+                continue
+            await cursor.execute(
+                """
+                SELECT policy_id, version, timezone, business_days, work_start, work_end,
+                       first_response_minutes, resolution_minutes
+                FROM sla_policies
+                WHERE tenant_id = %s AND policy_id = %s AND active
+                """,
+                (tenant_id, policy_id),
+            )
+            policy = await cursor.fetchone()
+            if policy is not None:
+                return policy
+        await cursor.execute(
+            """
+            SELECT policy_id, version, timezone, business_days, work_start, work_end,
+                   first_response_minutes, resolution_minutes
+            FROM sla_policies
+            WHERE tenant_id = %s AND active
+            ORDER BY created_at, policy_id
+            LIMIT 1
+            """,
+            (tenant_id,),
+        )
+        return await cursor.fetchone()
 
     async def create_sla(
         self,

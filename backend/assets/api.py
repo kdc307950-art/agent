@@ -33,6 +33,20 @@ def _map_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail="资产服务内部错误")
 
 
+async def _require_asset_access(runtime, principal: Principal, asset_id: str):
+    """按当前主体校验资产可读性。
+
+    客服（ticket:agent）可读取租户内任意资产；客户只能读取本人名下资产，
+    否则一律返回 404（与工单读取逻辑一致，避免跨用户资产枚举）。
+    """
+    asset = await runtime.assets.get(principal.tenant_id, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="资产不存在")
+    if "ticket:agent" not in principal.scopes and asset.owner_user_id != principal.user_id:
+        raise HTTPException(status_code=404, detail="资产不存在")
+    return asset
+
+
 async def _audit(runtime, *, tenant_id: str, user_id: str, action: str, resource_id: str, detail: dict | None = None) -> None:
     audit = getattr(runtime, "audit", None)
     if audit is None:
@@ -81,10 +95,7 @@ async def get_asset(
 ):
     _require_scope(principal, "asset:read")
     runtime = _runtime(request)
-    asset = await runtime.assets.get(principal.tenant_id, asset_id)
-    if asset is None:
-        raise HTTPException(status_code=404, detail="资产不存在")
-    return asset
+    return await _require_asset_access(runtime, principal, asset_id)
 
 
 @router.get("/{asset_id}/tickets")
@@ -95,9 +106,16 @@ async def list_asset_tickets(
 ):
     _require_scope(principal, "asset:read")
     runtime = _runtime(request)
-    if await runtime.assets.get(principal.tenant_id, asset_id) is None:
-        raise HTTPException(status_code=404, detail="资产不存在")
-    tickets = await runtime.tickets.list_tickets(principal.tenant_id, asset_id=asset_id, limit=50)
+    await _require_asset_access(runtime, principal, asset_id)
+    # 第二道隔离：客服查看全部关联工单；客户只查看自己的工单。
+    # 即使客服误把某人的资产关联到另一人的工单，资产主人也看不到不属于自己的工单。
+    is_agent = "ticket:agent" in principal.scopes
+    tickets = await runtime.tickets.list_tickets(
+        principal.tenant_id,
+        asset_id=asset_id,
+        requester_id=None if is_agent else principal.user_id,
+        limit=50,
+    )
     return {"items": tickets}
 
 

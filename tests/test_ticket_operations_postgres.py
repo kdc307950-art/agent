@@ -14,6 +14,88 @@ DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
 
 
+def test_ensure_sla_for_ticket_uses_subcategory_policy_chain(monkeypatch):
+    tenant = f"tenant-{uuid4().hex}"
+    no_policy_tenant = f"tenant-{uuid4().hex}"
+
+    async def seed_sla(tickets, tenant_id: str, policy_id: str, first_response: int) -> None:
+        async with tickets.pool.connection() as connection:
+            await connection.execute(
+                """
+                INSERT INTO sla_policies (
+                    tenant_id, policy_id, name, timezone, business_days,
+                    work_start, work_end, first_response_minutes, resolution_minutes
+                ) VALUES (%s, %s, 'IT SLA', 'UTC', %s, %s, %s, %s, 240)
+                """,
+                (tenant_id, policy_id, [0, 1, 2, 3, 4], time(9), time(18), first_response),
+            )
+
+    async def run():
+        monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
+        await setup_postgres()
+        tickets = await TicketRepository.connect(DATABASE_URL)
+        operations = TicketOperationsRepository(tickets.pool)
+        try:
+            # 租户 A：it.vpn -> sla-vpn，it（父分类）-> default
+            await seed_sla(tickets, tenant, "sla-vpn", 15)
+            await seed_sla(tickets, tenant, "default", 30)
+            async with tickets.pool.connection() as connection:
+                await connection.execute(
+                    "INSERT INTO tenant_it_policies (tenant_id, category, policy_id) VALUES (%s, 'it.vpn', 'sla-vpn')",
+                    (tenant,),
+                )
+                await connection.execute(
+                    "INSERT INTO tenant_it_policies (tenant_id, category, policy_id) VALUES (%s, 'it', 'default')",
+                    (tenant,),
+                )
+            # 租户 B：只有默认 SLA，无任何 IT 策略
+            await seed_sla(tickets, no_policy_tenant, "default", 30)
+
+            async def create_ticket(prefix: str, ttenant: str) -> str:
+                ticket_id = f"ticket-{prefix}-{uuid4().hex[:6]}"
+                await tickets.create(
+                    ttenant,
+                    CreateTicket(
+                        ticket_id=ticket_id,
+                        requester_id="customer-1",
+                        channel="web",
+                        title="IT issue",
+                        actor_type=ActorType.CUSTOMER,
+                        actor_id="customer-1",
+                    ),
+                )
+                return ticket_id
+
+            vpn_ticket = await create_ticket("vpn", tenant)
+            account_ticket = await create_ticket("account", tenant)
+            network_ticket = await create_ticket("network", tenant)
+            bare_ticket = await create_ticket("bare", no_policy_tenant)
+
+            await operations.ensure_sla_for_ticket(tenant_id=tenant, ticket_id=vpn_ticket, category="it.vpn")
+            await operations.ensure_sla_for_ticket(tenant_id=tenant, ticket_id=account_ticket, category="it.account")
+            await operations.ensure_sla_for_ticket(tenant_id=tenant, ticket_id=network_ticket, category="it.network")
+            await operations.ensure_sla_for_ticket(tenant_id=no_policy_tenant, ticket_id=bare_ticket, category="it.vpn")
+
+            async with tickets.pool.connection() as connection:
+                rows = await (await connection.execute(
+                    """
+                    SELECT ticket_id, policy_id FROM ticket_sla
+                    WHERE tenant_id = %s OR tenant_id = %s
+                    """,
+                    (tenant, no_policy_tenant),
+                )).fetchall()
+            policy_by_ticket = {row[0]: row[1] for row in rows}
+            return policy_by_ticket, vpn_ticket, account_ticket, network_ticket, bare_ticket
+        finally:
+            await tickets.close()
+
+    policy_by_ticket, vpn_ticket, account_ticket, network_ticket, bare_ticket = asyncio.run(run())
+    assert policy_by_ticket[vpn_ticket] == "sla-vpn"
+    assert policy_by_ticket[account_ticket] == "default"
+    assert policy_by_ticket[network_ticket] == "default"
+    assert policy_by_ticket[bare_ticket] == "default"
+
+
 def test_ensure_sla_for_ticket_auto_creates_instance_once(monkeypatch):
     tenant_id = f"tenant-{uuid4().hex}"
     ticket_id = f"ticket-{uuid4().hex}"

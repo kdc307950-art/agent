@@ -13,6 +13,8 @@ from langgraph.types import Interrupt
 
 from backend.rate_limit import InMemoryRateLimiter
 from backend.security import make_tenant_token
+from backend.ticket_api import _classify_category
+from backend.tickets import AssetBindingError
 from src.my_agent.helpdesk import ActorType, TicketStatus
 
 
@@ -28,8 +30,14 @@ class FakeTickets:
         self.list_calls = []
         self.workflow_runs = {}
         self.fail_next_transition = False
+        self.assets = None
 
     async def create(self, tenant_id, request):
+        # 复刻数据访问层的客户资产归属校验（与 backend/tickets/repository.py 一致）。
+        if request.asset_id is not None and request.actor_type == ActorType.CUSTOMER:
+            asset = await self.assets.get(tenant_id, request.asset_id) if self.assets is not None else None
+            if asset is None or asset.owner_user_id is None or asset.owner_user_id != request.requester_id:
+                raise AssetBindingError("资产不存在或不属于当前用户")
         self.created.append((tenant_id, request))
         record = SimpleNamespace(
             tenant_id=tenant_id,
@@ -37,6 +45,7 @@ class FakeTickets:
             requester_id=request.requester_id,
             status=TicketStatus.NEW,
             version=0,
+            asset_id=request.asset_id,
         )
         self.items[(tenant_id, request.ticket_id)] = record
         return record
@@ -56,7 +65,14 @@ class FakeTickets:
 
     async def list_tickets(self, tenant_id, **kwargs):
         self.list_calls.append((tenant_id, kwargs))
-        return list(self.items.values())[: kwargs["limit"]]
+        items = [item for (tid, _), item in self.items.items() if tid == tenant_id]
+        requester_id = kwargs.get("requester_id")
+        if requester_id is not None:
+            items = [item for item in items if getattr(item, "requester_id", None) == requester_id]
+        asset_id = kwargs.get("asset_id")
+        if asset_id is not None:
+            items = [item for item in items if getattr(item, "asset_id", None) == asset_id]
+        return items[: kwargs["limit"]]
 
     async def start_workflow_operation(self, **kwargs):
         key = (kwargs["tenant_id"], kwargs["ticket_id"], kwargs["operation_id"])
@@ -197,7 +213,11 @@ class FakeAssets:
         self.deleted = []
 
     async def list_assets(self, tenant_id, **kwargs):
-        return [item for (tid, _), item in self.items.items() if tid == tenant_id]
+        items = [item for (tid, _), item in self.items.items() if tid == tenant_id]
+        owner = kwargs.get("owner_user_id")
+        if owner is not None:
+            items = [item for item in items if item.owner_user_id == owner]
+        return items
 
     async def get(self, tenant_id, asset_id):
         record = self.items.get((tenant_id, asset_id))
@@ -214,6 +234,7 @@ class FakeAssets:
             hostname=request.hostname,
             ip_address=request.ip_address,
             status=request.status.value,
+            owner_user_id=request.owner_user_id,
             is_deleted=False,
         )
         self.items[(tenant_id, request.asset_id)] = record
@@ -302,12 +323,14 @@ def load_app(monkeypatch, *, dingtalk=False):
     intake = FakeIntakeGraph()
     operations = FakeOperations()
     tickets.operations = operations
+    assets = FakeAssets()
+    tickets.assets = assets
     runtime = SimpleNamespace(
         graph=EmptyGraph(),
         tickets=tickets,
         intake_graph=intake,
         ticket_operations=operations,
-        assets=FakeAssets(),
+        assets=assets,
         it_policies=FakeItPolicies(),
         knowledge=FakeKnowledge(),
         audit=FakeAudit(),
@@ -828,7 +851,7 @@ def test_assets_api_enforces_scopes_and_supports_crud(monkeypatch):
         created = client.post(
             "/assets",
             headers=headers("ticket:agent", "asset:read", "asset:write", "it-policy:read", "it-policy:write", "knowledge:write"),
-            json={"asset_id": "asset-1", "asset_no": "A-001", "asset_type": "laptop", "hostname": "host-a"},
+            json={"asset_id": "asset-1", "asset_no": "A-001", "asset_type": "laptop", "hostname": "host-a", "owner_user_id": "user-1"},
         )
         listed = client.get("/assets", headers=headers("asset:read"))
         cleared = client.patch(
@@ -844,6 +867,119 @@ def test_assets_api_enforces_scopes_and_supports_crud(monkeypatch):
     assert listed.json()["items"][0]["asset_id"] == "asset-1"
     assert cleared.json()["hostname"] is None
     assert deleted.json()["deleted"] is True
+
+
+def test_assets_api_customer_cannot_read_or_query_other_users_assets(monkeypatch):
+    module, _tickets, _intake = load_app(monkeypatch)
+    admin_headers = headers("ticket:agent", "asset:read", "asset:write")
+    with TestClient(module.app) as client:
+        client.post(
+            "/assets",
+            headers=admin_headers,
+            json={"asset_id": "asset-other", "asset_no": "A-002", "asset_type": "laptop", "owner_user_id": "user-2"},
+        )
+        client.post(
+            "/assets",
+            headers=admin_headers,
+            json={"asset_id": "asset-mine", "asset_no": "A-003", "asset_type": "laptop", "owner_user_id": "user-1"},
+        )
+        customer = headers("asset:read", user="user-1")
+        # 客户读取他人资产 -> 404；读取本人资产 -> 200。
+        other_read = client.get("/assets/asset-other", headers=customer)
+        mine_read = client.get("/assets/asset-mine", headers=customer)
+        # 客户查询他人资产工单 -> 404；本人资产工单 -> 200。
+        other_tickets = client.get("/assets/asset-other/tickets", headers=customer)
+        mine_tickets = client.get("/assets/asset-mine/tickets", headers=customer)
+        # 客服不受归属限制。
+        agent_read = client.get("/assets/asset-other", headers=headers("asset:read", "ticket:agent", user="agent-1"))
+        # 客户列表接口只返回本人资产；伪造 owner_user_id 查询参数也不能越权。
+        listed = client.get("/assets", headers=customer)
+        spoofed = client.get("/assets?owner_user_id=user-2", headers=customer)
+
+    assert other_read.status_code == 404
+    assert mine_read.status_code == 200
+    assert mine_read.json()["asset_id"] == "asset-mine"
+    assert other_tickets.status_code == 404
+    assert mine_tickets.status_code == 200
+    assert agent_read.status_code == 200
+    assert agent_read.json()["owner_user_id"] == "user-2"
+    assert [item["asset_id"] for item in listed.json()["items"]] == ["asset-mine"]
+    assert [item["asset_id"] for item in spoofed.json()["items"]] == ["asset-mine"]
+
+
+def test_customer_cannot_bind_other_users_asset_to_ticket(monkeypatch):
+    module, _tickets, _intake = load_app(monkeypatch)
+    admin_headers = headers("ticket:agent", "asset:read", "asset:write")
+    with TestClient(module.app) as client:
+        client.post(
+            "/assets",
+            headers=admin_headers,
+            json={"asset_id": "asset-other", "asset_no": "A-004", "asset_type": "laptop", "owner_user_id": "user-2"},
+        )
+        client.post(
+            "/assets",
+            headers=admin_headers,
+            json={"asset_id": "asset-mine", "asset_no": "A-005", "asset_type": "laptop", "owner_user_id": "user-1"},
+        )
+        # 用户 A(user-1)用用户 B(user-2)的资产建单 -> 404；用本人资产建单 -> 201。
+        forbidden = client.post(
+            "/tickets",
+            headers=headers("ticket:customer", user="user-1"),
+            json={"ticket_id": "ticket-x", "title": "VPN issue", "asset_id": "asset-other"},
+        )
+        created = client.post(
+            "/tickets",
+            headers=headers("ticket:customer", user="user-1"),
+            json={"ticket_id": "ticket-y", "title": "VPN issue", "asset_id": "asset-mine"},
+        )
+
+    assert forbidden.status_code == 404
+    assert created.status_code == 201
+    assert created.json()["asset_id"] == "asset-mine"
+
+
+def test_asset_ticket_list_isolated_by_requester_for_customers(monkeypatch):
+    module, tickets, _intake = load_app(monkeypatch)
+    admin_headers = headers("ticket:agent", "asset:read", "asset:write")
+    tickets.items[("tenant-a", "ticket-a")] = SimpleNamespace(
+        ticket_id="ticket-a", requester_id="user-1", asset_id="asset-1", status=TicketStatus.IN_PROGRESS
+    )
+    # 客服误把 user-1 的资产关联到 user-2 的工单（历史数据/客服绑定场景）。
+    tickets.items[("tenant-a", "ticket-b")] = SimpleNamespace(
+        ticket_id="ticket-b", requester_id="user-2", asset_id="asset-1", status=TicketStatus.IN_PROGRESS
+    )
+    with TestClient(module.app) as client:
+        client.post(
+            "/assets",
+            headers=admin_headers,
+            json={"asset_id": "asset-1", "asset_no": "A-006", "asset_type": "laptop", "owner_user_id": "user-1"},
+        )
+        customer = client.get("/assets/asset-1/tickets", headers=headers("ticket:customer", "asset:read", user="user-1"))
+        agent = client.get("/assets/asset-1/tickets", headers=headers("ticket:customer", "ticket:agent", "asset:read", user="agent-1"))
+
+    assert customer.status_code == 200
+    assert [item["ticket_id"] for item in customer.json()["items"]] == ["ticket-a"]
+    assert agent.status_code == 200
+    assert {item["ticket_id"] for item in agent.json()["items"]} == {"ticket-a", "ticket-b"}
+
+
+def test_intake_classify_persists_full_subcategory_category(monkeypatch):
+    """受理层：分类结果 {"category": "it", "subcategory": "vpn"} 持久化为 it.vpn。
+
+    该值正是 SLA 解析链（it.vpn -> it -> 默认）的输入，覆盖 ticket_api 到
+    SLA 选择的关键输入。
+    """
+    from backend.ticket_api import _intake_outcome_commands
+    from src.my_agent.helpdesk import TicketAction
+
+    result = {"category": "it", "subcategory": "vpn", "priority": "normal"}
+    commands = _intake_outcome_commands(ticket_id="ticket-1", actor_id="intake-agent", expected_version=1, result=result)
+    classify = next(command for command in commands if command.action == TicketAction.CLASSIFY)
+    assert classify.payload["category"] == "it.vpn"
+
+    assert _classify_category({"category": "it", "subcategory": "general"}) == "it"
+    assert _classify_category({"category": "it"}) == "it"
+    assert _classify_category({"category": "other"}) == "other"
 
 
 def test_it_policy_admin_api_enforces_scopes_and_upserts(monkeypatch):

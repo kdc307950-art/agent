@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from src.my_agent.helpdesk import TicketAction, TicketCommand, TicketStatus, transition_ticket
+from src.my_agent.helpdesk import ActorType, TicketAction, TicketCommand, TicketStatus, transition_ticket
 
 from .models import CreateTicket, InboundEventResult, TicketRecord, TicketStatusEvent
 
@@ -85,6 +85,25 @@ class TicketRepository:
     async def create(self, tenant_id: str, request: CreateTicket) -> TicketRecord:
         async with self.pool.connection() as connection:
             async with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
+                # 客户只能将本人名下资产绑定到工单：校验与工单插入在同一事务内，
+                # 并用 FOR UPDATE 锁定资产行直到提交，防止资产管理员在两步之间
+                # 变更归属绕过校验（TOCTOU 并发窗口）。
+                if request.asset_id is not None and request.actor_type == ActorType.CUSTOMER:
+                    await cursor.execute(
+                        """
+                        SELECT owner_user_id FROM it_assets
+                        WHERE tenant_id = %s AND asset_id = %s AND is_deleted = FALSE
+                        FOR UPDATE
+                        """,
+                        (tenant_id, request.asset_id),
+                    )
+                    asset_row = await cursor.fetchone()
+                    if (
+                        asset_row is None
+                        or asset_row["owner_user_id"] is None
+                        or asset_row["owner_user_id"] != request.requester_id
+                    ):
+                        raise AssetBindingError("资产不存在或不属于当前用户")
                 await cursor.execute(
                     """
                     INSERT INTO tickets (

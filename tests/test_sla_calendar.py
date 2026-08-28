@@ -2,7 +2,7 @@ from datetime import date, datetime, time, timezone
 
 import pytest
 
-from backend.tickets import BusinessCalendar
+from backend.tickets import BusinessCalendar, sla_policy_candidates
 
 
 def calendar(**overrides):
@@ -54,3 +54,12 @@ def test_calendar_rejects_naive_time_unknown_zone_and_invalid_hours():
         calendar(timezone_name="Mars/Olympus")
     with pytest.raises(ValueError, match="结束时间"):
         calendar(work_start=time(18, 0), work_end=time(9, 0))
+
+
+def test_sla_policy_candidates_fall_back_by_parent_category():
+    assert sla_policy_candidates("it.vpn") == ("it.vpn", "it")
+    assert sla_policy_candidates("it.account") == ("it.account", "it")
+    assert sla_policy_candidates("it") == ("it",)
+    assert sla_policy_candidates("it.vpn.wifi") == ("it.vpn.wifi", "it.vpn", "it")
+    assert sla_policy_candidates(None) == ()
+    assert sla_policy_candidates("") == ()

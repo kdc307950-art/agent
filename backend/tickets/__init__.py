@@ -1,7 +1,7 @@
 """Helpdesk ticket persistence package."""
 
 from .models import CreateTicket, InboundEventResult, TicketRecord, TicketStatusEvent
-from .operations import OperationsConflict, TicketOperationsRepository
+from .operations import OperationsConflict, TicketOperationsRepository, sla_policy_candidates
 from .policies import ItPolicyNotFound, ItPolicyRepository, TenantItPolicy, UpsertItPolicy
 from .repository import (
     AssetBindingError,
@@ -39,5 +39,6 @@ __all__ = [
     "TicketVersionConflict",
     "UpsertItPolicy",
     "canonical_payload_hash",
+    "sla_policy_candidates",
     "ticket_repository_context",
 ]

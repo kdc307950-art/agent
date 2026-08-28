@@ -177,6 +177,21 @@ def _deserialize_commands(intent: dict[str, Any]) -> list[TicketCommand]:
     return [TicketCommand.model_validate(item) for item in raw]
 
 
+def _classify_category(result: dict[str, Any]) -> str | None:
+    """把分类结果拼接成工单 category。
+
+    子分类非 general 时写完整键（it + vpn -> it.vpn），与 tenant_it_policies
+    的 category 键一致；SLA 解析按 it.vpn -> it -> 默认逐级回退。
+    """
+    category = result.get("category")
+    if not category:
+        return None
+    subcategory = result.get("subcategory")
+    if subcategory and subcategory != "general":
+        return f"{category}.{subcategory}"
+    return str(category)
+
+
 def _intake_outcome_commands(
     *,
     ticket_id: str,
@@ -202,7 +217,7 @@ def _intake_outcome_commands(
             actor_type=ActorType.SYSTEM,
             actor_id=actor_id,
             expected_version=expected_version,
-            payload={"category": result.get("category")},
+            payload={"category": _classify_category(result)},
         ),
         TicketCommand(
             ticket_id=ticket_id,
@@ -397,8 +412,9 @@ async def _persist_channel_event(runtime, event: NormalizedChannelEvent, *, acto
 
 
 def _map_domain_error(exc: Exception) -> HTTPException:
-    if isinstance(exc, TicketNotFound):
-        return HTTPException(status_code=404, detail="工单不存在")
+    if isinstance(exc, (TicketNotFound, AssetBindingError)):
+        # AssetBindingError 与 TicketNotFound 同返回 404：不暴露资产是否存在或归属谁。
+        return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, TicketPermissionDenied):
         return HTTPException(status_code=403, detail=str(exc))
     if isinstance(exc, (TicketAlreadyExists, TicketVersionConflict, TicketCapacityExceeded, InboundEventConflict, InvalidTicketTransition)):
