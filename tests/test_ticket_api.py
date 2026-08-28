@@ -3,10 +3,14 @@ import hashlib
 import hmac
 import importlib
 import json
+import struct
 import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from urllib.parse import quote
+from uuid import uuid4
+
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from fastapi.testclient import TestClient
 from langgraph.types import Interrupt
@@ -31,6 +35,7 @@ class FakeTickets:
         self.workflow_runs = {}
         self.fail_next_transition = False
         self.assets = None
+        self.seen_inbound = set()
 
     async def create(self, tenant_id, request):
         # 复刻数据访问层的客户资产归属校验（与 backend/tickets/repository.py 一致）。
@@ -120,8 +125,11 @@ class FakeTickets:
 
     async def create_from_inbound_event(self, tenant_id, channel, external_event_id, event_payload, request):
         self.inbound.append((tenant_id, channel, external_event_id, event_payload, request))
-        if external_event_id == "duplicate":
+        # 复刻数据访问层的渠道事件幂等：同 (tenant, channel, external_event_id) 不重复建单。
+        key = (tenant_id, channel, external_event_id)
+        if external_event_id == "duplicate" or key in self.seen_inbound:
             return False, SimpleNamespace(ticket_id="existing-ticket")
+        self.seen_inbound.add(key)
         record = SimpleNamespace(ticket_id=request.ticket_id, version=0, status=TicketStatus.NEW, requester_id=request.requester_id)
         self.items[(tenant_id, request.ticket_id)] = record
         return True, record
@@ -306,7 +314,7 @@ class FakeKnowledge:
         return []
 
 
-def load_app(monkeypatch, *, dingtalk=False):
+def load_app(monkeypatch, *, dingtalk=False, wecom=False):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
     monkeypatch.setenv("TENANT_TOKEN_SECRET", SECRET)
     monkeypatch.setenv("AUTH_MODE", "dev")
@@ -318,6 +326,16 @@ def load_app(monkeypatch, *, dingtalk=False):
     else:
         monkeypatch.delenv("DINGTALK_TENANT_ID", raising=False)
         monkeypatch.delenv("DINGTALK_APP_SECRET", raising=False)
+    if wecom:
+        monkeypatch.setenv("WECOM_TENANT_ID", "tenant-channel")
+        monkeypatch.setenv("WECOM_TOKEN", "wecom-token")
+        monkeypatch.setenv("WECOM_ENCODING_AES_KEY", WECOM_ENCODING_KEY)
+        monkeypatch.setenv("WECOM_CORP_ID", "corp-1")
+    else:
+        monkeypatch.delenv("WECOM_TENANT_ID", raising=False)
+        monkeypatch.delenv("WECOM_TOKEN", raising=False)
+        monkeypatch.delenv("WECOM_ENCODING_AES_KEY", raising=False)
+        monkeypatch.delenv("WECOM_CORP_ID", raising=False)
     module = importlib.reload(importlib.import_module("backend.app"))
     tickets = FakeTickets()
     intake = FakeIntakeGraph()
@@ -835,6 +853,70 @@ def test_dingtalk_webhook_rejects_bad_signature_and_disabled_configuration(monke
             f"/integrations/dingtalk/webhook?timestamp={timestamp}&sign=bad",
             json=body,
         )
+    assert disabled.status_code == 503
+
+
+# ========== 企业微信 Webhook 端点：真实加解密 + 幂等建单 ==========
+
+WECOM_KEY = b"0123456789abcdef0123456789abcdef"
+WECOM_ENCODING_KEY = base64.b64encode(WECOM_KEY).decode("ascii").rstrip("=")
+
+
+def _encrypt_wecom(message: bytes, corp_id: str) -> str:
+    raw = b"0123456789abcdef" + struct.pack("!I", len(message)) + message + corp_id.encode("utf-8")
+    pad = 32 - len(raw) % 32
+    padded = raw + bytes([pad]) * pad
+    encryptor = Cipher(algorithms.AES(WECOM_KEY), modes.CBC(WECOM_KEY[:16])).encryptor()
+    return base64.b64encode(encryptor.update(padded) + encryptor.finalize()).decode("ascii")
+
+
+def _wecom_webhook(content: str) -> tuple[bytes, str, str, str]:
+    inner = (
+        f"<xml><FromUserName>ext-user-1</FromUserName><MsgId>wecom-{uuid4().hex}</MsgId>"
+        f"<Content>{content}</Content></xml>"
+    ).encode("utf-8")
+    encrypted = _encrypt_wecom(inner, "corp-1")
+    body = f"<xml><Encrypt>{encrypted}</Encrypt></xml>".encode()
+    timestamp = str(int(time.time()))
+    nonce = "nonce-wecom"
+    signature = hashlib.sha1("".join(sorted(("wecom-token", timestamp, nonce, encrypted))).encode()).hexdigest()
+    return body, timestamp, nonce, signature
+
+
+def test_wecom_webhook_verifies_signature_decrypts_and_is_idempotent(monkeypatch):
+    module, _tickets, _intake = load_app(monkeypatch, wecom=True)
+    body, timestamp, nonce, signature = _wecom_webhook("VPN 无法连接")
+    with TestClient(module.app) as client:
+        first = client.post(
+            f"/integrations/wecom/webhook?timestamp={timestamp}&nonce={nonce}&msg_signature={signature}",
+            content=body,
+            headers={"Content-Type": "application/xml"},
+        )
+        # 同一回调重放（企业微信重试/并发重复推送）：必须幂等，不重复建单。
+        second = client.post(
+            f"/integrations/wecom/webhook?timestamp={timestamp}&nonce={nonce}&msg_signature={signature}",
+            content=body,
+            headers={"Content-Type": "application/xml"},
+        )
+        bad = client.post(
+            f"/integrations/wecom/webhook?timestamp={timestamp}&nonce={nonce}&msg_signature=bad",
+            content=body,
+            headers={"Content-Type": "application/xml"},
+        )
+        disabled_module, _tickets, _intake = load_app(monkeypatch, wecom=False)
+        with TestClient(disabled_module.app) as client_disabled:
+            disabled = client_disabled.post(
+                f"/integrations/wecom/webhook?timestamp={timestamp}&nonce={nonce}&msg_signature={signature}",
+                content=body,
+                headers={"Content-Type": "application/xml"},
+            )
+
+    assert first.status_code == 200
+    assert first.json()["created"] is True
+    assert first.json()["ticket"]["requester_id"] == "ext-user-1"
+    assert second.status_code == 200
+    assert second.json()["created"] is False
+    assert bad.status_code == 401
     assert disabled.status_code == 503
 
 

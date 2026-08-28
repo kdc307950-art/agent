@@ -298,6 +298,25 @@ uv run python -m backend.backup_restore verify --database-url postgresql://langg
 
 `verify` 只验证恢复后的 checkpoint 和长期记忆记录；必须再运行一次受保护的真实模型 E2E，验证同一 `tenant:user:thread` 能继续对话。备份文件和恢复数据库不得使用生产明文密钥或暴露公网端口。
 
+## 检索评测（量化结果）
+
+内置 42 条脱敏 IT 检索评测集（`backend/knowledge/eval_cases.py`，覆盖 8 个 IT 子分类 + 跨文档用例）。在已导入知识库的数据库上运行评测：
+
+```powershell
+# 准备：迁移 + 导入脱敏 IT 知识库（幂等）
+uv run python -m backend.seed_demo
+# 全文检索基线（未配置 embedding 时自动降级为 lexical-only）
+uv run python -m backend.run_knowledge_eval
+# 配置真实 embedding 服务后跑 hybrid（KNOWLEDGE_EMBEDDING_ENDPOINT）
+uv run python -m backend.run_knowledge_eval --embed
+```
+
+输出量化报告：**Top1 命中率 / Recall@k / MRR@k**，按分类分项；并统计「无检索命中」用例数——这些用例在受理链路中触发门禁转人工，不会自动发送。`--topk 5 --seed --limit N` 可调参。配置 embedding 服务：`KNOWLEDGE_EMBEDDING_MODEL` / `KNOWLEDGE_EMBEDDING_DIMENSION` / `KNOWLEDGE_EMBEDDING_ENDPOINT`（POST `{"texts": [...]}` 返回 `{"embeddings": [...]}`），并先执行 `uv run python -m backend.vector_migrations` 与 embedding 导入流水线。
+
+## 渠道沙箱验证（企业微信）
+
+验签/解密/幂等/追问/门禁的自动化测试覆盖见 `tests/test_channel_adapters.py` 与 `tests/test_ticket_api.py`（`test_wecom_webhook_*`、`test_dingtalk_webhook_*`）。真实沙箱端到端验证步骤、验证矩阵与验收清单见 [docs/CHANNEL_SANDBOX.md](docs/CHANNEL_SANDBOX.md)：企业微信自建应用回调 URL 校验（echostr）、文本建单、同 `MsgId` 幂等、缺字段追问进 Outbox、`run_outbox_worker` 回调投递、无引用/高风险转人工。
+
 ## 测试
 
 ```powershell
