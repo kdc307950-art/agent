@@ -2,21 +2,55 @@
 
 Worker（inbound/outbox/sla/recovery）是独立进程，进程内指标 API 读不到；
 计数/时延写 worker_metrics，心跳写 worker_heartbeats，避免引入消息中间件。
+
+故障隔离：safe_incr / safe_observe / safe_beat 包装器保证指标/心跳写入失败时
+不中断业务处理（Worker 只记录日志，继续处理下一条事件）。
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+logger = logging.getLogger(__name__)
+
 # 直方图桶（秒）：与 Prometheus 默认兼容，P95 可由桶分布计算。
 HISTOGRAM_BUCKETS = (0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0)
 
 WORKER_TYPES = ("inbound", "outbox", "sla", "recovery")
+
+
+async def safe_incr(metrics: "WorkerMetricsDB | None", metric: str, labels: dict[str, str] | None = None, amount: int | float = 1) -> None:
+    """指标写入失败时只记录日志，不中断业务。"""
+    if metrics is None:
+        return
+    try:
+        await metrics.incr(metric, labels, amount)
+    except Exception:
+        logger.exception("metric_write_failed", extra={"ctx": {"metric": metric, "labels": labels}})
+
+
+async def safe_observe(metrics: "WorkerMetricsDB | None", metric: str, value: float, labels: dict[str, str] | None = None) -> None:
+    if metrics is None:
+        return
+    try:
+        await metrics.observe(metric, value, labels)
+    except Exception:
+        logger.exception("metric_write_failed", extra={"ctx": {"metric": metric, "labels": labels, "value": value}})
+
+
+async def safe_beat(metrics: "WorkerMetricsDB | None", worker_type: str, worker_id: str) -> None:
+    if metrics is None:
+        return
+    try:
+        await metrics.beat(worker_type, worker_id)
+    except Exception:
+        logger.exception("heartbeat_write_failed", extra={"ctx": {"worker_type": worker_type, "worker_id": worker_id}})
 
 
 def _labels_key(labels: dict[str, str] | None) -> dict[str, str]:

@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 from .outbox_worker import HttpOutboxSender, OutboxWorker
 from .tickets import TicketOperationsRepository
+from .worker_metrics import WorkerMetricsDB
 
 
 async def run_worker(args: argparse.Namespace) -> None:
@@ -42,7 +43,12 @@ async def run_worker(args: argparse.Namespace) -> None:
                 loop.add_signal_handler(signal_name, stop_event.set)
             except (NotImplementedError, RuntimeError):
                 pass
-    worker = OutboxWorker(repository, senders, max_attempts=args.max_attempts)
+    worker = OutboxWorker(
+        repository,
+        senders,
+        max_attempts=args.max_attempts,
+        worker_metrics=WorkerMetricsDB(repository.pool),
+    )
     try:
         await worker.run_forever(
             poll_interval_seconds=args.poll_interval,

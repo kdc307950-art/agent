@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 from .sla_worker import SLAWorker
 from .tickets import TicketOperationsRepository
+from .worker_metrics import WorkerMetricsDB
 
 
 async def run_worker(args: argparse.Namespace) -> None:
@@ -32,6 +33,7 @@ async def run_worker(args: argparse.Namespace) -> None:
             repository,
             interval_seconds=args.interval,
             batch_size=args.batch_size,
+            worker_metrics=WorkerMetricsDB(repository.pool),
         ).run_forever(stop_event=stop_event)
     finally:
         await repository.close()

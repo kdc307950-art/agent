@@ -10,6 +10,7 @@ import signal
 from dotenv import load_dotenv
 
 from .tickets import TicketRepository
+from .worker_metrics import WorkerMetricsDB
 from .workflow_recovery import WorkflowRecoveryWorker
 
 
@@ -32,6 +33,7 @@ async def run_worker(args: argparse.Namespace) -> None:
             repository,
             interval_seconds=args.interval,
             grace_seconds=args.grace,
+            worker_metrics=WorkerMetricsDB(repository.pool),
         ).run_forever(stop_event=stop_event)
     finally:
         await repository.close()

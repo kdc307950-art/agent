@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from .channel_adapters import NormalizedChannelEvent
 from .channel_processor import process_inbound_event
-from .worker_metrics import WorkerMetricsDB
+from .worker_metrics import WorkerMetricsDB, safe_beat, safe_incr, safe_observe
 
 logger = logging.getLogger(__name__)
 
@@ -89,11 +89,10 @@ class InboundWorker:
                 worker_id=self.worker_id,
             )
             status = "committed"
-            if self.worker_metrics is not None:
-                if result.get("resumed") is True:
-                    await self.worker_metrics.incr("wecom_resume_total", {"result": "resumed"})
-                elif result.get("resumed") is False:
-                    await self.worker_metrics.incr("wecom_resume_total", {"result": str(result.get("reason") or "noop")})
+            if result.get("resumed") is True:
+                await safe_incr(self.worker_metrics, "wecom_resume_total", {"result": "resumed"})
+            elif result.get("resumed") is False:
+                await safe_incr(self.worker_metrics, "wecom_resume_total", {"result": str(result.get("reason") or "noop")})
         except Exception as exc:
             error_code = getattr(exc, "error_code", None) or type(exc).__name__
             error_code_log = error_code
@@ -102,8 +101,7 @@ class InboundWorker:
                     tenant_id, event_id, worker_id=self.worker_id, error_code=error_code, retry_at=None
                 )
                 status = "dead"
-                if self.worker_metrics is not None:
-                    await self.worker_metrics.incr("inbound_worker_dead_total", {"channel": channel})
+                await safe_incr(self.worker_metrics, "inbound_worker_dead_total", {"channel": channel})
             else:
                 retry_at = datetime.now(timezone.utc) + timedelta(
                     seconds=self.backoff_base_seconds * (2 ** (attempts - 1))
@@ -112,12 +110,10 @@ class InboundWorker:
                     tenant_id, event_id, worker_id=self.worker_id, error_code=error_code, retry_at=retry_at
                 )
                 status = "failed"
-                if self.worker_metrics is not None:
-                    await self.worker_metrics.incr("inbound_worker_retry_total", {"channel": channel})
+                await safe_incr(self.worker_metrics, "inbound_worker_retry_total", {"channel": channel})
         duration_ms = (time.perf_counter() - started) * 1000
-        if self.worker_metrics is not None:
-            await self.worker_metrics.incr("inbound_events_total", {"channel": channel, "status": status})
-            await self.worker_metrics.observe("inbound_event_processing_seconds", duration_ms / 1000, {"channel": channel})
+        await safe_incr(self.worker_metrics, "inbound_events_total", {"channel": channel, "status": status})
+        await safe_observe(self.worker_metrics, "inbound_event_processing_seconds", duration_ms / 1000, {"channel": channel})
         logger.info(
             "inbound_event_processed",
             extra={
@@ -137,10 +133,26 @@ class InboundWorker:
 
     async def run_forever(self, *, poll_interval_seconds: float = 1.0, stop_event: asyncio.Event | None = None) -> None:
         stop_event = stop_event or asyncio.Event()
+        consecutive_failures = 0
         while not stop_event.is_set():
-            await self.run_once()
-            if self.worker_metrics is not None:
-                await self.worker_metrics.beat("inbound", self.worker_id)
+            try:
+                await self.run_once()
+                consecutive_failures = 0
+            except Exception:
+                # 单轮失败（含 DB 领取阶段不可用）不终止常驻进程：记录 + 计数 + 退避后继续下一轮。
+                consecutive_failures += 1
+                await safe_incr(self.worker_metrics, "worker_loop_errors_total", {"worker": "inbound"})
+                logger.exception(
+                    "worker_round_failed",
+                    extra={"ctx": {"worker_type": "inbound", "consecutive_failures": consecutive_failures}},
+                )
+                backoff = min(poll_interval_seconds * (2 ** (consecutive_failures - 1)), 30.0)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=backoff)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+            await safe_beat(self.worker_metrics, "inbound", self.worker_id)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=poll_interval_seconds)
             except asyncio.TimeoutError:

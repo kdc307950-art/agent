@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import time
 from dataclasses import dataclass
 from uuid import uuid4
@@ -16,7 +17,9 @@ import httpx
 
 from .metrics import RuntimeMetrics
 from .tickets import TicketOperationsRepository
-from .worker_metrics import WorkerMetricsDB
+from .worker_metrics import WorkerMetricsDB, safe_beat, safe_incr
+
+logger = logging.getLogger(__name__)
 
 
 class OutboxSender(Protocol):
@@ -105,12 +108,35 @@ class OutboxWorker:
         if poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds 必须为正数")
         stop_event = stop_event or asyncio.Event()
+        consecutive_failures = 0
         while not stop_event.is_set():
-            await self.run_once(limit=limit)
+            try:
+                await self.run_once(limit=limit)
+                consecutive_failures = 0
+            except Exception:
+                # 单轮失败（含 DB 领取阶段不可用）不终止常驻进程：记录 + 计数 + 退避后继续下一轮。
+                consecutive_failures += 1
+                await safe_incr(self.worker_metrics, "worker_loop_errors_total", {"worker": "outbox"})
+                logger.exception(
+                    "worker_round_failed",
+                    extra={"ctx": {"worker_type": "outbox", "consecutive_failures": consecutive_failures}},
+                )
+                backoff = min(poll_interval_seconds * (2 ** (consecutive_failures - 1)), 30.0)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=backoff)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+            await safe_beat(self.worker_metrics, "outbox", self.worker_id)
             if self.worker_metrics is not None:
-                await self.worker_metrics.beat("outbox", self.worker_id)
-                if (await self.worker_metrics.check_outbox_backlog(self.repository.pool))["dead"] > 0:
-                    await self.worker_metrics.incr("outbox_dead_present_total")
+                try:
+                    dead = (await self.worker_metrics.check_outbox_backlog(self.repository.pool))["dead"]
+                except Exception:
+                    # 查询失败时不假设 dead=0：故障期间死信指标不得假 0，只记录错误计数。
+                    await safe_incr(self.worker_metrics, "outbox_backlog_check_errors_total")
+                    dead = None
+                if dead is not None and dead > 0:
+                    await safe_incr(self.worker_metrics, "outbox_dead_present_total")
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=poll_interval_seconds)
             except asyncio.TimeoutError:
@@ -189,8 +215,13 @@ class OutboxWorker:
         self.metrics.increment("outbox_delivered_total", delivered)
         self.metrics.increment("outbox_retried_total", retried)
         self.metrics.increment("outbox_dead_total", dead)
-        if self.worker_metrics is not None:
-            await self.worker_metrics.incr("outbox_delivery_total", {"status": "delivered"}, delivered)
-            await self.worker_metrics.incr("outbox_delivery_total", {"status": "retried"}, retried)
-            await self.worker_metrics.incr("outbox_delivery_total", {"status": "dead"}, dead)
+        await safe_incr(self.worker_metrics, "outbox_claimed_total", amount=len(events))
+        await safe_incr(
+            self.worker_metrics,
+            "outbox_lease_recovered_total",
+            amount=sum(bool(event.get("lease_recovered")) for event in events),
+        )
+        await safe_incr(self.worker_metrics, "outbox_delivered_total", amount=delivered)
+        await safe_incr(self.worker_metrics, "outbox_retried_total", amount=retried)
+        await safe_incr(self.worker_metrics, "outbox_dead_total", amount=dead)
         return OutboxRunResult(len(events), delivered, retried, dead)

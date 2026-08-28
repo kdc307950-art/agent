@@ -49,6 +49,9 @@ class Repository:
     async def mark_workflow_operation_failed(self, *, tenant_id, ticket_id, operation_id, error_code):
         self.failed.append((tenant_id, ticket_id, operation_id, error_code))
 
+    async def expire_pending_intakes(self, *, now=None):
+        return 0
+
 
 def test_recovery_replays_intent_isolates_bad_records_and_alerts_started_run():
     repository = Repository()

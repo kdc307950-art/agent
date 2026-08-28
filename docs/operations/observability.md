@@ -15,7 +15,15 @@ Worker 是独立进程，内存指标 API 读不到；关键计数/时延写入 
 | `inbound_event_processing_seconds_bucket/count/sum` | histogram | 入站处理时延（秒），桶 0.1–60 |
 | `inbound_worker_retry_total{channel}` | counter | 入站临时失败重试次数 |
 | `inbound_worker_dead_total{channel}` | counter | 入站死信次数 |
-| `outbox_delivery_total{status}` | counter | Outbox 投递结果（delivered/retried/dead） |
+| `outbox_claimed_total` | counter | Outbox 领取事件数 |
+| `outbox_delivered_total` | counter | Outbox 投递成功数（与进程内 RuntimeMetrics 同名） |
+| `outbox_retried_total` | counter | Outbox 临时失败重试数 |
+| `outbox_dead_total` | counter | Outbox 死信数 |
+| `outbox_lease_recovered_total` | counter | Outbox 租约过期恢复数 |
+| `outbox_dead_present_total` | counter | 循环检测到死信 >0 的次数 |
+| `outbox_backlog_check_errors_total` | counter | backlog 查询失败次数（故障期间不假设 dead=0，避免假 0） |
+| `worker_loop_errors_total{worker}` | counter | 单轮循环异常（DB 领取/扫描失败），记录后退避继续，不终止进程 |
+| `pending_intake_expired_total` | counter | 过期 pending 追问翻转数（recovery worker 周期扫描） |
 | `wecom_resume_total{result}` | counter | 企微回复恢复受理结果（resumed/unparsable_reply/…） |
 | `ticket_sla_breach_total` | counter | SLA 超时事件（SLA worker 扫描产出） |
 | `sla_scan_runs_total` | counter | SLA 扫描轮次 |
@@ -27,7 +35,7 @@ Worker 是独立进程，内存指标 API 读不到；关键计数/时延写入 
 | `inbound_worker_dead_total` > 0 且持续增长 | 入站处理持续失败，检查业务异常 |
 | `inbound_worker_retry_total` / `inbound_events_total` > 5%（5 分钟窗口） | 处理失败率异常升高 |
 | `wecom_resume_total{result="unparsable_reply"}` 占比 > 3% | 客户回复格式问题增多 |
-| `outbox_delivery_total{status="dead"}` > 0 | 死信：检查回调端点与签名 |
+| `outbox_dead_total` > 0 | 死信：检查回调端点与签名 |
 | `inbound_event_processing_seconds` P95 > 30s | 受理/LLM 过慢，触发企微重试 |
 | `ticket_sla_breach_total` 持续增长 | SLA 未在时限内响应，需告警升级 |
 
@@ -57,6 +65,11 @@ Worker 是独立进程，内存指标 API 读不到；关键计数/时延写入 
 
 - `outbox_backlog`：`pending 且 available_at <= now()` 数量 ≥100 → `degraded`。
 - `outbox_dead`：`dead` 数量 >0 → `failed`。
+
+> 故障语义（与业务同库）：`worker_metrics` / `worker_heartbeats` 与业务表在同一个
+> PostgreSQL 实例，二者故障同生共死——PG 不可用时 `/readyz` 整体 503（不实现
+> 「指标降级但业务继续」）。指标写入失败（`safe_*`）只记结构化日志，不改变业务结果；
+> 心跳写入失败不终止 Worker。
 
 ## 3. 结构化日志
 

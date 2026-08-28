@@ -17,6 +17,7 @@ from .inbound_worker import InboundWorker
 from .logging_config import setup_json_logging
 from .runtime import runtime_context
 from .settings import Settings
+from .worker_metrics import WorkerMetricsDB
 
 
 async def run_worker(args: argparse.Namespace) -> None:
@@ -40,6 +41,7 @@ async def run_worker(args: argparse.Namespace) -> None:
             backoff_base_seconds=args.backoff_base,
             lease_seconds=args.lease_seconds,
             batch_size=args.batch_size,
+            worker_metrics=WorkerMetricsDB(runtime.tickets.pool),
         )
         await worker.run_forever(poll_interval_seconds=args.poll_interval, stop_event=stop_event)
 

@@ -10,7 +10,7 @@ from src.my_agent.helpdesk import TicketCommand
 
 from .metrics import RuntimeMetrics
 from .tickets import TicketRepository
-from .worker_metrics import WorkerMetricsDB
+from .worker_metrics import WorkerMetricsDB, safe_beat
 
 logger = logging.getLogger(__name__)
 
@@ -73,14 +73,37 @@ class WorkflowRecoveryWorker:
         self.metrics.increment("workflow_recovery_replayed_total", replayed)
         self.metrics.increment("workflow_recovery_manual_alert_total", alerts)
         self.metrics.increment("workflow_recovery_failed_total", failed)
+        try:
+            # 周期扫描顺手翻转过期 pending 追问（生产环境唯一执行点），失败不阻断恢复主流程。
+            expired = await self.repository.expire_pending_intakes()
+            if expired:
+                await safe_incr(self.worker_metrics, "pending_intake_expired_total", amount=expired)
+        except Exception:
+            logger.exception("pending_expiry_failed")
         return replayed, alerts, failed
 
     async def run_forever(self, *, stop_event: asyncio.Event | None = None) -> None:
         stop_event = stop_event or asyncio.Event()
+        consecutive_failures = 0
         while not stop_event.is_set():
-            await self.run_once()
-            if self.worker_metrics is not None:
-                await self.worker_metrics.beat("recovery", "workflow-recovery")
+            try:
+                await self.run_once()
+                consecutive_failures = 0
+            except Exception:
+                # 单轮失败（含 DB 扫描阶段不可用）不终止常驻进程：记录 + 计数 + 退避后继续下一轮。
+                consecutive_failures += 1
+                await safe_incr(self.worker_metrics, "worker_loop_errors_total", {"worker": "recovery"})
+                logger.exception(
+                    "worker_round_failed",
+                    extra={"ctx": {"worker_type": "recovery", "consecutive_failures": consecutive_failures}},
+                )
+                backoff = min(self.interval_seconds * (2 ** (consecutive_failures - 1)), 120.0)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=backoff)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+            await safe_beat(self.worker_metrics, "recovery", "workflow-recovery")
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=self.interval_seconds)
             except asyncio.TimeoutError:

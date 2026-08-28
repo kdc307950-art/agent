@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: langgraph
       POSTGRES_PASSWORD: integration_only_not_a_secret
     ports:
-      - "127.0.0.1:55432:5432"
+      - "127.0.0.1:55436:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U langgraph -d langgraph"]
       interval: 3s

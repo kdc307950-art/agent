@@ -86,9 +86,13 @@ def test_inbound_worker_retries_then_dead_letters_and_replays(monkeypatch):
             event = await runtime.tickets.get_inbound_event(tenant, "wecom", event_id)
             first_status = event["status"]
             first_attempts = event["attempts"]
+            # backoff=0 时 next_attempt_at 写的是 Python 时钟，claim 比较的是 PG 事务 now()；
+            # 短暂 sleep 让 PG 时钟跨过写入时刻，消除毫秒级竞态（flaky 根因）。
+            await asyncio.sleep(0.05)
             await worker.run_once()  # 第 2 次失败 -> failed
             event = await runtime.tickets.get_inbound_event(tenant, "wecom", event_id)
             second_status = event["status"]
+            await asyncio.sleep(0.05)
             await worker.run_once()  # 第 3 次失败 -> 达到 max_attempts -> dead
             event = await runtime.tickets.get_inbound_event(tenant, "wecom", event_id)
             dead_status = event["status"]

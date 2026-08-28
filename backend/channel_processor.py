@@ -221,6 +221,7 @@ async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor
 
     clarification = "、".join(result.get("missing_fields") or []) if "__interrupt__" in result else None
     if clarification:
+        expires_at = datetime.now(timezone.utc) + timedelta(days=_PENDING_EXPIRY_DAYS)
         # 登记客户待补全关联（企微回复时可恢复原工单，绝不新建）。
         await runtime.tickets.register_pending_intake(
             tenant_id=event.tenant_id,
@@ -228,7 +229,12 @@ async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor
             channel=event.channel,
             external_user_id=event.requester_id,
             required_fields=list(result.get("missing_fields") or []),
-            expires_at=datetime.now(timezone.utc) + timedelta(days=_PENDING_EXPIRY_DAYS),
+            expires_at=expires_at,
+        )
+        local_expiry = expires_at.astimezone().strftime("%Y-%m-%d %H:%M")
+        clarify_content = (
+            f"工单 {ticket.ticket_id} 需补充：{clarification}\n"
+            f"请在 {local_expiry} 前按「字段:值」格式回复（如 device: laptop-001），逾期将作废。"
         )
         await runtime.ticket_operations.append_outbound_message(
             tenant_id=event.tenant_id,
@@ -237,10 +243,10 @@ async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor
             actor_type="system",
             actor_id="intake-agent",
             channel=event.channel,
-            content=f"请补充：{clarification}",
+            content=clarify_content,
             event_id=f"clarify-{event.external_event_id}",
             idempotency_key=f"clarify:{ticket.ticket_id}",
-            payload={"ticket_id": ticket.ticket_id, "content": f"请补充：{clarification}", "channel": event.channel},
+            payload={"ticket_id": ticket.ticket_id, "content": clarify_content, "channel": event.channel},
         )
     ticket = await runtime.tickets.transition_many(
         event.tenant_id,

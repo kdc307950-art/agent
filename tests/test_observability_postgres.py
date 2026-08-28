@@ -102,7 +102,15 @@ def test_metrics_endpoint_includes_worker_metrics(monkeypatch):
         await setup_postgres()
         async with runtime_context(Settings.from_env()) as runtime:
             await _seed(tenant, DATABASE_URL)
-            worker = InboundWorker(runtime, batch_size=10, tenant_id=tenant)
+            # 清理共享表：本测试验证「worker 处理后指标真实落库」，不能依赖其他测试的残留数据。
+            async with runtime.tickets.pool.connection() as connection:
+                await connection.execute("DELETE FROM worker_metrics")
+            worker = InboundWorker(
+                runtime,
+                batch_size=10,
+                tenant_id=tenant,
+                worker_metrics=WorkerMetricsDB(runtime.tickets.pool),
+            )
             await runtime.tickets.register_inbound_event(
                 tenant, "wecom", f"evt-{uuid4().hex}",
                 {"requester_id": "u1", "external_ticket_id": None, "title": "VPN 无法连接",
@@ -124,4 +132,5 @@ def test_metrics_endpoint_includes_worker_metrics(monkeypatch):
     text = response.text
     assert "inbound_events_total" in text
     assert "inbound_event_processing_seconds_count" in text
-    assert "wecom_resume_total" in text or "inbound_worker_retry_total" in text or True
+    # 恒真断言已移除：worker 注入 worker_metrics 后，本次处理结果必须真实落库。
+    assert 'inbound_events_total{channel="wecom",status="committed"} 1' in text
