@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
@@ -31,6 +32,12 @@ from psycopg_pool import AsyncConnectionPool
 from .knowledge import KnowledgeChunkInput, KnowledgeDocumentInput, KnowledgeRepository
 from .migrations import setup_postgres
 from .tickets import ItPolicyRepository, UpsertItPolicy
+
+# Windows 控制台默认 GBK 编码，强制 UTF-8 输出，避免 emoji/中文报错。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 DEFAULT_TENANT = "demo"
 

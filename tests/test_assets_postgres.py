@@ -205,10 +205,10 @@ def test_customer_asset_binding_ownership_is_enforced_before_insert(monkeypatch)
                     asset_id=mine.asset_id,
                 ),
             )
-            return created
+            return created, mine.asset_id
         finally:
             await assets.close()
             await tickets.close()
 
-    created = asyncio.run(run())
-    assert created.asset_id == mine.asset_id
+    created, mine_asset_id = asyncio.run(run())
+    assert created.asset_id == mine_asset_id
