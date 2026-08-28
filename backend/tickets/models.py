@@ -75,3 +75,5 @@ class InboundEventResult(BaseModel):
     external_event_id: str
     payload_hash: str
     ticket_id: str | None
+    status: str = "received"
+    attempts: int = 0

@@ -89,6 +89,8 @@ uv run python -m backend.issue_dev_token demo admin-1    --role helpdesk-it-admi
 | `POST /tickets/{id}/survey` | `ticket:agent` | 发起回访并写 Outbox |
 | `POST /tickets/{id}/survey/{survey_id}/response` | `ticket:customer` | 提交 1–5 分满意度 |
 
+渠道入站采用**快速 ACK + 异步 Worker**：企微/钉钉 Webhook 与内部通道 `POST /integrations/{channel}/events` 只做验签解密并登记事件（`inbound_events`，状态 `received`），立即返回 `202 {"accepted": true, "event_id": ...}`；`run_inbound_worker` 领取后异步建单、受理、分类、派单与澄清 Outbox，状态经 `received → processing → committed/failed/dead`，临时错误指数退避、超限进 dead 可重放。调用方通过 `GET /integrations/events/{event_id}`（`ticket:channel`）轮询状态并获取 `ticket_id`；同 `event_id` 重复登记幂等，不重复建单。企微事件消息（enter_agent / location 等）验签通过后返回 200 忽略，不登记、不建单。
+
 企业微信 `/integrations/wecom/webhook` 使用 SHA-1 验签、AES-CBC 解密、CorpID 与重放窗口校验；钉钉 `/integrations/dingtalk/webhook` 使用时间戳和 HMAC-SHA256。两个厂商端点以服务端配置绑定租户，不信任请求体 tenant。内部适配器也可使用带 `ticket:channel` scope 的 `/integrations/{channel}/events`。
 
 知识库采用 Agentic RAG：Agent 可在有界轮次内根据检索结果生成补充查询，所有查询都重复执行 tenant、发布状态、有效期和部门 ACL；全文与向量候选使用 RRF 融合。运行时已装配 `AgenticRAGService`、`KnowledgeAnswerService` 和可选 `PgVectorRetriever`，受理图在派单后调用回答门禁生成建议回复。默认策略是建议回复，搜索耗尽后不会自动发送。没有双路证据、缺少有效引用、高风险或财务类问题都禁止自动回复并转人工。pgvector 为可选真实向量后端，未安装扩展或未配置 embedding 端点时只使用全文并明确记录降级原因。
@@ -365,5 +367,4 @@ CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` �
 | PostgreSQL RLS | Repository 全部强制 tenant 条件，但数据库行级安全尚未启用 |
 | 工作台认证 | 本地 Vite 代理使用单个开发令牌；生产需接 IdP 并按客户/客服/审批人分配 scope |
 | 企微追问闭环 | 企业微信文本消息可建单并触发缺字段追问（澄清消息进 Outbox 投递），但客户在企微回复补充字段会**新建工单**，尚未关联原工单 resume——追问后的继续受理需通过 Web 前端/API 完成 |
-| 企微回调同步处理 | 企微 POST 回调当前同步执行建单 + 受理图（含 LLM 建议），响应可能超过企微 5 秒等待窗口导致重试（幂等已兜底不重复建单，但会重复消耗）；POST 快速 ACK + 异步 Worker 待重构 |
 | 成本统计 | 单价配置默认为 0，接入真实供应商价格前，成本与预算功能不产生实际数值 |

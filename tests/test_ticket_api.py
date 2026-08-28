@@ -36,6 +36,9 @@ class FakeTickets:
         self.fail_next_transition = False
         self.assets = None
         self.seen_inbound = set()
+        self.inbound = {}
+        self.inbound_calls = []
+        self.attachments = []
 
     async def create(self, tenant_id, request):
         # 复刻数据访问层的客户资产归属校验（与 backend/tickets/repository.py 一致）。
@@ -123,16 +126,40 @@ class FakeTickets:
     async def list_status_events(self, tenant_id, ticket_id):
         return []
 
-    async def create_from_inbound_event(self, tenant_id, channel, external_event_id, event_payload, request):
-        self.inbound.append((tenant_id, channel, external_event_id, event_payload, request))
-        # 复刻数据访问层的渠道事件幂等：同 (tenant, channel, external_event_id) 不重复建单。
+    # ---- 渠道入站快速 ACK（异步 Worker 处理）：登记/查询/关联 ----
+    async def register_inbound_event(self, tenant_id, channel, external_event_id, payload):
         key = (tenant_id, channel, external_event_id)
-        if external_event_id == "duplicate" or key in self.seen_inbound:
-            return False, SimpleNamespace(ticket_id="existing-ticket")
-        self.seen_inbound.add(key)
-        record = SimpleNamespace(ticket_id=request.ticket_id, version=0, status=TicketStatus.NEW, requester_id=request.requester_id)
-        self.items[(tenant_id, request.ticket_id)] = record
-        return True, record
+        self.inbound_calls.append((tenant_id, channel, external_event_id, payload))
+        if key in self.inbound:
+            return SimpleNamespace(
+                created=False, tenant_id=tenant_id, channel=channel, external_event_id=external_event_id,
+                payload_hash="hash", ticket_id=self.inbound[key]["ticket_id"], status=self.inbound[key]["status"], attempts=0,
+            )
+        self.inbound[key] = {"status": "received", "ticket_id": None, "payload": payload, "attempts": 0}
+        return SimpleNamespace(
+            created=True, tenant_id=tenant_id, channel=channel, external_event_id=external_event_id,
+            payload_hash="hash", ticket_id=None, status="received", attempts=0,
+        )
+
+    async def get_inbound_event(self, tenant_id, channel, external_event_id):
+        return self.inbound.get((tenant_id, channel, external_event_id))
+
+    async def list_inbound_events(self, tenant_id, external_event_id):
+        return [
+            {
+                "tenant_id": tenant_id, "channel": channel, "external_event_id": external_event_id,
+                "status": record["status"], "ticket_id": record["ticket_id"],
+                "attempts": record["attempts"], "error_code": None, "received_at": None, "processed_at": None,
+            }
+            for (tid, channel, event_id), record in self.inbound.items()
+            if tid == tenant_id and event_id == external_event_id
+        ]
+
+    async def attach_inbound_event(self, tenant_id, channel, external_event_id, ticket_id):
+        record = self.inbound.get((tenant_id, channel, external_event_id))
+        if record is not None:
+            record["ticket_id"] = ticket_id
+        self.attachments.append((tenant_id, channel, external_event_id, ticket_id))
 
 
 class FakeIntakeGraph:
@@ -367,10 +394,9 @@ def headers(*scopes, tenant="tenant-a", user="user-1"):
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_channel_intake_records_workflow_operation_and_sends_clarification(monkeypatch):
-    module, tickets, intake = load_app(monkeypatch)
-    intake.result = {"__interrupt__": (), "missing_fields": ["impact"]}
-    intake.pending = (Interrupt(id="interrupt-chan", value={"kind": "ticket_clarification", "question": "补充影响范围", "allowed_actions": ["provide_information"], "expected_actor": "customer", "expected_actor_id": "user-1", "ticket_id": "ticket-1"}),)
+def test_channel_event_acks_fast_without_processing(monkeypatch):
+    """POST 快速 ACK：登记事件立即返回 202，业务（受理/追问）不在 HTTP 请求中执行。"""
+    module, tickets, _intake = load_app(monkeypatch)
     with TestClient(module.app) as client:
         response = client.post(
             "/integrations/wecom/events",
@@ -384,11 +410,13 @@ def test_channel_intake_records_workflow_operation_and_sends_clarification(monke
             },
         )
 
-    assert response.status_code == 200
-    assert response.json()["intake"]["interrupt"]["interrupt_id"] == "interrupt-chan"
-    assert tickets.workflow_runs[("tenant-a", response.json()["ticket_id"], "channel:event-1")]["status"] == "committed"
-    assert tickets.operations.outbound[0]["idempotency_key"] == "clarify:" + response.json()["ticket_id"]
-    assert "补充" in tickets.operations.outbound[0]["content"]
+    assert response.status_code == 202
+    body = response.json()
+    assert body == {"accepted": True, "event_id": "event-1", "created": True}
+    assert tickets.workflow_runs == {}  # 未在 HTTP 请求中启动受理
+    assert tickets.operations.outbound == []  # 未在 HTTP 请求中发澄清
+    assert ("tenant-a", "wecom", "event-1") in tickets.inbound  # 事件已登记
+    assert tickets.inbound[("tenant-a", "wecom", "event-1")]["status"] == "received"
 
 
 def test_create_ticket_derives_tenant_requester_and_actor_from_token(monkeypatch):
@@ -463,7 +491,7 @@ def test_agent_transition_uses_authenticated_actor_and_scopes(monkeypatch):
     assert scopes == frozenset({"ticket:agent"})
 
 
-def test_channel_endpoint_requires_scope_and_uses_atomic_repository_method(monkeypatch):
+def test_channel_endpoint_requires_scope_and_registers_event(monkeypatch):
     module, tickets, _intake = load_app(monkeypatch)
     body = {
         "external_event_id": "event-1",
@@ -485,17 +513,37 @@ def test_channel_endpoint_requires_scope_and_uses_atomic_repository_method(monke
         )
 
     assert forbidden.status_code == 403
-    assert created.status_code == 200
-    tenant_id, channel, event_id, payload, request = tickets.inbound[0]
+    assert created.status_code == 202
+    assert created.json() == {"accepted": True, "event_id": "event-1", "created": True}
+    tenant_id, channel, event_id, payload = tickets.inbound_calls[0]
     assert (tenant_id, channel, event_id) == ("tenant-a", "wecom", "event-1")
-    assert payload == {"raw": "message"}
-    assert request.actor_id == "wecom-adapter"
-    assert request.requester_id == "external-user"
-    assert [entry[1].action.value for entry in tickets.transitions] == [
-        "start_intake",
-        "classify",
-        "queue",
-    ]
+    assert payload["raw"] == {"raw": "message"}
+    assert payload["requester_id"] == "external-user"
+    assert tickets.transitions == []  # 建单/受理留给 InboundWorker
+
+
+def test_inbound_event_status_query_and_idempotent_registration(monkeypatch):
+    module, tickets, _intake = load_app(monkeypatch)
+    body = {
+        "external_event_id": "event-1",
+        "requester_id": "external-user",
+        "title": "Login failure",
+        "content": "Cannot sign in",
+        "payload": {},
+    }
+    channel_headers = headers("ticket:channel", user="wecom-adapter")
+    with TestClient(module.app) as client:
+        first = client.post("/integrations/wecom/events", headers=channel_headers, json=body)
+        second = client.post("/integrations/wecom/events", headers=channel_headers, json=body)
+        status = client.get("/integrations/events/event-1", headers=channel_headers)
+
+    assert first.status_code == 202
+    assert first.json()["created"] is True
+    assert second.status_code == 202
+    assert second.json()["created"] is False  # 同 event_id 幂等，返回原记录
+    assert status.status_code == 200
+    assert status.json()["items"][0]["status"] == "received"
+    assert status.json()["items"][0]["channel"] == "wecom"
 
 
 def test_intake_completes_to_queued_and_creates_sla_instance(monkeypatch):
@@ -828,12 +876,12 @@ def test_dingtalk_webhook_uses_signature_auth_and_configured_tenant(monkeypatch)
             headers={"Content-Type": "application/json"},
         )
 
-    assert response.status_code == 200
-    tenant_id, channel, event_id, payload, request = tickets.inbound[0]
+    assert response.status_code == 202
+    assert response.json() == {"accepted": True, "event_id": "ding-msg-1", "created": True}
+    tenant_id, channel, event_id, payload = tickets.inbound_calls[0]
     assert (tenant_id, channel, event_id) == ("tenant-channel", "dingtalk", "ding-msg-1")
-    assert request.requester_id == "external-user"
-    assert request.actor_id == "dingtalk-webhook"
-    assert payload["text"]["content"] == "VPN is unavailable"
+    assert payload["requester_id"] == "external-user"
+    assert payload["raw"]["text"]["content"] == "VPN is unavailable"
 
 
 def test_dingtalk_webhook_rejects_bad_signature_and_disabled_configuration(monkeypatch):
@@ -917,10 +965,9 @@ def test_wecom_webhook_verifies_signature_decrypts_and_is_idempotent(monkeypatch
                 headers={"Content-Type": "application/xml"},
             )
 
-    assert first.status_code == 200
-    assert first.json()["created"] is True
-    assert first.json()["ticket"]["requester_id"] == "ext-user-1"
-    assert second.status_code == 200
+    assert first.status_code == 202
+    assert first.json() == {"accepted": True, "event_id": first.json()["event_id"], "created": True}
+    assert second.status_code == 202
     assert second.json()["created"] is False
     assert bad.status_code == 401
     assert disabled.status_code == 503
@@ -973,7 +1020,8 @@ def test_wecom_webhook_ignores_event_messages_with_ack(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"ignored": True, "event": "enter_agent"}
-    assert tickets.inbound == []  # 事件消息不进入入站处理、不建单
+    assert tickets.inbound == {}  # 事件消息不登记入站、不建单
+    assert tickets.inbound_calls == []
 
 
 # ========== 第二阶段：资产 / IT 策略 / 工单资产 / 知识文档管理接口 ==========

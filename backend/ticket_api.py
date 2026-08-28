@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
-import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from langgraph.types import Command
@@ -35,6 +33,18 @@ from .channel_adapters import (
     WebhookVerificationError,
 )
 from .security import Principal, enforce_rate_limit, rate_limit_dependency
+from .ticket_intake import (
+    apply_operational_routing,
+    classify_category,
+    decode_cursor,
+    deserialize_commands,
+    encode_cursor,
+    intake_config,
+    intake_outcome_commands,
+    pending_intake_interrupt,
+    serialize_commands,
+    serialize_intake_result,
+)
 from .tickets import (
     AssetBindingError,
     CreateTicket,
@@ -146,164 +156,24 @@ def _actor_scope(actor_type: ActorType) -> str:
 
 
 def _encode_cursor(updated_at: datetime, ticket_id: str) -> str:
-    raw = json.dumps([updated_at.isoformat(), ticket_id], separators=(",", ":")).encode("utf-8")
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return encode_cursor(updated_at, ticket_id)
 
 
 def _decode_cursor(value: str | None) -> tuple[datetime, str] | None:
-    if value is None:
-        return None
     try:
-        padded = value + "=" * (-len(value) % 4)
-        updated_at, ticket_id = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
-        parsed = datetime.fromisoformat(updated_at)
-        if parsed.tzinfo is None or not isinstance(ticket_id, str) or not ticket_id:
-            raise ValueError
-        return parsed, ticket_id
-    except Exception as exc:
+        return decode_cursor(value)
+    except ValueError as exc:
         raise HTTPException(status_code=422, detail="无效分页游标") from exc
 
 
-def _intake_config(tenant_id: str, ticket_id: str) -> dict[str, Any]:
-    return {"configurable": {"thread_id": f"helpdesk:{tenant_id}:{ticket_id}", "tenant_id": tenant_id, "checkpoint_ns": ""}}
-
-
-def _serialize_commands(commands: list[TicketCommand]) -> list[dict[str, Any]]:
-    return [command.model_dump(mode="json") for command in commands]
-
-
-def _deserialize_commands(intent: dict[str, Any]) -> list[TicketCommand]:
-    raw = intent.get("commands")
-    if not isinstance(raw, list) or not raw:
-        raise ValueError("工作流意图缺少 commands")
-    return [TicketCommand.model_validate(item) for item in raw]
-
-
-def _classify_category(result: dict[str, Any]) -> str | None:
-    """把分类结果拼接成工单 category。
-
-    子分类非 general 时写完整键（it + vpn -> it.vpn），与 tenant_it_policies
-    的 category 键一致；SLA 解析按 it.vpn -> it -> 默认逐级回退。
-    """
-    category = result.get("category")
-    if not category:
-        return None
-    subcategory = result.get("subcategory")
-    if subcategory and subcategory != "general":
-        return f"{category}.{subcategory}"
-    return str(category)
-
-
-def _intake_outcome_commands(
-    *,
-    ticket_id: str,
-    actor_id: str,
-    expected_version: int,
-    result: dict[str, Any],
-) -> list[TicketCommand]:
-    if "__interrupt__" in result:
-        return [
-            TicketCommand(
-                ticket_id=ticket_id,
-                action=TicketAction.REQUEST_INFORMATION,
-                actor_type=ActorType.SYSTEM,
-                actor_id=actor_id,
-                expected_version=expected_version,
-                payload={"missing_fields": result.get("missing_fields", [])},
-            )
-        ]
-    return [
-        TicketCommand(
-            ticket_id=ticket_id,
-            action=TicketAction.CLASSIFY,
-            actor_type=ActorType.SYSTEM,
-            actor_id=actor_id,
-            expected_version=expected_version,
-            payload={"category": _classify_category(result)},
-        ),
-        TicketCommand(
-            ticket_id=ticket_id,
-            action=TicketAction.QUEUE,
-            actor_type=ActorType.SYSTEM,
-            actor_id=actor_id,
-            expected_version=expected_version + 1,
-            payload={
-                "team_id": result.get("dispatch_team_id"),
-                "priority": result.get("priority"),
-                "reason_codes": result.get("dispatch_reason_codes", []),
-            },
-        ),
-    ]
-
-
-async def _apply_operational_routing(
-    runtime,
-    commands: list[TicketCommand],
-    result: dict[str, Any],
-    *,
-    tenant_id: str,
-    channel: str,
-) -> list[TicketCommand]:
-    if "__interrupt__" in result or not commands or not hasattr(runtime, "routing"):
-        return commands
-    decision = await runtime.routing.route(
-        tenant_id=tenant_id,
-        category=str(result.get("category") or "other"),
-        subcategory=result.get("subcategory"),
-        channel=channel,
-        department_id=None,
-        risk_level=str(result.get("risk_level") or "low"),
-    )
-    if decision.team_id is None:
-        return commands
-    updated = []
-    for command in commands:
-        if command.action == TicketAction.QUEUE:
-            payload = dict(command.payload)
-            payload.update({"team_id": decision.team_id, "reason_codes": list(decision.reason_codes)})
-            command = command.model_copy(update={"payload": payload})
-        updated.append(command)
-    if decision.member_id is not None:
-        updated.append(
-            TicketCommand(
-                ticket_id=commands[0].ticket_id,
-                action=TicketAction.ASSIGN,
-                actor_type=ActorType.SYSTEM,
-                actor_id="routing-agent",
-                expected_version=updated[-1].expected_version + 1,
-                payload={"team_id": decision.team_id, "user_id": decision.member_id, "reason_codes": list(decision.reason_codes)},
-            )
-        )
-    return updated
-
-
-def _serialize_intake_result(ticket, result: dict[str, Any], snapshot: object) -> dict[str, Any]:
-    pending = None
-    for task in getattr(snapshot, "tasks", ()) or ():
-        interrupts = getattr(task, "interrupts", ()) or ()
-        if interrupts:
-            item = interrupts[0]
-            value = getattr(item, "value", None)
-            pending = {
-                "interrupt_id": str(getattr(item, "id", "") or ""),
-                **(value if isinstance(value, dict) else {"question": str(value)}),
-            }
-            # 追问必须带缺失字段，前端才能渲染补全表单；从 checkpoint 状态补齐。
-            state_values = getattr(snapshot, "values", None) or {}
-            missing = state_values.get("missing_fields")
-            if missing is not None and "missing_fields" not in pending:
-                pending["missing_fields"] = list(missing)
-            break
-    return {
-        "ticket": ticket,
-        "state": {key: value for key, value in result.items() if key != "__interrupt__"},
-        "interrupt": pending,
-    }
-
-
-async def _pending_intake_interrupt(runtime, tenant_id: str, ticket_id: str) -> dict[str, Any] | None:
-    snapshot = await runtime.intake_graph.aget_state(_intake_config(tenant_id, ticket_id))
-    return _serialize_intake_result(None, {}, snapshot)["interrupt"]
+_intake_config = intake_config
+_serialize_commands = serialize_commands
+_deserialize_commands = deserialize_commands
+_classify_category = classify_category
+_intake_outcome_commands = intake_outcome_commands
+_apply_operational_routing = apply_operational_routing
+_serialize_intake_result = serialize_intake_result
+_pending_intake_interrupt = pending_intake_interrupt
 
 
 def _interrupt_payload(snapshot: object, interrupt_id: str) -> tuple[object, dict[str, Any]]:
@@ -328,89 +198,30 @@ async def _webhook_body(request: Request, channel: str) -> bytes:
     return body
 
 
-async def _persist_channel_event(runtime, event: NormalizedChannelEvent, *, actor_id: str):
-    ticket_id = uuid4().hex
-    created, ticket = await runtime.tickets.create_from_inbound_event(
+def _event_payload(event: NormalizedChannelEvent) -> dict[str, Any]:
+    """把渠道事件序列化为 inbound_events.payload，供 InboundWorker 重建事件。"""
+    return {
+        "requester_id": event.requester_id,
+        "external_ticket_id": event.external_ticket_id,
+        "title": event.title,
+        "content": event.content,
+        "channel": event.channel,
+        "raw": event.payload,
+    }
+
+
+async def _ack_channel_event(runtime, event: NormalizedChannelEvent, *, actor_id: str) -> dict[str, Any]:
+    """渠道入站快速 ACK：只登记事件（received）并返回，业务由 InboundWorker 异步执行。
+
+    幂等：同 (tenant, channel, external_event_id) 重复登记返回原记录（created=False）。
+    """
+    result = await runtime.tickets.register_inbound_event(
         event.tenant_id,
         event.channel,
         event.external_event_id,
-        event.payload,
-        CreateTicket(
-            ticket_id=ticket_id,
-            requester_id=event.requester_id,
-            channel=event.channel,
-            external_ticket_id=event.external_ticket_id,
-            title=event.title,
-            description=event.content,
-            actor_type=ActorType.SYSTEM,
-            actor_id=actor_id,
-            metadata={"external_event_id": event.external_event_id},
-        ),
+        _event_payload(event),
     )
-    if not created or ticket is None:
-        return {"created": False, "ticket_id": None if ticket is None else ticket.ticket_id, "ticket": ticket, "intake": None}
-    operation_id = f"channel:{event.external_event_id}"
-    config = _intake_config(event.tenant_id, ticket_id)
-    run = await runtime.tickets.start_workflow_operation(
-        tenant_id=event.tenant_id,
-        ticket_id=ticket_id,
-        operation_id=operation_id,
-        command_type="channel_intake",
-        expected_version=ticket.version,
-        checkpoint_thread_id=config["configurable"]["thread_id"],
-    )
-    if run["status"] == "committed":
-        snapshot = await runtime.intake_graph.aget_state(config)
-        return {"created": True, "ticket_id": ticket_id, "ticket": ticket, "intake": {"ticket": ticket, "state": {}, "interrupt": _serialize_intake_result(None, {}, snapshot)["interrupt"]}}
-    if run["intent"] is None:
-        result = await runtime.intake_graph.ainvoke({
-            "ticket_id": ticket_id,
-            "requester_id": event.requester_id,
-            "text": event.content,
-            "fields": {"title": event.title, "description": event.content, "requester_id": event.requester_id},
-            "clarification_rounds": 0,
-        }, config)
-        prefix = [TicketCommand(ticket_id=ticket_id, action=TicketAction.START_INTAKE, actor_type=ActorType.SYSTEM, actor_id="intake-agent", expected_version=ticket.version)]
-        commands = [*prefix, *_intake_outcome_commands(ticket_id=ticket_id, actor_id="intake-agent", expected_version=ticket.version + 1, result=result)]
-        commands = await _apply_operational_routing(runtime, commands, result, tenant_id=event.tenant_id, channel=event.channel)
-        await runtime.tickets.record_workflow_intent(
-            tenant_id=event.tenant_id,
-            ticket_id=ticket_id,
-            operation_id=operation_id,
-            intent={"commands": _serialize_commands(commands), "result": {key: value for key, value in result.items() if key != "__interrupt__"}},
-        )
-    else:
-        commands = _deserialize_commands(run["intent"])
-        result = dict(run["intent"].get("result") or {})
-    clarification = "、".join(result.get("missing_fields") or []) if "__interrupt__" in result else None
-    if clarification:
-        await runtime.ticket_operations.append_outbound_message(
-            tenant_id=event.tenant_id,
-            ticket_id=ticket_id,
-            message_id=f"clarify-{event.external_event_id}",
-            actor_type="system",
-            actor_id="intake-agent",
-            channel=event.channel,
-            content=f"请补充：{clarification}",
-            event_id=f"clarify-{event.external_event_id}",
-            idempotency_key=f"clarify:{ticket_id}",
-            payload={"ticket_id": ticket_id, "content": f"请补充：{clarification}"},
-        )
-    ticket = await runtime.tickets.transition_many(
-        event.tenant_id,
-        commands,
-        scopes={"ticket:system"},
-        operation_id=operation_id,
-    )
-    if ticket.status in {TicketStatus.QUEUED, TicketStatus.ASSIGNED}:
-        await runtime.ticket_operations.ensure_sla_for_ticket(
-            tenant_id=event.tenant_id,
-            ticket_id=ticket.ticket_id,
-            channel=event.channel,
-            category=getattr(ticket, "category", None),
-        )
-    snapshot = await runtime.intake_graph.aget_state(config)
-    return {"created": True, "ticket_id": ticket.ticket_id, "ticket": ticket, "intake": _serialize_intake_result(ticket, result, snapshot)}
+    return {"accepted": True, "event_id": event.external_event_id, "created": result.created}
 
 
 def _map_domain_error(exc: Exception) -> HTTPException:
@@ -803,7 +614,7 @@ async def receive_channel_event(
     _require_scope(principal, "ticket:channel")
     runtime = _runtime(request)
     try:
-        return await _persist_channel_event(
+        result = await _ack_channel_event(
             runtime,
             NormalizedChannelEvent(
                 tenant_id=principal.tenant_id,
@@ -819,6 +630,34 @@ async def receive_channel_event(
         )
     except Exception as exc:
         raise _map_domain_error(exc) from exc
+    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=result)
+
+
+@channel_router.get("/events/{event_id}")
+async def get_inbound_event_status(
+    event_id: str,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    """查询渠道入站事件处理状态（异步 ACK 后由调用方轮询获取 ticket_id）。"""
+    _require_scope(principal, "ticket:channel")
+    runtime = _runtime(request)
+    items = await runtime.tickets.list_inbound_events(principal.tenant_id, event_id)
+    return {
+        "event_id": event_id,
+        "items": [
+            {
+                "channel": item["channel"],
+                "status": item["status"],
+                "ticket_id": item["ticket_id"],
+                "attempts": item["attempts"],
+                "error_code": item["error_code"],
+                "created_at": item["received_at"],
+                "processed_at": item["processed_at"],
+            }
+            for item in items
+        ],
+    }
 
 
 @channel_router.get("/wecom/webhook", response_class=PlainTextResponse)
@@ -881,14 +720,15 @@ async def receive_wecom_webhook(
             nonce=nonce,
             signature=msg_signature,
         )
-        return await _persist_channel_event(_runtime(request), event, actor_id="wecom-webhook")
+        result = await _ack_channel_event(_runtime(request), event, actor_id="wecom-webhook")
     except IgnoreWebhookEvent as exc:
-        # 事件消息（进入应用/位置上报等）：验签已通过，返回 200 阻止企微重试，不建单。
+        # 事件消息（进入应用/位置上报等）：验签已通过，返回 200 阻止企微重试，不登记、不建单。
         return {"ignored": True, "event": exc.event}
     except WebhookVerificationError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except Exception as exc:
         raise _map_domain_error(exc) from exc
+    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=result)
 
 
 @channel_router.post("/dingtalk/webhook")
@@ -912,11 +752,12 @@ async def receive_dingtalk_webhook(
             timestamp=timestamp,
             signature=sign,
         )
-        return await _persist_channel_event(_runtime(request), event, actor_id="dingtalk-webhook")
+        result = await _ack_channel_event(_runtime(request), event, actor_id="dingtalk-webhook")
     except WebhookVerificationError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except Exception as exc:
         raise _map_domain_error(exc) from exc
+    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=result)
 
 
 # ========== IT 策略管理（/admin/it/policies） ==========

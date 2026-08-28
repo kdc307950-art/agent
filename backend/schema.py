@@ -13,7 +13,7 @@ from psycopg import AsyncConnection
 
 
 APP_SCHEMA_NAME = "langgraph_agent"
-APP_SCHEMA_VERSION = 12
+APP_SCHEMA_VERSION = 13
 MIGRATION_LOCK_KEY = 891274631
 
 # These are the tables created by the pinned LangGraph PostgreSQL adapters and
@@ -870,6 +870,60 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 """
             )
             current = 12
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 13:
+            # v13: 渠道入站异步化 —— inbound_events 增加处理状态机与租约/重试列。
+            # POST 只登记事件（received）立即返回，InboundWorker 领取后建单受理；
+            # 幂等由 (tenant_id, channel, external_event_id) 主键与 ticket_id 关联保证。
+            await cursor.execute(
+                "ALTER TABLE inbound_events ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'received'"
+            )
+            await cursor.execute(
+                "ALTER TABLE inbound_events ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::jsonb"
+            )
+            await cursor.execute(
+                "ALTER TABLE inbound_events ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0"
+            )
+            await cursor.execute(
+                "ALTER TABLE inbound_events ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+            )
+            await cursor.execute(
+                "ALTER TABLE inbound_events ADD COLUMN IF NOT EXISTS error_code TEXT"
+            )
+            await cursor.execute(
+                "ALTER TABLE inbound_events ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ"
+            )
+            await cursor.execute(
+                "ALTER TABLE inbound_events ADD COLUMN IF NOT EXISTS worker_id TEXT"
+            )
+            await cursor.execute(
+                "ALTER TABLE inbound_events ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ"
+            )
+            await cursor.execute(
+                """
+                ALTER TABLE inbound_events
+                DROP CONSTRAINT IF EXISTS inbound_events_status_check
+                """
+            )
+            await cursor.execute(
+                """
+                ALTER TABLE inbound_events
+                ADD CONSTRAINT inbound_events_status_check
+                CHECK (status IN ('received', 'processing', 'committed', 'failed', 'dead'))
+                """
+            )
+            await cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_inbound_events_claim
+                ON inbound_events (status, next_attempt_at)
+                WHERE status IN ('received', 'failed')
+                """
+            )
+            current = 13
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
                 (current, APP_SCHEMA_NAME),

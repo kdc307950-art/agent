@@ -609,26 +609,32 @@ class TicketRepository:
         external_event_id: str,
         payload: dict[str, Any],
     ) -> InboundEventResult:
+        """登记渠道入站事件（快速 ACK 阶段）——不建单，返回 received 状态。
+
+        幂等：同 (tenant_id, channel, external_event_id) 只登记一次，
+        重复调用返回已有记录（created=False），由 InboundWorker 异步建单受理。
+        """
         payload_hash = canonical_payload_hash(payload)
         async with self.pool.connection() as connection:
             async with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
                 await cursor.execute(
                     """
                     INSERT INTO inbound_events (
-                        tenant_id, channel, external_event_id, payload_hash
+                        tenant_id, channel, external_event_id, payload_hash,
+                        payload, status, attempts, next_attempt_at
                     )
-                    VALUES (%s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, 'received', 0, now())
                     ON CONFLICT (tenant_id, channel, external_event_id) DO NOTHING
-                    RETURNING tenant_id, channel, external_event_id, payload_hash, ticket_id
+                    RETURNING tenant_id, channel, external_event_id, payload_hash, ticket_id, status, attempts
                     """,
-                    (tenant_id, channel, external_event_id, payload_hash),
+                    (tenant_id, channel, external_event_id, payload_hash, Jsonb(payload)),
                 )
                 row = await cursor.fetchone()
                 created = row is not None
                 if row is None:
                     await cursor.execute(
                         """
-                        SELECT tenant_id, channel, external_event_id, payload_hash, ticket_id
+                        SELECT tenant_id, channel, external_event_id, payload_hash, ticket_id, status, attempts
                         FROM inbound_events
                         WHERE tenant_id = %s AND channel = %s AND external_event_id = %s
                         FOR UPDATE
@@ -640,96 +646,174 @@ class TicketRepository:
                     raise InboundEventConflict("同一渠道事件标识对应了不同载荷")
                 return InboundEventResult(created=created, **row)
 
-    async def create_from_inbound_event(
+    async def get_inbound_event(
         self,
         tenant_id: str,
         channel: str,
         external_event_id: str,
-        event_payload: dict[str, Any],
-        request: CreateTicket,
-    ) -> tuple[bool, TicketRecord | None]:
-        payload_hash = canonical_payload_hash(event_payload)
+    ) -> dict[str, Any] | None:
+        async with self.pool.connection() as connection:
+            async with connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    SELECT * FROM inbound_events
+                    WHERE tenant_id = %s AND channel = %s AND external_event_id = %s
+                    """,
+                    (tenant_id, channel, external_event_id),
+                )
+                return await cursor.fetchone()
+
+    async def list_inbound_events(
+        self,
+        tenant_id: str,
+        external_event_id: str,
+    ) -> list[dict[str, Any]]:
+        """按租户 + 事件 ID 列出全部渠道记录（状态查询 API 用）。"""
+        async with self.pool.connection() as connection:
+            async with connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    SELECT tenant_id, channel, external_event_id, status, ticket_id,
+                           attempts, error_code, received_at, processed_at
+                    FROM inbound_events
+                    WHERE tenant_id = %s AND external_event_id = %s
+                    ORDER BY received_at
+                    """,
+                    (tenant_id, external_event_id),
+                )
+                return list(await cursor.fetchall())
+
+    async def claim_inbound_events(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int = 120,
+        limit: int = 20,
+        tenant_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """领取待处理入站事件（received / 可重试 failed / 租约过期的 processing）。
+
+        与 Outbox 同款 FOR UPDATE SKIP LOCKED，支持多 Worker 副本。
+        """
+        if not worker_id or lease_seconds < 1 or limit < 1 or limit > 100:
+            raise ValueError("Inbound 领取参数无效")
         async with self.pool.connection() as connection:
             async with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
                 await cursor.execute(
                     """
-                    INSERT INTO inbound_events (
-                        tenant_id, channel, external_event_id, payload_hash
-                    ) VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (tenant_id, channel, external_event_id) DO NOTHING
-                    RETURNING external_event_id
-                    """,
-                    (tenant_id, channel, external_event_id, payload_hash),
-                )
-                if await cursor.fetchone() is None:
-                    await cursor.execute(
-                        """
-                        SELECT payload_hash, ticket_id FROM inbound_events
-                        WHERE tenant_id = %s AND channel = %s AND external_event_id = %s
-                        """,
-                        (tenant_id, channel, external_event_id),
-                    )
-                    existing = await cursor.fetchone()
-                    if existing is None or existing["payload_hash"] != payload_hash:
-                        raise InboundEventConflict("同一渠道事件标识对应了不同载荷")
-                    ticket = None
-                    if existing["ticket_id"] is not None:
-                        await cursor.execute(
-                            "SELECT * FROM tickets WHERE tenant_id = %s AND ticket_id = %s",
-                            (tenant_id, existing["ticket_id"]),
+                    WITH ready AS (
+                        SELECT tenant_id, external_event_id, status AS previous_status
+                        FROM inbound_events
+                        WHERE (
+                            (status = 'received' AND next_attempt_at <= now())
+                            OR (status = 'failed' AND next_attempt_at <= now())
+                            OR (status = 'processing' AND lease_expires_at < now())
                         )
-                        row = await cursor.fetchone()
-                        ticket = None if row is None else TicketRecord.model_validate(row)
-                    return False, ticket
+                          AND (%s::TEXT IS NULL OR tenant_id = %s)
+                        ORDER BY next_attempt_at, received_at
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT %s
+                    )
+                    UPDATE inbound_events AS e
+                    SET status = 'processing', claimed_at = now(),
+                        attempts = attempts + 1, worker_id = %s,
+                        lease_expires_at = now() + (%s * interval '1 second'),
+                        error_code = NULL
+                    FROM ready
+                    WHERE e.tenant_id = ready.tenant_id AND e.external_event_id = ready.external_event_id
+                    RETURNING e.*, (ready.previous_status = 'processing') AS lease_recovered
+                    """,
+                    (tenant_id, tenant_id, limit, worker_id, lease_seconds),
+                )
+                return list(await cursor.fetchall())
 
+    async def renew_inbound_lease(
+        self,
+        tenant_id: str,
+        external_event_id: str,
+        *,
+        worker_id: str,
+        lease_seconds: int = 120,
+    ) -> bool:
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
                 await cursor.execute(
                     """
-                    INSERT INTO tickets (
-                        tenant_id, ticket_id, requester_id, channel,
-                        external_ticket_id, title, description, status,
-                        priority, version, metadata
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'new', %s, 0, %s)
-                    ON CONFLICT DO NOTHING
-                    RETURNING *
+                    UPDATE inbound_events
+                    SET lease_expires_at = now() + (%s * interval '1 second')
+                    WHERE tenant_id = %s AND external_event_id = %s
+                      AND status = 'processing' AND worker_id = %s
+                      AND lease_expires_at >= now()
                     """,
-                    (
-                        tenant_id,
-                        request.ticket_id,
-                        request.requester_id,
-                        request.channel,
-                        request.external_ticket_id,
-                        request.title,
-                        request.description,
-                        request.priority,
-                        Jsonb(request.metadata),
-                    ),
+                    (lease_seconds, tenant_id, external_event_id, worker_id),
                 )
-                row = await cursor.fetchone()
-                if row is None:
-                    raise TicketAlreadyExists("工单或渠道工单标识已存在")
+                return cursor.rowcount == 1
+
+    async def complete_inbound_event(
+        self,
+        tenant_id: str,
+        external_event_id: str,
+        *,
+        ticket_id: str,
+        worker_id: str,
+    ) -> bool:
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
                 await cursor.execute(
                     """
-                    INSERT INTO ticket_status_events (
-                        tenant_id, ticket_id, from_status, to_status, action,
-                        actor_type, actor_id, ticket_version, payload
-                    ) VALUES (%s, %s, NULL, 'new', 'create', %s, %s, 0, %s)
+                    UPDATE inbound_events
+                    SET status = 'committed', ticket_id = %s, processed_at = now(),
+                        worker_id = NULL, lease_expires_at = NULL, error_code = NULL
+                    WHERE tenant_id = %s AND external_event_id = %s
+                      AND status = 'processing' AND worker_id = %s
+                      AND lease_expires_at >= now()
                     """,
-                    (
-                        tenant_id,
-                        request.ticket_id,
-                        request.actor_type.value,
-                        request.actor_id,
-                        Jsonb(request.metadata),
-                    ),
+                    (ticket_id, tenant_id, external_event_id, worker_id),
                 )
+                return cursor.rowcount == 1
+
+    async def fail_inbound_event(
+        self,
+        tenant_id: str,
+        external_event_id: str,
+        *,
+        worker_id: str,
+        error_code: str,
+        retry_at: Any,
+        max_attempts: int = 5,
+    ) -> bool:
+        target_status = "dead" if retry_at is None else "failed"
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
                 await cursor.execute(
                     """
-                    UPDATE inbound_events SET ticket_id = %s, processed_at = now()
-                    WHERE tenant_id = %s AND channel = %s AND external_event_id = %s
+                    UPDATE inbound_events
+                    SET status = CASE WHEN %s::boolean THEN 'dead' ELSE 'failed' END,
+                        next_attempt_at = COALESCE(%s, next_attempt_at),
+                        claimed_at = NULL, worker_id = NULL, lease_expires_at = NULL,
+                        error_code = %s
+                    WHERE tenant_id = %s AND external_event_id = %s
+                      AND status = 'processing' AND worker_id = %s
+                      AND lease_expires_at >= now()
                     """,
-                    (request.ticket_id, tenant_id, channel, external_event_id),
+                    (target_status == "dead", retry_at, error_code, tenant_id, external_event_id, worker_id),
                 )
-                return True, TicketRecord.model_validate(row)
+                return cursor.rowcount == 1
+
+    async def replay_inbound_event(self, tenant_id: str, external_event_id: str) -> bool:
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE inbound_events
+                    SET status = 'received', next_attempt_at = now(), attempts = 0,
+                        claimed_at = NULL, worker_id = NULL, lease_expires_at = NULL,
+                        error_code = NULL
+                    WHERE tenant_id = %s AND external_event_id = %s AND status = 'dead'
+                    """,
+                    (tenant_id, external_event_id),
+                )
+                return cursor.rowcount == 1
 
     async def attach_inbound_event(
         self,

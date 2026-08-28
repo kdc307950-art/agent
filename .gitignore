@@ -14,3 +14,6 @@ frontend/dist/
 *.db-wal
 chat_history.json
 artifacts/
+
+# 本地沙箱工具与令牌(含真实企微凭据,禁止提交)
+.tools/

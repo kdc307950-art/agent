@@ -50,12 +50,19 @@ def test_oidc_rejects_empty_scope_and_production_requires_cors(monkeypatch):
 def test_channel_webhook_configuration_must_be_complete(monkeypatch):
     _base_production(monkeypatch)
     monkeypatch.setenv("WECOM_TENANT_ID", "tenant-a")
+    # 清空其余企微变量（本地 .env 可能已配置完整凭据，会污染"部分配置"断言）。
+    for name in ("WECOM_TOKEN", "WECOM_ENCODING_AES_KEY", "WECOM_CORP_ID"):
+        monkeypatch.delenv(name, raising=False)
     with pytest.raises(RuntimeError, match="WECOM_TENANT_ID"):
         Settings.from_env()
 
     _base_production(monkeypatch)
     monkeypatch.delenv("WECOM_TENANT_ID", raising=False)
+    monkeypatch.delenv("WECOM_TOKEN", raising=False)
+    monkeypatch.delenv("WECOM_ENCODING_AES_KEY", raising=False)
+    monkeypatch.delenv("WECOM_CORP_ID", raising=False)
     monkeypatch.setenv("DINGTALK_TENANT_ID", "tenant-a")
+    monkeypatch.delenv("DINGTALK_APP_SECRET", raising=False)
     with pytest.raises(RuntimeError, match="DINGTALK_TENANT_ID"):
         Settings.from_env()
 
