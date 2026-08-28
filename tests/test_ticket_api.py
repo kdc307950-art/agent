@@ -870,11 +870,17 @@ def _encrypt_wecom(message: bytes, corp_id: str) -> str:
     return base64.b64encode(encryptor.update(padded) + encryptor.finalize()).decode("ascii")
 
 
-def _wecom_webhook(content: str) -> tuple[bytes, str, str, str]:
-    inner = (
-        f"<xml><FromUserName>ext-user-1</FromUserName><MsgId>wecom-{uuid4().hex}</MsgId>"
-        f"<Content>{content}</Content></xml>"
-    ).encode("utf-8")
+def _wecom_webhook(content: str | None = None, event: str | None = None) -> tuple[bytes, str, str, str]:
+    if event is not None:
+        inner = (
+            "<xml><ToUserName>corp-1</ToUserName><FromUserName>ext-user-1</FromUserName>"
+            f"<CreateTime>1700000000</CreateTime><MsgType>event</MsgType><Event>{event}</Event></xml>"
+        ).encode("utf-8")
+    else:
+        inner = (
+            f"<xml><FromUserName>ext-user-1</FromUserName><MsgId>wecom-{uuid4().hex}</MsgId>"
+            f"<Content>{content}</Content></xml>"
+        ).encode("utf-8")
     encrypted = _encrypt_wecom(inner, "corp-1")
     body = f"<xml><Encrypt>{encrypted}</Encrypt></xml>".encode()
     timestamp = str(int(time.time()))
@@ -953,6 +959,21 @@ def test_wecom_webhook_get_verifies_echostr(monkeypatch):
     assert bad_signature.status_code == 401
     assert expired.status_code == 401
     assert disabled.status_code == 503
+
+
+def test_wecom_webhook_ignores_event_messages_with_ack(monkeypatch):
+    module, tickets, _intake = load_app(monkeypatch, wecom=True)
+    body, timestamp, nonce, signature = _wecom_webhook(event="enter_agent")
+    with TestClient(module.app) as client:
+        response = client.post(
+            f"/integrations/wecom/webhook?timestamp={timestamp}&nonce={nonce}&msg_signature={signature}",
+            content=body,
+            headers={"Content-Type": "application/xml"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"ignored": True, "event": "enter_agent"}
+    assert tickets.inbound == []  # 事件消息不进入入站处理、不建单
 
 
 # ========== 第二阶段：资产 / IT 策略 / 工单资产 / 知识文档管理接口 ==========

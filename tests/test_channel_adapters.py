@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from backend.channel_adapters import (
     DingTalkWebhookAdapter,
+    IgnoreWebhookEvent,
     WeComWebhookAdapter,
     WebhookVerificationError,
 )
@@ -31,6 +32,15 @@ def wecom_body(*, corp_id="corp-1"):
     inner = (
         "<xml><FromUserName>user-1</FromUserName><MsgId>msg-1</MsgId>"
         "<Content>SSO login failed</Content></xml>"
+    ).encode("utf-8")
+    encrypted = encrypt_wecom(inner, corp_id)
+    return f"<xml><Encrypt>{encrypted}</Encrypt></xml>".encode(), encrypted
+
+
+def wecom_event_body(event: str = "enter_agent", *, corp_id="corp-1"):
+    inner = (
+        "<xml><ToUserName>corp-1</ToUserName><FromUserName>user-1</FromUserName>"
+        f"<CreateTime>1700000000</CreateTime><MsgType>event</MsgType><Event>{event}</Event></xml>"
     ).encode("utf-8")
     encrypted = encrypt_wecom(inner, corp_id)
     return f"<xml><Encrypt>{encrypted}</Encrypt></xml>".encode(), encrypted
@@ -188,6 +198,30 @@ def test_wecom_verify_url_does_not_parse_post_xml():
         "<xml><FromUserName>user-1</FromUserName><MsgId>msg-1</MsgId>"
         "<Content>SSO login failed</Content></xml>"
     )
+
+
+def test_wecom_event_messages_raise_ignore_not_parsed():
+    """事件消息（enter_agent / location）验签通过但抛 IgnoreWebhookEvent，不解析为工单事件。"""
+    for event_name in ("enter_agent", "location", "subscribe"):
+        body, encrypted = wecom_event_body(event_name)
+        timestamp = "1700000000"
+        nonce = "nonce-1"
+        token = "token-1"
+        signature = hashlib.sha1("".join(sorted((token, timestamp, nonce, encrypted))).encode()).hexdigest()
+        adapter = WeComWebhookAdapter(
+            tenant_id="tenant-a",
+            token=token,
+            encoding_aes_key=WECOM_ENCODING_KEY,
+            corp_id="corp-1",
+        )
+        with pytest.raises(IgnoreWebhookEvent, match=event_name):
+            adapter.verify_and_parse(
+                body,
+                timestamp=timestamp,
+                nonce=nonce,
+                signature=signature,
+                now=1700000000,
+            )
 
 
 def dingtalk_signature(timestamp: str, secret: str) -> str:

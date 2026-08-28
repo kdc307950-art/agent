@@ -29,6 +29,7 @@ from src.my_agent.helpdesk import (
 
 from .channel_adapters import (
     DingTalkWebhookAdapter,
+    IgnoreWebhookEvent,
     NormalizedChannelEvent,
     WeComWebhookAdapter,
     WebhookVerificationError,
@@ -881,6 +882,9 @@ async def receive_wecom_webhook(
             signature=msg_signature,
         )
         return await _persist_channel_event(_runtime(request), event, actor_id="wecom-webhook")
+    except IgnoreWebhookEvent as exc:
+        # 事件消息（进入应用/位置上报等）：验签已通过，返回 200 阻止企微重试，不建单。
+        return {"ignored": True, "event": exc.event}
     except WebhookVerificationError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except Exception as exc:

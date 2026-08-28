@@ -20,6 +20,17 @@ class WebhookVerificationError(ValueError):
     pass
 
 
+class IgnoreWebhookEvent(Exception):
+    """企业微信事件消息（enter_agent / location / subscribe 等）——验签通过但非文本消息。
+
+    路由层捕获后应返回 200 ACK（避免企业微信重试），不建单、不写 inbound_events。
+    """
+
+    def __init__(self, event: str) -> None:
+        super().__init__(f"忽略企业微信事件消息: {event}")
+        self.event = event
+
+
 @dataclass(frozen=True, slots=True)
 class NormalizedChannelEvent:
     tenant_id: str
@@ -131,11 +142,19 @@ class WeComWebhookAdapter:
             raise WebhookVerificationError("企业微信签名无效")
         plaintext = self._decrypt(encrypted)
         message = _safe_xml(plaintext.decode("utf-8"))
+        # 区分文本消息与事件消息：enter_agent / location / subscribe 等事件不建单，
+        # 由路由层 ACK 200 并忽略；只有文本消息（MsgType=text，含 Content）进入受理。
+        msg_type = (_xml_text(message, "MsgType", required=False) or "").strip().lower()
+        event = _xml_text(message, "Event", required=False)
+        if msg_type == "event" or event:
+            raise IgnoreWebhookEvent(event or msg_type or "unknown")
         event_id = _xml_text(message, "MsgId", required=False) or _xml_text(message, "EventId", required=False)
         if not event_id:
             event_id = hashlib.sha256(plaintext).hexdigest()
         requester = _xml_text(message, "FromUserName")
-        content = _xml_text(message, "Content", required=False) or _xml_text(message, "Event", required=False) or "企业微信事件"
+        content = _xml_text(message, "Content", required=False)
+        if not content:
+            raise WebhookVerificationError("企业微信文本消息缺少 Content")
         return NormalizedChannelEvent(
             tenant_id=self.tenant_id,
             channel="wecom",
