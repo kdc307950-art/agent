@@ -169,6 +169,26 @@ class EmptyGraph:
             yield {}
 
 
+class FakeAudit:
+    def __init__(self):
+        self.admin_events = []
+
+    async def start_run(self, *_args, **_kwargs):
+        return None
+
+    async def finish_run(self, *_args, **_kwargs):
+        return True
+
+    async def record_event(self, *_args, **_kwargs):
+        return None
+
+    async def record_admin_event(self, **kwargs):
+        self.admin_events.append(kwargs)
+
+    async def list_admin_events(self, **kwargs):
+        return self.admin_events
+
+
 class FakeAssets:
     def __init__(self):
         self.items = {}
@@ -178,6 +198,10 @@ class FakeAssets:
 
     async def list_assets(self, tenant_id, **kwargs):
         return [item for (tid, _), item in self.items.items() if tid == tenant_id]
+
+    async def get(self, tenant_id, asset_id):
+        record = self.items.get((tenant_id, asset_id))
+        return record if record is not None and not record.is_deleted else None
 
     async def create(self, tenant_id, request):
         self.created.append((tenant_id, request))
@@ -234,6 +258,12 @@ class FakeItPolicies:
         self.items[(tenant_id, policy.category)] = record
         return record
 
+    async def list_active(self, tenant_id):
+        return [item for (tid, _), item in self.items.items() if tid == tenant_id]
+
+    async def delete(self, tenant_id, category):
+        return self.items.pop((tenant_id, category), None) is not None
+
 
 class FakeKnowledge:
     def __init__(self):
@@ -250,6 +280,9 @@ class FakeKnowledge:
     async def retire_document(self, tenant_id, document_id):
         self.retired.append((tenant_id, document_id))
         return True
+
+    async def list_documents(self, tenant_id, **kwargs):
+        return []
 
 
 def load_app(monkeypatch, *, dingtalk=False):
@@ -277,6 +310,7 @@ def load_app(monkeypatch, *, dingtalk=False):
         assets=FakeAssets(),
         it_policies=FakeItPolicies(),
         knowledge=FakeKnowledge(),
+        audit=FakeAudit(),
     )
 
     @asynccontextmanager
@@ -889,3 +923,19 @@ def test_knowledge_documents_api_enforces_write_scope_and_publishes(monkeypatch)
     assert created.status_code == 201
     assert published.json()["status"] == "published"
     assert retired.json()["status"] == "retired"
+
+
+def test_admin_operations_are_audited(monkeypatch):
+    module, _tickets, _intake = load_app(monkeypatch)
+    admin_headers = headers("ticket:agent", "asset:read", "asset:write", "it-policy:read", "it-policy:write", "knowledge:read", "knowledge:write")
+    with TestClient(module.app) as client:
+        client.post("/assets", headers=admin_headers, json={"asset_id": "asset-1", "asset_no": "A-1", "asset_type": "laptop"})
+        client.put("/admin/it/policies/it.vpn", headers=admin_headers, json={"category": "it.vpn", "policy_id": "sla-1"})
+        client.post("/knowledge/documents", headers=admin_headers, json={"document": {"document_id": "doc-1", "version": 1, "title": "VPN"}, "chunks": [{"chunk_id": "c1", "ordinal": 0, "content": "vpn"}]})
+        audit = module.app.state.runtime.audit
+        actions = [event["action"] for event in audit.admin_events]
+
+    assert "asset.create" in actions
+    assert "it_policy.upsert" in actions
+    assert "knowledge.document.create" in actions
+    assert all(event["tenant_id"] == "tenant-a" for event in audit.admin_events)

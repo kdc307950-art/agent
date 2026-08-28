@@ -41,7 +41,7 @@ def test_all_it_subcategories_are_recognized():
         "hardware": "显示器不亮",
         "software": "软件安装失败",
         "printer": "打印机不出纸",
-        "mobile": "出差手机无法上网",
+        "permission": "申请共享文件夹权限",
     }
     for expected, text in samples.items():
         result = classify(text)

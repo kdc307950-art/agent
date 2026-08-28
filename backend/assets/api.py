@@ -33,6 +33,20 @@ def _map_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail="资产服务内部错误")
 
 
+async def _audit(runtime, *, tenant_id: str, user_id: str, action: str, resource_id: str, detail: dict | None = None) -> None:
+    audit = getattr(runtime, "audit", None)
+    if audit is None:
+        return
+    await audit.record_admin_event(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action=action,
+        resource_type="asset",
+        resource_id=resource_id,
+        detail=detail,
+    )
+
+
 @router.get("")
 async def list_assets(
     request: Request,
@@ -59,6 +73,34 @@ async def list_assets(
     return {"items": items}
 
 
+@router.get("/{asset_id}")
+async def get_asset(
+    asset_id: str,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    _require_scope(principal, "asset:read")
+    runtime = _runtime(request)
+    asset = await runtime.assets.get(principal.tenant_id, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="资产不存在")
+    return asset
+
+
+@router.get("/{asset_id}/tickets")
+async def list_asset_tickets(
+    asset_id: str,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    _require_scope(principal, "asset:read")
+    runtime = _runtime(request)
+    if await runtime.assets.get(principal.tenant_id, asset_id) is None:
+        raise HTTPException(status_code=404, detail="资产不存在")
+    tickets = await runtime.tickets.list_tickets(principal.tenant_id, asset_id=asset_id, limit=50)
+    return {"items": tickets}
+
+
 @router.post("", status_code=201)
 async def create_asset(
     payload: CreateAsset,
@@ -68,9 +110,11 @@ async def create_asset(
     _require_scope(principal, "asset:write")
     runtime = _runtime(request)
     try:
-        return await runtime.assets.create(principal.tenant_id, payload)
+        created = await runtime.assets.create(principal.tenant_id, payload)
     except Exception as exc:
         raise _map_error(exc) from exc
+    await _audit(runtime, tenant_id=principal.tenant_id, user_id=principal.user_id, action="asset.create", resource_id=created.asset_id, detail={"asset_no": created.asset_no})
+    return created
 
 
 @router.patch("/{asset_id}")
@@ -83,9 +127,11 @@ async def update_asset(
     _require_scope(principal, "asset:write")
     runtime = _runtime(request)
     try:
-        return await runtime.assets.update(principal.tenant_id, asset_id, payload)
+        updated = await runtime.assets.update(principal.tenant_id, asset_id, payload)
     except Exception as exc:
         raise _map_error(exc) from exc
+    await _audit(runtime, tenant_id=principal.tenant_id, user_id=principal.user_id, action="asset.update", resource_id=asset_id)
+    return updated
 
 
 @router.delete("/{asset_id}")
@@ -99,4 +145,5 @@ async def delete_asset(
     deleted = await runtime.assets.soft_delete(principal.tenant_id, asset_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="资产不存在")
+    await _audit(runtime, tenant_id=principal.tenant_id, user_id=principal.user_id, action="asset.delete", resource_id=asset_id)
     return {"asset_id": asset_id, "deleted": True}

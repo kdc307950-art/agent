@@ -133,6 +133,31 @@ class KnowledgeRepository:
                 )
                 return cursor.rowcount > 0
 
+    async def list_documents(
+        self,
+        tenant_id: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        if limit < 1 or limit > 200:
+            raise ValueError("limit 必须在 1 到 200 之间")
+        async with self.pool.connection() as connection:
+            async with connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    SELECT document_id, version, title, source_uri, status, category,
+                           visibility, allowed_departments, created_by, valid_from,
+                           valid_until, updated_at
+                    FROM knowledge_documents
+                    WHERE tenant_id = %s
+                    ORDER BY updated_at DESC, document_id
+                    LIMIT %s OFFSET %s
+                    """,
+                    (tenant_id, limit, offset),
+                )
+                return list(await cursor.fetchall())
+
     async def lexical_search(
         self,
         principal: RetrievalPrincipal,

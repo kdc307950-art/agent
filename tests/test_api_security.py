@@ -13,10 +13,10 @@ def test_dev_scope_profiles_support_helpdesk_roles():
     assert scopes_for_dev_role("helpdesk-channel") == ("ticket:channel",)
     assert "ticket:approve" in scopes_for_dev_role("helpdesk-approver")
     agent_scopes = scopes_for_dev_role("helpdesk-agent")
-    assert "asset:read" in agent_scopes and "it-policy:read" in agent_scopes
+    assert "asset:read" in agent_scopes and "it-policy:read" in agent_scopes and "knowledge:read" in agent_scopes
     assert "asset:write" not in agent_scopes
     admin_scopes = scopes_for_dev_role("helpdesk-it-admin")
-    assert {"asset:read", "asset:write", "it-policy:read", "it-policy:write", "knowledge:write"} <= set(admin_scopes)
+    assert {"asset:read", "asset:write", "it-policy:read", "it-policy:write", "knowledge:read", "knowledge:write"} <= set(admin_scopes)
     try:
         scopes_for_dev_role("unknown")
     except ValueError as exc:

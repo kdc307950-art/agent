@@ -138,6 +138,15 @@ class ItPolicyRepository:
                 rows = await cursor.fetchall()
         return [_row_to_policy(row) for row in rows]
 
+    async def delete(self, tenant_id: str, category: str) -> bool:
+        async with self.pool.connection() as connection:
+            async with connection.transaction(), connection.cursor() as cursor:
+                await cursor.execute(
+                    "DELETE FROM tenant_it_policies WHERE tenant_id = %s AND category = %s",
+                    (tenant_id, category),
+                )
+                return cursor.rowcount == 1
+
 
 class ItPolicyNotFound(LookupError):
     pass

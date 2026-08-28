@@ -318,6 +318,46 @@ class AuditRepository:
                 )
                 return await cursor.fetchone()
 
+    async def record_admin_event(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        action: str,
+        resource_type: str,
+        resource_id: str,
+        status: str = "success",
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        """记录管理操作（资产/IT 策略/知识文档写操作），与 run 级 agent_events 分离。"""
+        safe_detail = sanitize_payload(detail, max_chars=self.payload_limit)
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    INSERT INTO admin_audit_events (
+                        tenant_id, user_id, action, resource_type, resource_id, status, detail
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (tenant_id, user_id, action, resource_type, resource_id, status, Jsonb(safe_detail)),
+                )
+
+    async def list_admin_events(self, tenant_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        async with self.pool.connection() as connection:
+            async with connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    SELECT id, tenant_id, user_id, action, resource_type, resource_id,
+                           status, detail, created_at
+                    FROM admin_audit_events
+                    WHERE tenant_id = %s
+                    ORDER BY id DESC
+                    LIMIT %s
+                    """,
+                    (tenant_id, limit),
+                )
+                return list(await cursor.fetchall())
+
     async def list_events(self, tenant_id: str, run_id: str) -> list[dict[str, Any]]:
         async with self.pool.connection() as connection:
             async with connection.cursor(row_factory=dict_row) as cursor:
@@ -348,6 +388,12 @@ class NoopAuditRepository:
 
     async def record_event(self, *_args, **_kwargs) -> None:
         return None
+
+    async def record_admin_event(self, **_kwargs) -> None:
+        return None
+
+    async def list_admin_events(self, *_args, **_kwargs) -> list[dict[str, Any]]:
+        return []
 
     async def get_run(self, *_args, **_kwargs):
         return None

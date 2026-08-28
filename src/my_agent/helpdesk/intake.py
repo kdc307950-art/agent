@@ -17,7 +17,8 @@ class TicketCategory(StrEnum):
     OTHER = "other"
 
 
-# IT 大类下的 8 个子分类，用于 it_policies 的 category 键（it.vpn / it.account ...）。
+# IT 大类下的 8 个子分类（首个版本产品范围），用于 it_policies 的 category 键
+# （it.vpn / it.account / it.permission ...）。
 IT_SUBCATEGORIES: tuple[str, ...] = (
     "vpn",
     "account",
@@ -26,7 +27,7 @@ IT_SUBCATEGORIES: tuple[str, ...] = (
     "hardware",
     "software",
     "printer",
-    "mobile",
+    "permission",
 )
 
 
@@ -110,7 +111,7 @@ class KeywordTicketClassifier:
     _KEYWORDS: Mapping[TicketCategory, tuple[str, ...]] = {
         TicketCategory.IT: (
             "登录", "密码", "网络", "断网", "电脑", "系统", "vpn", "sso", "故障",
-            "账号", "邮箱", "outlook", "邮件", "显示器", "软件", "打印机", "手机",
+            "账号", "邮箱", "outlook", "邮件", "显示器", "软件", "打印机", "手机", "权限",
         ),
         TicketCategory.FINANCE: ("报销", "发票", "付款", "工资", "财务", "费用"),
         TicketCategory.ADMIN: ("门禁", "工位", "会议室", "采购", "行政", "用印"),
@@ -119,13 +120,13 @@ class KeywordTicketClassifier:
 
     _IT_SUBCATEGORY_KEYWORDS: Mapping[str, tuple[str, ...]] = {
         "vpn": ("vpn", "远程接入", "无法联网", "外网"),
-        "account": ("账号", "登录", "密码", "sso", "锁定", "重置密码", "权限"),
+        "account": ("账号", "登录", "密码", "sso", "锁定", "重置密码"),
         "network": ("网络", "断网", "wifi", "局域网", "网速", "网关"),
         "email": ("邮箱", "邮件", "outlook", "收不到邮件", "退信"),
         "hardware": ("电脑", "显示器", "键盘", "鼠标", "主板", "硬件", "电源"),
         "software": ("软件", "安装", "更新", "蓝屏", "系统崩溃", "应用"),
         "printer": ("打印机", "打印", "复印", "硒鼓"),
-        "mobile": ("手机", "移动设备", "出差设备", "sim卡"),
+        "permission": ("权限", "授权", "申请权限", "访问控制", "角色", "开通", "acl"),
     }
 
     async def classify(self, text: str, fields: Mapping[str, Any]) -> ClassificationResult:

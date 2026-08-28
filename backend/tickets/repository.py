@@ -184,6 +184,7 @@ class TicketRepository:
         category: str | None = None,
         assigned_team_id: str | None = None,
         assigned_user_id: str | None = None,
+        asset_id: str | None = None,
         priority: str | None = None,
         query_text: str | None = None,
         updated_before: tuple[Any, str] | None = None,
@@ -208,6 +209,9 @@ class TicketRepository:
         if assigned_user_id is not None:
             clauses.append("assigned_user_id = %s")
             params.append(assigned_user_id)
+        if asset_id is not None:
+            clauses.append("asset_id = %s")
+            params.append(asset_id)
         if priority is not None:
             clauses.append("priority = %s")
             params.append(priority)

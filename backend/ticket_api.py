@@ -863,7 +863,41 @@ async def receive_dingtalk_webhook(
         raise _map_domain_error(exc) from exc
 
 
-# ========== IT 策略管理（/admin/it/policies/{category}） ==========
+# ========== IT 策略管理（/admin/it/policies） ==========
+
+@admin_router.get("/policies")
+async def list_it_policies(
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    _require_scope(principal, "it-policy:read")
+    runtime = _runtime(request)
+    items = await runtime.it_policies.list_active(principal.tenant_id)
+    return {"items": items}
+
+
+@admin_router.delete("/policies/{category}")
+async def delete_it_policy(
+    category: str,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    _require_scope(principal, "it-policy:write")
+    runtime = _runtime(request)
+    deleted = await runtime.it_policies.delete(principal.tenant_id, category)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="策略不存在")
+    audit = getattr(runtime, "audit", None)
+    if audit is not None:
+        await audit.record_admin_event(
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            action="it_policy.delete",
+            resource_type="it_policy",
+            resource_id=category,
+        )
+    return {"category": category, "deleted": True}
+
 
 @admin_router.get("/policies/{category}")
 async def get_it_policy(
@@ -891,9 +925,20 @@ async def upsert_it_policy(
     if payload.category != category:
         raise HTTPException(status_code=409, detail="路径与请求体中的 category 不一致")
     try:
-        return await runtime.it_policies.upsert(principal.tenant_id, payload)
+        result = await runtime.it_policies.upsert(principal.tenant_id, payload)
     except ItPolicyNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    audit = getattr(runtime, "audit", None)
+    if audit is not None:
+        await audit.record_admin_event(
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            action="it_policy.upsert",
+            resource_type="it_policy",
+            resource_id=category,
+            detail={"policy_id": payload.policy_id},
+        )
+    return result
 
 
 # ========== 工单资产绑定（POST/DELETE /tickets/{ticket_id}/asset） ==========

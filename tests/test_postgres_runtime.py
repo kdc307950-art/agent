@@ -155,7 +155,8 @@ def test_schema_v2_migrates_status_constraint_and_helpdesk_tables_to_current_ver
                            to_regclass('routing_rules'),
                            to_regclass('ticket_assignments'),
                            to_regclass('it_assets'),
-                           to_regclass('tenant_it_policies')
+                           to_regclass('tenant_it_policies'),
+                           to_regclass('admin_audit_events')
                     """
                 )
                 relation_row = await relations.fetchone()
@@ -167,8 +168,75 @@ def test_schema_v2_migrates_status_constraint_and_helpdesk_tables_to_current_ver
                 )
 
     version, constraint_definition, relations = asyncio.run(run())
-    assert version == 10
+    assert version == 11
     assert "awaiting_approval" in constraint_definition
+    assert all(relation is not None for relation in relations)
+
+
+def test_schema_v9_migrates_to_v11_and_is_repeatable():
+    """v9 → v10 → v11 迁移可重复执行：从 v9 版本号一次升到 v11，
+    再次对同一 schema 运行迁移不报错、版本号不变、关系仍在。"""
+
+    async def run():
+        schema_name = f"migration_v9_{uuid4().hex}"
+        async with await AsyncConnection.connect(DATABASE_URL, autocommit=True) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema_name))
+                )
+            try:
+                await connection.execute(
+                    sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema_name))
+                )
+                await connection.execute(
+                    """
+                    CREATE TABLE agent_schema_version (
+                        schema_name TEXT PRIMARY KEY,
+                        version INTEGER NOT NULL CHECK (version >= 1),
+                        applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                    """
+                )
+                await connection.execute(
+                    "INSERT INTO agent_schema_version (schema_name, version) VALUES (%s, 9)",
+                    ("langgraph_agent",),
+                )
+
+                # 第一次迁移：v9 → v11
+                await ensure_schema_version(connection)
+                first = await connection.execute(
+                    "SELECT version FROM agent_schema_version WHERE schema_name = %s",
+                    ("langgraph_agent",),
+                )
+                first_version = int((await first.fetchone())[0])
+
+                # 第二次迁移：同一 schema 重跑，应幂等成功
+                await ensure_schema_version(connection)
+                second = await connection.execute(
+                    "SELECT version FROM agent_schema_version WHERE schema_name = %s",
+                    ("langgraph_agent",),
+                )
+                second_version = int((await second.fetchone())[0])
+
+                relations = await connection.execute(
+                    """
+                    SELECT to_regclass('tenant_it_policies'),
+                           to_regclass('it_assets'),
+                           to_regclass('admin_audit_events'),
+                           to_regclass('tickets')
+                    """
+                )
+                relation_row = await relations.fetchone()
+                return first_version, second_version, tuple(relation_row)
+            finally:
+                await connection.execute("SET search_path TO public")
+                await connection.execute(
+                    sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema_name))
+                )
+
+    first_version, second_version, relations = asyncio.run(run())
+    assert first_version == 11
+    assert second_version == 11
     assert all(relation is not None for relation in relations)
 
 

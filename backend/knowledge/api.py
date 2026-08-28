@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.security import Principal, rate_limit_dependency
@@ -39,6 +39,33 @@ def _require_scope(principal: Principal, scope: str) -> None:
         raise HTTPException(status_code=403, detail=f"缺少 {scope} 权限")
 
 
+async def _audit(runtime, *, tenant_id: str, user_id: str, action: str, resource_id: str) -> None:
+    audit = getattr(runtime, "audit", None)
+    if audit is None:
+        return
+    await audit.record_admin_event(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action=action,
+        resource_type="knowledge_document",
+        resource_id=resource_id,
+    )
+
+
+@router.get("/documents")
+async def list_knowledge_documents(
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    _require_scope(principal, "knowledge:read")
+    runtime = _runtime(request)
+    repository: KnowledgeRepository = runtime.knowledge
+    items = await repository.list_documents(principal.tenant_id, limit=limit, offset=offset)
+    return {"items": items}
+
+
 @router.post("/documents", status_code=201)
 async def create_knowledge_document(
     payload: CreateKnowledgeDocumentRequest,
@@ -53,6 +80,7 @@ async def create_knowledge_document(
         payload.document,
         payload.chunks,
     )
+    await _audit(runtime, tenant_id=principal.tenant_id, user_id=principal.user_id, action="knowledge.document.create", resource_id=payload.document.document_id)
     return {"document_id": payload.document.document_id, "version": payload.document.version}
 
 
@@ -70,6 +98,7 @@ async def publish_knowledge_document(
         await repository.publish_document_version(principal.tenant_id, document_id, payload.version)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await _audit(runtime, tenant_id=principal.tenant_id, user_id=principal.user_id, action="knowledge.document.publish", resource_id=document_id)
     return {"document_id": document_id, "version": payload.version, "status": "published"}
 
 
@@ -85,4 +114,5 @@ async def retire_knowledge_document(
     retired = await repository.retire_document(principal.tenant_id, document_id)
     if not retired:
         raise HTTPException(status_code=404, detail="没有已发布的知识文档可停用")
+    await _audit(runtime, tenant_id=principal.tenant_id, user_id=principal.user_id, action="knowledge.document.retire", resource_id=document_id)
     return {"document_id": document_id, "status": "retired"}

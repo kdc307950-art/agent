@@ -13,7 +13,7 @@ from psycopg import AsyncConnection
 
 
 APP_SCHEMA_NAME = "langgraph_agent"
-APP_SCHEMA_VERSION = 10
+APP_SCHEMA_VERSION = 11
 MIGRATION_LOCK_KEY = 891274631
 
 # These are the tables created by the pinned LangGraph PostgreSQL adapters and
@@ -48,6 +48,7 @@ REQUIRED_RELATIONS: tuple[str, ...] = (
     "ticket_assignments",
     "it_assets",
     "tenant_it_policies",
+    "admin_audit_events",
 )
 
 
@@ -787,6 +788,37 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 """
             )
             current = 10
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 11:
+            # v11: 管理操作审计 —— 资产、IT 策略、知识文档的写操作记录在这里。
+            # 与 agent_events 分离：agent_events 绑定 agent_runs（run 级审计），
+            # 管理操作没有 run_id，放进独立表避免伪造 run 或污染 run 语义。
+            await cursor.execute(
+                """
+                CREATE TABLE admin_audit_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    resource_type TEXT NOT NULL,
+                    resource_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'success',
+                    detail JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
+            await cursor.execute(
+                """
+                CREATE INDEX idx_admin_audit_events_tenant
+                ON admin_audit_events (tenant_id, created_at)
+                """
+            )
+            current = 11
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
                 (current, APP_SCHEMA_NAME),

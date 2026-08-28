@@ -206,9 +206,10 @@ DEV_SCOPE_PROFILES: dict[str, tuple[str, ...]] = {
         "chat:write",
         "ticket:customer",
         "ticket:agent",
-        # 客服可查看资产与 IT 策略，读写权限交给 IT 管理员角色
+        # 客服可查看资产、IT 策略与知识，读写权限交给 IT 管理员角色
         "asset:read",
         "it-policy:read",
+        "knowledge:read",
     ),
     "helpdesk-customer": ("ticket:customer", "asset:read"),
     "helpdesk-channel": ("ticket:channel",),
@@ -219,6 +220,7 @@ DEV_SCOPE_PROFILES: dict[str, tuple[str, ...]] = {
         "asset:write",
         "it-policy:read",
         "it-policy:write",
+        "knowledge:read",
         "knowledge:write",
     ),
 }
