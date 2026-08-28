@@ -19,10 +19,14 @@ from backend.vector_migrations import setup_vector_schema
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
 
+# 与评测/导入流水线对齐：vector_migrations 建 1536 维列，测试不再假设列不存在或维度为 8。
+_EMBEDDING_DIMENSION = 1536
+_EMBEDDING = [1.0] + [0.0] * (_EMBEDDING_DIMENSION - 1)
+
 
 class Embedder:
     async def embed_query(self, text):
-        return [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        return _EMBEDDING
 
 
 def test_pgvector_search_enforces_tenant_and_department_acl(monkeypatch):
@@ -37,10 +41,10 @@ def test_pgvector_search_enforces_tenant_and_department_acl(monkeypatch):
         if not row[0]:
             return None
         monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
-        await setup_vector_schema(dimension=8)
+        await setup_vector_schema(dimension=_EMBEDDING_DIMENSION)
         tickets = await TicketRepository.connect(DATABASE_URL)
         repository = KnowledgeRepository(tickets.pool)
-        retriever = PgVectorRetriever(repository, Embedder(), dimension=8)
+        retriever = PgVectorRetriever(repository, Embedder(), dimension=_EMBEDDING_DIMENSION)
         try:
             for tenant_id, document_id, departments, visibility in (
                 (tenant, "public", (), "public"),
@@ -64,8 +68,8 @@ def test_pgvector_search_enforces_tenant_and_department_acl(monkeypatch):
                     document_id=document_id,
                     document_version=1,
                     chunk_id="c1",
-                    embedding=[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                    embedding_model="test-8",
+                    embedding=_EMBEDDING,
+                    embedding_model="test-1536",
                 )
             public = await retriever.search(
                 RetrievalPrincipal(tenant_id=tenant), "query", limit=10

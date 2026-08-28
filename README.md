@@ -302,7 +302,7 @@ uv run python -m backend.backup_restore verify --database-url postgresql://langg
 
 ## 检索评测（量化结果）
 
-内置 42 条脱敏 IT 检索评测集（`backend/knowledge/eval_cases.py`，覆盖 8 个 IT 子分类 + 跨文档用例）。在已导入知识库的数据库上运行评测：
+内置 52 条脱敏 IT 检索评测集（`backend/knowledge/eval_cases.py`，覆盖 8 个 IT 子分类 + 跨文档 + 口语改写用例）。在已导入知识库的数据库上运行评测：
 
 ```powershell
 # 准备：迁移 + 导入脱敏 IT 知识库（幂等）
@@ -319,7 +319,7 @@ uv run python -m backend.run_knowledge_eval --embed
 
 全文检索使用 **jieba + 自定义 IT 词典**（`backend/knowledge/tokenizer.py`）在入库与查询两侧做同一分词，`search_text` 存分词文本，`search_vector` 基于分词结果生成（schema v12），pg_trgm 提供错别字/短词兜底。查询侧为三路召回：`plainto_tsquery`（AND 精确）∪ `to_tsquery`（OR 覆盖率）∪ `trigram` 相似度，排序按命中 token 数（子串匹配，对中文分词上下文不一致鲁棒）→ ts_rank → 相似度。所有召回均强制 tenant / published / 有效期 / visibility / 部门 ACL 过滤。
 
-当前内置 42 条评测集（8 个 IT 子分类 + 跨文档用例）在演示数据上的 **lexical-only 基线：Top1 100%、Recall@5 100%、MRR@5 1.000、无命中 0 条**。配置 embedding 后 `--embed` 出 hybrid（RRF 融合 + 分类加权）对比。
+当前内置 52 条评测集（8 个 IT 子分类 + 跨文档 + 口语改写）在演示数据上的 **lexical-only 基线（2026-08-28 实测）：Top1 98.1%（51/52）、Recall@5 100%、MRR@5 0.990、无命中 0 条**。分项中 `it.account` Top1 为 83.3%（6 中 1 条口语改写未排到首位，属语义改写场景，需 embedding 提升，不代表实现错误）。配置 embedding 后 `--embed` 出 hybrid（RRF 融合 + 分类加权）对比。
 
 ## 渠道沙箱验证（企业微信）
 
@@ -337,7 +337,7 @@ uv run pytest tests -q -m "not live_e2e"
 
 ```powershell
 docker compose -f infra/compose.test.yml up -d --wait
-$env:TEST_DATABASE_URL="postgresql://langgraph:integration_only_not_a_secret@127.0.0.1:55432/langgraph"
+$env:TEST_DATABASE_URL="postgresql://langgraph:integration_only_not_a_secret@127.0.0.1:55436/langgraph"
 $env:DATABASE_URL=$env:TEST_DATABASE_URL
 $env:REDIS_URL="redis://127.0.0.1:56379/0"
 uv run python -m backend.migrations
