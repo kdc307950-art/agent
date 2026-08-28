@@ -602,6 +602,156 @@ class TicketRepository:
                 rows = await cursor.fetchall()
         return [TicketStatusEvent.model_validate(row) for row in rows]
 
+    async def append_status_event(
+        self,
+        tenant_id: str,
+        ticket_id: str,
+        *,
+        action: str,
+        actor_type: str,
+        actor_id: str,
+        payload: dict[str, Any] | None = None,
+    ) -> bool:
+        """追加一条状态流水（不改变工单状态），用于客户回复/恢复受理等中间事件。"""
+        async with self.pool.connection() as connection:
+            async with connection.transaction(), connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    INSERT INTO ticket_status_events (
+                        tenant_id, ticket_id, from_status, to_status, action,
+                        actor_type, actor_id, ticket_version, payload
+                    )
+                    SELECT t.tenant_id, t.ticket_id, t.status, t.status, %s, %s, %s,
+                           (SELECT COALESCE(MAX(e.ticket_version), 0) + 1
+                            FROM ticket_status_events AS e
+                            WHERE e.tenant_id = t.tenant_id AND e.ticket_id = t.ticket_id),
+                           %s
+                    FROM tickets AS t
+                    WHERE t.tenant_id = %s AND t.ticket_id = %s
+                    """,
+                    (action, actor_type, actor_id, Jsonb(payload or {}), tenant_id, ticket_id),
+                )
+                return cursor.rowcount == 1
+
+    # ========== 企微追问 Resume：客户待补全关联 ==========
+
+    async def register_pending_intake(
+        self,
+        *,
+        tenant_id: str,
+        ticket_id: str,
+        channel: str,
+        external_user_id: str,
+        required_fields: list[str],
+        expires_at,
+    ) -> None:
+        """登记/更新客户待补全记录；同一客户的其他 awaiting 记录自动取消（保持唯一）。"""
+        async with self.pool.connection() as connection:
+            async with connection.transaction(), connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE ticket_customer_pending_intake
+                    SET status = 'cancelled', updated_at = now()
+                    WHERE tenant_id = %s AND channel = %s AND external_user_id = %s
+                      AND status = 'awaiting' AND ticket_id <> %s
+                    """,
+                    (tenant_id, channel, external_user_id, ticket_id),
+                )
+                await cursor.execute(
+                    """
+                    INSERT INTO ticket_customer_pending_intake (
+                        tenant_id, ticket_id, channel, external_user_id,
+                        required_fields, status, expires_at
+                    ) VALUES (%s, %s, %s, %s, %s, 'awaiting', %s)
+                    ON CONFLICT (tenant_id, ticket_id) DO UPDATE SET
+                        channel = EXCLUDED.channel,
+                        external_user_id = EXCLUDED.external_user_id,
+                        required_fields = EXCLUDED.required_fields,
+                        status = 'awaiting',
+                        expires_at = EXCLUDED.expires_at,
+                        updated_at = now()
+                    """,
+                    (tenant_id, ticket_id, channel, external_user_id, required_fields, expires_at),
+                )
+
+    async def find_pending_intake(
+        self,
+        tenant_id: str,
+        channel: str,
+        external_user_id: str,
+    ) -> dict[str, Any] | None:
+        """按租户/渠道/用户查唯一有效（awaiting 且未过期）的待补全记录。"""
+        async with self.pool.connection() as connection:
+            async with connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    SELECT * FROM ticket_customer_pending_intake
+                    WHERE tenant_id = %s AND channel = %s AND external_user_id = %s
+                      AND status = 'awaiting' AND expires_at > now()
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (tenant_id, channel, external_user_id),
+                )
+                return await cursor.fetchone()
+
+    async def get_pending_intake(self, tenant_id: str, ticket_id: str) -> dict[str, Any] | None:
+        async with self.pool.connection() as connection:
+            async with connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    SELECT * FROM ticket_customer_pending_intake
+                    WHERE tenant_id = %s AND ticket_id = %s
+                    """,
+                    (tenant_id, ticket_id),
+                )
+                return await cursor.fetchone()
+
+    async def list_pending_intakes(self, tenant_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        if limit < 1 or limit > 500:
+            raise ValueError("limit 必须在 1 到 500 之间")
+        async with self.pool.connection() as connection:
+            async with connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    SELECT tenant_id, ticket_id, channel, external_user_id,
+                           required_fields, status, resume_count, expires_at, updated_at
+                    FROM ticket_customer_pending_intake
+                    WHERE tenant_id = %s
+                    ORDER BY updated_at DESC
+                    LIMIT %s
+                    """,
+                    (tenant_id, limit),
+                )
+                return list(await cursor.fetchall())
+
+    async def mark_pending_intake_resumed(self, tenant_id: str, ticket_id: str) -> bool:
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE ticket_customer_pending_intake
+                    SET status = 'resumed', resume_count = resume_count + 1, updated_at = now()
+                    WHERE tenant_id = %s AND ticket_id = %s AND status = 'awaiting'
+                    """,
+                    (tenant_id, ticket_id),
+                )
+                return cursor.rowcount == 1
+
+    async def expire_pending_intakes(self, *, now=None) -> int:
+        reference = now or datetime.now(timezone.utc)
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE ticket_customer_pending_intake
+                    SET status = 'expired', updated_at = now()
+                    WHERE status = 'awaiting' AND expires_at <= %s
+                    """,
+                    (reference,),
+                )
+                return cursor.rowcount
+
     async def register_inbound_event(
         self,
         tenant_id: str,

@@ -34,6 +34,7 @@ from .channel_adapters import (
 )
 from .security import Principal, enforce_rate_limit, rate_limit_dependency
 from .ticket_intake import (
+    apply_intake_resume,
     apply_operational_routing,
     classify_category,
     decode_cursor,
@@ -351,6 +352,28 @@ async def get_pending_ticket_interrupt(
     return {"interrupt": await _pending_intake_interrupt(runtime, principal.tenant_id, ticket_id)}
 
 
+@router.get("/{ticket_id}/intake-status")
+async def get_ticket_intake_status(
+    ticket_id: str,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    """查询工单受理状态与待补全关联（含过期时间、resume 次数）。"""
+    if not ({"ticket:customer", "ticket:agent"} & principal.scopes):
+        raise HTTPException(status_code=403, detail="缺少工单读取权限")
+    runtime = _runtime(request)
+    ticket = await runtime.tickets.get(principal.tenant_id, ticket_id)
+    if ticket is None or ("ticket:agent" not in principal.scopes and ticket.requester_id != principal.user_id):
+        raise HTTPException(status_code=404, detail="工单不存在")
+    pending = await runtime.tickets.get_pending_intake(principal.tenant_id, ticket_id)
+    return {
+        "ticket_id": ticket_id,
+        "status": ticket.status,
+        "pending_intake": pending,
+        "interrupt": await _pending_intake_interrupt(runtime, principal.tenant_id, ticket_id),
+    }
+
+
 @router.post("/{ticket_id}/intake")
 async def start_ticket_intake(
     ticket_id: str,
@@ -434,53 +457,20 @@ async def resume_ticket_intake(
         if existing is not None and existing["status"] == "committed":
             return {"ticket": ticket, "state": {}, "interrupt": await _pending_intake_interrupt(runtime, principal.tenant_id, ticket_id)}
         raise HTTPException(status_code=409, detail="工单版本已变化，请刷新后重试")
-    config = _intake_config(principal.tenant_id, ticket_id)
-    run = await runtime.tickets.start_workflow_operation(
-        tenant_id=principal.tenant_id,
-        ticket_id=ticket_id,
-        operation_id=payload.operation_id,
-        command_type="resume",
-        expected_version=ticket.version,
-        checkpoint_thread_id=config["configurable"]["thread_id"],
-    )
-    if run["status"] == "committed":
-        return {"ticket": ticket, "state": {}, "interrupt": await _pending_intake_interrupt(runtime, principal.tenant_id, ticket_id)}
-    snapshot = await runtime.intake_graph.aget_state(config)
-    _item, value = _interrupt_payload(snapshot, payload.interrupt_id)
     try:
-        pending = PendingTicketInterrupt(
+        server_command = payload.model_copy(update={"actor_id": principal.user_id})
+        outcome = await apply_intake_resume(
+            runtime,
+            tenant_id=principal.tenant_id,
+            ticket_id=ticket_id,
             interrupt_id=payload.interrupt_id,
-            ticket_id=str(value.get("ticket_id") or ""),
-            expected_actor=ActorType(value.get("expected_actor")),
-            expected_actor_id=value.get("expected_actor_id"),
-            allowed_actions=value.get("allowed_actions") or [],
-        )
-        if run["intent"] is not None:
-            commands = _deserialize_commands(run["intent"])
-            result = dict(run["intent"].get("result") or {})
-        else:
-            server_command = payload.model_copy(update={"actor_id": principal.user_id})
-            validated = validate_resume_command(pending, server_command, scopes=principal.scopes)
-            result = await runtime.intake_graph.ainvoke(Command(resume=validated.resume_payload), config)
-            outcome = _intake_outcome_commands(ticket_id=ticket_id, actor_id="intake-agent", expected_version=ticket.version + 1, result=result)
-            commands = [validated.ticket_command, *outcome]
-            commands = await _apply_operational_routing(runtime, commands, result, tenant_id=principal.tenant_id, channel=getattr(ticket, "channel", "web"))
-            await runtime.tickets.record_workflow_intent(tenant_id=principal.tenant_id, ticket_id=ticket_id, operation_id=payload.operation_id, intent={"commands": _serialize_commands(commands), "result": {key: value for key, value in result.items() if key != "__interrupt__"}})
-        ticket = await runtime.tickets.transition_many(
-            principal.tenant_id,
-            commands,
-            scopes=principal.scopes | {"ticket:system"},
+            resume_command=server_command,
             operation_id=payload.operation_id,
+            expected_version=ticket.version,
+            scopes=set(principal.scopes),
+            channel=getattr(ticket, "channel", "web"),
         )
-        if ticket.status in {TicketStatus.QUEUED, TicketStatus.ASSIGNED}:
-            await runtime.ticket_operations.ensure_sla_for_ticket(
-                tenant_id=principal.tenant_id,
-                ticket_id=ticket.ticket_id,
-                channel=getattr(ticket, "channel", "web"),
-                category=getattr(ticket, "category", None),
-            )
-        snapshot = await runtime.intake_graph.aget_state(config)
-        return _serialize_intake_result(ticket, result, snapshot)
+        return {"ticket": outcome["ticket"], "state": outcome["result"], "interrupt": outcome["interrupt"]}
     except (ValueError, TicketPermissionDenied, TicketVersionConflict, InvalidTicketTransition) as exc:
         if isinstance(exc, TicketPermissionDenied):
             code = 403
@@ -761,6 +751,18 @@ async def receive_dingtalk_webhook(
 
 
 # ========== IT 策略管理（/admin/it/policies） ==========
+
+@admin_router.get("/pending-intakes")
+async def list_pending_intakes(
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    """管理端查看客户待补全关联（工单、过期时间、resume 次数）。"""
+    _require_scope(principal, "ticket:agent")
+    runtime = _runtime(request)
+    items = await runtime.tickets.list_pending_intakes(principal.tenant_id)
+    return {"items": items}
+
 
 @admin_router.get("/policies")
 async def list_it_policies(

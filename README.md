@@ -366,5 +366,5 @@ CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` �
 | 附件安全链路 | 尚未接对象存储、病毒扫描、临时授权下载和内容解析隔离 |
 | PostgreSQL RLS | Repository 全部强制 tenant 条件，但数据库行级安全尚未启用 |
 | 工作台认证 | 本地 Vite 代理使用单个开发令牌；生产需接 IdP 并按客户/客服/审批人分配 scope |
-| 企微追问闭环 | 企业微信文本消息可建单并触发缺字段追问（澄清消息进 Outbox 投递），但客户在企微回复补充字段会**新建工单**，尚未关联原工单 resume——追问后的继续受理需通过 Web 前端/API 完成 |
+| 企微追问闭环 | 企业微信文本消息建单并追问后，客户按「字段:值」回复（如 `device: laptop-001`）会**关联原工单恢复受理**（`ticket_customer_pending_intake` 唯一待补全索引），不新建工单；无待补全记录时按普通新消息建单。恢复后自动分类/SLA/派单，状态流水记录 `customer_reply_received → intake_resumed → classified → assigned`；`GET /tickets/{id}/intake-status` 可查待补全与 resume 次数 |
 | 成本统计 | 单价配置默认为 0，接入真实供应商价格前，成本与预算功能不产生实际数值 |

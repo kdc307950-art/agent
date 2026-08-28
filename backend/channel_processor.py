@@ -1,17 +1,21 @@
 """渠道入站事件异步处理核心 —— InboundWorker 调用，HTTP 路由不执行。
 
-业务链：幂等建单 → 受理图 → 分类/追问 → 运营派单 → transition → SLA → 澄清 Outbox。
-与原同步路径行为一致；异步化只改变「谁在什么时候调用」，业务逻辑唯一一份。
+业务链：企微回复优先匹配待补全工单并恢复受理（绝不新建工单）；否则幂等建单
+→ 受理图 → 分类/追问 → 运营派单 → transition → SLA → 澄清 Outbox。
+异步化只改变「谁在什么时候调用」，业务逻辑唯一一份。
 """
 
 from __future__ import annotations
 
+import re
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from src.my_agent.helpdesk import ActorType, TicketAction, TicketCommand, TicketStatus
+from src.my_agent.helpdesk import ActorType, TicketAction, TicketCommand, TicketResumeCommand, TicketStatus
 
 from .channel_adapters import NormalizedChannelEvent
 from .ticket_intake import (
+    apply_intake_resume,
     apply_operational_routing,
     deserialize_commands,
     intake_config,
@@ -21,9 +25,100 @@ from .ticket_intake import (
 )
 from .tickets import CreateTicket
 
+_PENDING_EXPIRY_DAYS = 7
+_FIELD_RE = re.compile(r"^([A-Za-z_\u4e00-\u9fa5]+)\s*[:：=]\s*(.+)$")
+
+
+def _parse_field_reply(content: str) -> dict[str, str]:
+    """解析「字段:值 / 字段：值 / 字段=值」键值对回复；无法解析的返回空 dict。"""
+    fields: dict[str, str] = {}
+    for line in content.splitlines():
+        match = _FIELD_RE.match(line.strip())
+        if match:
+            fields[match.group(1).strip()] = match.group(2).strip()
+    return fields
+
+
+def _first_interrupt_id(snapshot: object) -> str | None:
+    for task in getattr(snapshot, "tasks", ()) or ():
+        for item in getattr(task, "interrupts", ()) or ():
+            return str(getattr(item, "id", "") or "")
+    return None
+
+
+async def _resume_from_customer_reply(runtime, event: NormalizedChannelEvent, pending: dict, *, actor_id: str) -> dict | None:
+    """客户企微回复：关联唯一待补全工单恢复受理；不满足条件返回 None（走普通新工单）。"""
+    tenant_id = pending["tenant_id"]
+    ticket_id = pending["ticket_id"]
+    ticket = await runtime.tickets.get(tenant_id, ticket_id)
+    if ticket is None or ticket.status != TicketStatus.AWAITING_CUSTOMER:
+        # 已关闭/已取消/非等待补充：不得 resume，按普通新消息处理。
+        return None
+
+    fields = _parse_field_reply(event.content)
+    if not fields:
+        await runtime.ticket_operations.append_outbound_message(
+            tenant_id=tenant_id,
+            ticket_id=ticket_id,
+            message_id=f"clarify-format-{event.external_event_id}",
+            actor_type="system",
+            actor_id="intake-agent",
+            channel=event.channel,
+            content="请按「字段:值」格式补充，例如：device: laptop-001，operating_system: Windows 11",
+            event_id=f"clarify-format-{event.external_event_id}",
+            idempotency_key=f"clarify-format:{ticket_id}",
+            payload={"ticket_id": ticket_id, "content": "请按「字段:值」格式补充", "channel": event.channel},
+        )
+        return {"resumed": False, "reason": "unparsable_reply", "ticket_id": ticket_id, "ticket": ticket}
+
+    config = intake_config(tenant_id, ticket_id)
+    snapshot = await runtime.intake_graph.aget_state(config)
+    state_fields = dict((getattr(snapshot, "values", None) or {}).get("fields") or {})
+    merged = {**state_fields, **fields}
+    interrupt_id = _first_interrupt_id(snapshot)
+    if interrupt_id is None:
+        return None
+    resume_command = TicketResumeCommand(
+        interrupt_id=interrupt_id,
+        ticket_id=ticket_id,
+        actor_type=ActorType.CUSTOMER,
+        actor_id=event.requester_id,
+        action="provide_information",
+        expected_version=ticket.version,
+        payload={"fields": merged},
+    )
+    outcome = await apply_intake_resume(
+        runtime,
+        tenant_id=tenant_id,
+        ticket_id=ticket_id,
+        interrupt_id=interrupt_id,
+        resume_command=resume_command,
+        operation_id=f"channel-resume:{event.external_event_id}",
+        expected_version=ticket.version,
+        scopes={"ticket:customer", "ticket:system"},
+        channel=event.channel,
+    )
+    await runtime.tickets.mark_pending_intake_resumed(tenant_id, ticket_id)
+    # 状态流水在 transition 之后追加，避免与状态事件的 ticket_version 唯一约束冲突。
+    await runtime.tickets.append_status_event(
+        tenant_id, ticket_id, action="customer_reply_received", actor_type="customer", actor_id=event.requester_id
+    )
+    await runtime.tickets.append_status_event(
+        tenant_id, ticket_id, action="intake_resumed", actor_type="system", actor_id=actor_id
+    )
+    return {
+        "resumed": True,
+        "ticket_id": ticket_id,
+        "ticket": outcome["ticket"],
+        "intake": {"state": outcome["result"], "interrupt": outcome["interrupt"]},
+    }
+
 
 async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor_id: str) -> dict:
-    """处理一条已登记（received）的渠道入站事件：建单 + 受理，返回结果 dict。"""
+    """处理一条已登记（received）的渠道入站事件。
+
+    优先匹配客户待补全工单（企微回复 → resume 原工单）；否则建单并受理。
+    """
     existing = await runtime.tickets.get_inbound_event(
         event.tenant_id, event.channel, event.external_event_id
     )
@@ -31,6 +126,13 @@ async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor
         raise ValueError("inbound 事件不存在")
     if existing["status"] not in ("processing",):
         raise ValueError(f"inbound 事件状态异常: {existing['status']}")
+
+    # 企微回复：先按 (tenant, channel, external_user_id) 匹配唯一有效待补全工单。
+    pending = await runtime.tickets.find_pending_intake(event.tenant_id, event.channel, event.requester_id)
+    if pending is not None:
+        resumed = await _resume_from_customer_reply(runtime, event, pending, actor_id=actor_id)
+        if resumed is not None:
+            return resumed
 
     # 幂等：事件已关联工单（上次崩溃在建单后/受理中）→ 复用该工单恢复受理。
     ticket = None
@@ -119,6 +221,15 @@ async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor
 
     clarification = "、".join(result.get("missing_fields") or []) if "__interrupt__" in result else None
     if clarification:
+        # 登记客户待补全关联（企微回复时可恢复原工单，绝不新建）。
+        await runtime.tickets.register_pending_intake(
+            tenant_id=event.tenant_id,
+            ticket_id=ticket.ticket_id,
+            channel=event.channel,
+            external_user_id=event.requester_id,
+            required_fields=list(result.get("missing_fields") or []),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=_PENDING_EXPIRY_DAYS),
+        )
         await runtime.ticket_operations.append_outbound_message(
             tenant_id=event.tenant_id,
             ticket_id=ticket.ticket_id,
@@ -129,7 +240,7 @@ async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor
             content=f"请补充：{clarification}",
             event_id=f"clarify-{event.external_event_id}",
             idempotency_key=f"clarify:{ticket.ticket_id}",
-            payload={"ticket_id": ticket.ticket_id, "content": f"请补充：{clarification}"},
+            payload={"ticket_id": ticket.ticket_id, "content": f"请补充：{clarification}", "channel": event.channel},
         )
     ticket = await runtime.tickets.transition_many(
         event.tenant_id,

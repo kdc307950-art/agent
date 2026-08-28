@@ -13,7 +13,7 @@ from psycopg import AsyncConnection
 
 
 APP_SCHEMA_NAME = "langgraph_agent"
-APP_SCHEMA_VERSION = 13
+APP_SCHEMA_VERSION = 14
 MIGRATION_LOCK_KEY = 891274631
 
 # These are the tables created by the pinned LangGraph PostgreSQL adapters and
@@ -924,6 +924,54 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 """
             )
             current = 13
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 14:
+            # v14: 企微追问 Resume 闭环 —— 客户待补全关联表。
+            # 渠道工单进入 awaiting_customer 时登记，客户回复时按
+            # (tenant, channel, external_user_id) 匹配唯一有效记录恢复原工单，
+            # 绝不新建工单。部分唯一索引保证同一客户同时只有一个 awaiting 追问。
+            await cursor.execute(
+                """
+                CREATE TABLE ticket_customer_pending_intake (
+                    tenant_id TEXT NOT NULL,
+                    ticket_id TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    external_user_id TEXT NOT NULL,
+                    required_fields TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+                    status TEXT NOT NULL DEFAULT 'awaiting',
+                    resume_count INTEGER NOT NULL DEFAULT 0,
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (tenant_id, ticket_id),
+                    CONSTRAINT pending_intake_ticket_fk
+                        FOREIGN KEY (tenant_id, ticket_id)
+                        REFERENCES tickets (tenant_id, ticket_id)
+                        ON DELETE CASCADE,
+                    CONSTRAINT pending_intake_status_check
+                        CHECK (status IN ('awaiting', 'resumed', 'expired', 'cancelled'))
+                )
+                """
+            )
+            await cursor.execute(
+                """
+                CREATE UNIQUE INDEX uq_pending_intake_active
+                ON ticket_customer_pending_intake (tenant_id, channel, external_user_id)
+                WHERE status = 'awaiting'
+                """
+            )
+            await cursor.execute(
+                """
+                CREATE INDEX idx_pending_intake_expiry
+                ON ticket_customer_pending_intake (expires_at)
+                WHERE status = 'awaiting'
+                """
+            )
+            current = 14
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
                 (current, APP_SCHEMA_NAME),

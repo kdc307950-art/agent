@@ -11,7 +11,17 @@ import base64
 import json
 from typing import Any
 
-from src.my_agent.helpdesk import ActorType, TicketAction, TicketCommand
+from langgraph.types import Command
+
+from src.my_agent.helpdesk import (
+    ActorType,
+    PendingTicketInterrupt,
+    TicketAction,
+    TicketCommand,
+    TicketResumeCommand,
+    TicketStatus,
+    validate_resume_command,
+)
 
 
 def intake_config(tenant_id: str, ticket_id: str) -> dict[str, Any]:
@@ -169,3 +179,93 @@ def decode_cursor(value: str | None) -> tuple[Any, str] | None:
         return parsed, ticket_id
     except Exception as exc:
         raise ValueError("无效分页游标") from exc
+
+
+def pending_from_snapshot(snapshot: object, interrupt_id: str) -> PendingTicketInterrupt:
+    """从 checkpoint 快照中取指定 interrupt 并构造 PendingTicketInterrupt。"""
+    for task in getattr(snapshot, "tasks", ()) or ():
+        for item in getattr(task, "interrupts", ()) or ():
+            if str(getattr(item, "id", "") or "") == interrupt_id:
+                value = getattr(item, "value", None)
+                if isinstance(value, dict):
+                    return PendingTicketInterrupt(
+                        interrupt_id=interrupt_id,
+                        ticket_id=str(value.get("ticket_id") or ""),
+                        expected_actor=ActorType(value.get("expected_actor")),
+                        expected_actor_id=value.get("expected_actor_id"),
+                        allowed_actions=value.get("allowed_actions") or [],
+                    )
+    raise ValueError("恢复标识已失效，请刷新后重试")
+
+
+async def apply_intake_resume(
+    runtime,
+    *,
+    tenant_id: str,
+    ticket_id: str,
+    interrupt_id: str,
+    resume_command: TicketResumeCommand,
+    operation_id: str,
+    expected_version: int,
+    scopes: set[str],
+    channel: str,
+) -> dict[str, Any]:
+    """执行一次受理恢复（Web 与企微回复共用）：
+
+    校验挂起 interrupt → 图 resume → 生成命令 → 运营派单 → transition → SLA。
+    """
+    config = intake_config(tenant_id, ticket_id)
+    run = await runtime.tickets.start_workflow_operation(
+        tenant_id=tenant_id,
+        ticket_id=ticket_id,
+        operation_id=operation_id,
+        command_type="resume",
+        expected_version=expected_version,
+        checkpoint_thread_id=config["configurable"]["thread_id"],
+    )
+    if run["status"] == "committed":
+        snapshot = await runtime.intake_graph.aget_state(config)
+        ticket = await runtime.tickets.get(tenant_id, ticket_id)
+        return {"ticket": ticket, "result": {}, "interrupt": serialize_intake_result(None, {}, snapshot)["interrupt"]}
+
+    snapshot = await runtime.intake_graph.aget_state(config)
+    pending = pending_from_snapshot(snapshot, interrupt_id)
+    if run["intent"] is not None:
+        commands = deserialize_commands(run["intent"])
+        result = dict(run["intent"].get("result") or {})
+    else:
+        validated = validate_resume_command(pending, resume_command, scopes=scopes)
+        result = await runtime.intake_graph.ainvoke(Command(resume=validated.resume_payload), config)
+        outcome = intake_outcome_commands(
+            ticket_id=ticket_id, actor_id="intake-agent", expected_version=expected_version + 1, result=result
+        )
+        commands = [validated.ticket_command, *outcome]
+        commands = await apply_operational_routing(runtime, commands, result, tenant_id=tenant_id, channel=channel)
+        await runtime.tickets.record_workflow_intent(
+            tenant_id=tenant_id,
+            ticket_id=ticket_id,
+            operation_id=operation_id,
+            intent={
+                "commands": serialize_commands(commands),
+                "result": {key: value for key, value in result.items() if key != "__interrupt__"},
+            },
+        )
+    ticket = await runtime.tickets.transition_many(
+        tenant_id,
+        commands,
+        scopes=scopes | {"ticket:system"},
+        operation_id=operation_id,
+    )
+    if ticket.status in {TicketStatus.QUEUED, TicketStatus.ASSIGNED}:
+        await runtime.ticket_operations.ensure_sla_for_ticket(
+            tenant_id=tenant_id,
+            ticket_id=ticket.ticket_id,
+            channel=channel,
+            category=getattr(ticket, "category", None),
+        )
+    snapshot = await runtime.intake_graph.aget_state(config)
+    return {
+        "ticket": ticket,
+        "result": result,
+        "interrupt": serialize_intake_result(ticket, result, snapshot)["interrupt"],
+    }
