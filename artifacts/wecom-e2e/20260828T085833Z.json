@@ -1,0 +1,134 @@
+{
+  "timestamp": "20260828T085833Z",
+  "scenario_a": {
+    "msg_id": "a-1787907513",
+    "ack": {
+      "accepted": true,
+      "event_id": "a-1787907513",
+      "created": true
+    },
+    "event": {
+      "channel": "wecom",
+      "status": "committed",
+      "ticket_id": "665895fc73624e26a6969ba32b6e5273",
+      "attempts": 1,
+      "error_code": null,
+      "created_at": "2026-08-28T08:58:33.149663+00:00",
+      "processed_at": "2026-08-28T08:58:33.286735+00:00"
+    },
+    "pending_before": [
+      {
+        "ticket_id": "665895fc73624e26a6969ba32b6e5273",
+        "status": "awaiting",
+        "required_fields": [
+          "affected_system",
+          "device",
+          "error_message",
+          "impact",
+          "network",
+          "operating_system"
+        ],
+        "expires_at": "2026-09-04 08:58:33.260627+00:00"
+      }
+    ],
+    "reply_msg_id": "r-1787907514",
+    "reply_event": {
+      "channel": "wecom",
+      "status": "committed",
+      "ticket_id": "665895fc73624e26a6969ba32b6e5273",
+      "attempts": 1,
+      "error_code": null,
+      "created_at": "2026-08-28T08:58:34.228698+00:00",
+      "processed_at": "2026-08-28T08:58:43.882396+00:00"
+    },
+    "ticket_after": [
+      {
+        "ticket_id": "665895fc73624e26a6969ba32b6e5273",
+        "status": "assigned",
+        "category": "it.vpn",
+        "assigned_team_id": "team-it",
+        "assigned_user_id": "agent-1"
+      }
+    ],
+    "pending_after": [
+      {
+        "status": "resumed",
+        "resume_count": 1
+      }
+    ],
+    "status_events": [
+      {
+        "action": "create"
+      },
+      {
+        "action": "start_intake"
+      },
+      {
+        "action": "request_information"
+      },
+      {
+        "action": "provide_information"
+      },
+      {
+        "action": "classify"
+      },
+      {
+        "action": "queue"
+      },
+      {
+        "action": "assign"
+      },
+      {
+        "action": "customer_reply_received"
+      },
+      {
+        "action": "intake_resumed"
+      }
+    ],
+    "sla": [
+      {
+        "policy_id": "sla-vpn"
+      }
+    ],
+    "total_wecom_tickets": [
+      {
+        "n": 1
+      }
+    ]
+  },
+  "scenario_b": {
+    "replay_status": 202,
+    "replay_body": {
+      "accepted": true,
+      "event_id": "a-1787907513",
+      "created": false
+    },
+    "total_wecom_tickets_after_replay": [
+      {
+        "n": 1
+      }
+    ]
+  },
+  "scenario_c": {
+    "msg_c": "c-1787907524",
+    "c_event": {
+      "channel": "wecom",
+      "status": "committed",
+      "ticket_id": "6adf29e3b40f4ac59cf72dc6037c4bfa",
+      "attempts": 1,
+      "error_code": null,
+      "created_at": "2026-08-28T08:58:44.561984+00:00",
+      "processed_at": "2026-08-28T08:58:45.980220+00:00"
+    },
+    "msg_c2": "c2-1787907526",
+    "c2_event": {
+      "channel": "wecom",
+      "status": "committed",
+      "ticket_id": "6adf29e3b40f4ac59cf72dc6037c4bfa",
+      "attempts": 1,
+      "error_code": null,
+      "created_at": "2026-08-28T08:58:46.642074+00:00",
+      "processed_at": "2026-08-28T08:58:48.015972+00:00"
+    }
+  }
+}
