@@ -10,6 +10,7 @@ from src.my_agent.helpdesk import TicketCommand
 
 from .metrics import RuntimeMetrics
 from .tickets import TicketRepository
+from .worker_metrics import WorkerMetricsDB
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ class WorkflowRecoveryWorker:
         interval_seconds: float = 30.0,
         grace_seconds: int = 30,
         metrics: RuntimeMetrics | None = None,
+        worker_metrics: WorkerMetricsDB | None = None,
     ) -> None:
         if interval_seconds <= 0 or grace_seconds < 1:
             raise ValueError("工作流恢复参数无效")
@@ -29,6 +31,8 @@ class WorkflowRecoveryWorker:
         self.interval_seconds = interval_seconds
         self.grace_seconds = grace_seconds
         self.metrics = metrics or RuntimeMetrics(service_name="helpdesk-workflow-recovery")
+        # 为 None 时跳过 DB 打点/心跳（测试或未启用可观测性）。
+        self.worker_metrics = worker_metrics
 
     async def run_once(self) -> tuple[int, int, int]:
         operations = await self.repository.list_recoverable_workflow_operations(
@@ -75,6 +79,8 @@ class WorkflowRecoveryWorker:
         stop_event = stop_event or asyncio.Event()
         while not stop_event.is_set():
             await self.run_once()
+            if self.worker_metrics is not None:
+                await self.worker_metrics.beat("recovery", "workflow-recovery")
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=self.interval_seconds)
             except asyncio.TimeoutError:

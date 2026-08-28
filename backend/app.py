@@ -46,6 +46,7 @@ from .revocation import RedisRevocationStore
 from .audit import NoopAuditRepository
 from .budget import TenantBudget, TenantBudgetExceeded
 from .metrics import RuntimeMetrics
+from .worker_metrics import WorkerMetricsDB, prometheus_text
 from .run_context import RunContext
 from .runtime import runtime_context
 from .repositories import tenant_thread_id
@@ -693,7 +694,23 @@ async def metrics_endpoint(request: Request):
     if expected and request.headers.get("X-Metrics-Token") != expected:
         raise HTTPException(status_code=401, detail="metrics authentication required")
     payload, content_type = request.app.state.metrics.prometheus_payload()
-    return Response(content=payload, media_type=content_type.split(";", 1)[0])
+    # 追加跨进程 Worker 指标（worker 独立进程写 DB，API 聚合输出）。
+    worker_payload = await _worker_metrics_payload(request)
+    return Response(content=payload + worker_payload, media_type=content_type.split(";", 1)[0])
+
+
+async def _worker_metrics_payload(request: Request) -> bytes:
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is None or not hasattr(runtime, "tickets"):
+        return b""
+    try:
+        rows = await WorkerMetricsDB.snapshot_metrics(runtime.tickets.pool)
+    except Exception:
+        return b""
+    text = prometheus_text(rows)
+    if not text:
+        return b""
+    return f"\n# worker metrics (from worker_metrics table)\n{text}".encode("utf-8")
 
 
 if __name__ == "__main__":

@@ -141,6 +141,8 @@ class Settings:
     knowledge_embedding_model: str | None
     knowledge_embedding_dimension: int | None
     knowledge_embedding_endpoint: str | None
+    worker_heartbeat_ttl_seconds: int
+    readiness_check_workers: bool
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -278,4 +280,6 @@ class Settings:
                 else None
             ),
             knowledge_embedding_endpoint=os.getenv("KNOWLEDGE_EMBEDDING_ENDPOINT", "").strip() or None,
+            worker_heartbeat_ttl_seconds=_int_setting("WORKER_HEARTBEAT_TTL_SECONDS", 90, 5),
+            readiness_check_workers=os.getenv("READINESS_CHECK_WORKERS", "false").strip().lower() in ("1", "true", "yes"),
         )

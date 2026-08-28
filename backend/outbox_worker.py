@@ -16,6 +16,7 @@ import httpx
 
 from .metrics import RuntimeMetrics
 from .tickets import TicketOperationsRepository
+from .worker_metrics import WorkerMetricsDB
 
 
 class OutboxSender(Protocol):
@@ -81,6 +82,7 @@ class OutboxWorker:
         lease_seconds: int = 60,
         worker_id: str | None = None,
         metrics: RuntimeMetrics | None = None,
+        worker_metrics: WorkerMetricsDB | None = None,
     ) -> None:
         if max_attempts < 1 or lease_seconds < 1:
             raise ValueError("Worker 参数必须为正数")
@@ -90,6 +92,8 @@ class OutboxWorker:
         self.lease_seconds = lease_seconds
         self.worker_id = worker_id or uuid4().hex
         self.metrics = metrics or RuntimeMetrics(service_name="helpdesk-outbox-worker")
+        # 为 None 时跳过 DB 打点/心跳（测试或未启用可观测性）。
+        self.worker_metrics = worker_metrics
 
     async def run_forever(
         self,
@@ -102,12 +106,15 @@ class OutboxWorker:
             raise ValueError("poll_interval_seconds 必须为正数")
         stop_event = stop_event or asyncio.Event()
         while not stop_event.is_set():
-            result = await self.run_once(limit=limit)
-            if result.claimed == 0:
-                try:
-                    await asyncio.wait_for(stop_event.wait(), timeout=poll_interval_seconds)
-                except asyncio.TimeoutError:
-                    pass
+            await self.run_once(limit=limit)
+            if self.worker_metrics is not None:
+                await self.worker_metrics.beat("outbox", self.worker_id)
+                if (await self.worker_metrics.check_outbox_backlog(self.repository.pool))["dead"] > 0:
+                    await self.worker_metrics.incr("outbox_dead_present_total")
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=poll_interval_seconds)
+            except asyncio.TimeoutError:
+                pass
 
     async def _send_with_heartbeat(self, event: Mapping[str, Any], sender: OutboxSender) -> None:
         stop = asyncio.Event()
@@ -182,4 +189,8 @@ class OutboxWorker:
         self.metrics.increment("outbox_delivered_total", delivered)
         self.metrics.increment("outbox_retried_total", retried)
         self.metrics.increment("outbox_dead_total", dead)
+        if self.worker_metrics is not None:
+            await self.worker_metrics.incr("outbox_delivery_total", {"status": "delivered"}, delivered)
+            await self.worker_metrics.incr("outbox_delivery_total", {"status": "retried"}, retried)
+            await self.worker_metrics.incr("outbox_delivery_total", {"status": "dead"}, dead)
         return OutboxRunResult(len(events), delivered, retried, dead)

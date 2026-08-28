@@ -14,6 +14,7 @@ import signal
 from dotenv import load_dotenv
 
 from .inbound_worker import InboundWorker
+from .logging_config import setup_json_logging
 from .runtime import runtime_context
 from .settings import Settings
 
@@ -21,6 +22,7 @@ from .settings import Settings
 async def run_worker(args: argparse.Namespace) -> None:
     if not os.getenv("DATABASE_URL", "").strip():
         raise RuntimeError("缺少 DATABASE_URL")
+    setup_json_logging()
     settings = Settings.from_env()
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()

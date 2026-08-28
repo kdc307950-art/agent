@@ -13,8 +13,10 @@ from typing import Any
 
 import redis.asyncio as redis
 from psycopg import AsyncConnection
+from psycopg.rows import dict_row
 
 from .schema import check_schema_ready
+from .worker_metrics import WORKER_TYPES
 
 
 @dataclass(frozen=True)
@@ -48,12 +50,54 @@ async def _probe_redis(client: Any, timeout_seconds: float) -> str:
         return "failed"
 
 
+async def _probe_worker_heartbeats(database_url: str, ttl_seconds: float) -> dict[str, str]:
+    """每类 worker（inbound/outbox/sla/recovery）至少一个心跳在 TTL 内 => ok。"""
+    try:
+        async with await AsyncConnection.connect(database_url) as connection:
+            async with connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    SELECT worker_type,
+                           count(*) FILTER (WHERE last_beat_at > now() - (%s * interval '1 second')) AS fresh
+                    FROM worker_heartbeats
+                    GROUP BY worker_type
+                    """,
+                    (ttl_seconds,),
+                )
+                rows = {row["worker_type"]: row["fresh"] for row in await cursor.fetchall()}
+    except Exception:
+        return {worker_type: "failed" for worker_type in WORKER_TYPES}
+    return {
+        worker_type: "ok" if rows.get(worker_type, 0) >= 1 else "missing"
+        for worker_type in WORKER_TYPES
+    }
+
+
+async def _probe_outbox(database_url: str) -> dict[str, Any]:
+    """outbox 积压（待投递 pending）与死信（dead）数量。"""
+    try:
+        async with await AsyncConnection.connect(database_url) as connection:
+            async with connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    SELECT
+                        count(*) FILTER (WHERE status = 'pending' AND available_at <= now()) AS pending,
+                        count(*) FILTER (WHERE status = 'dead') AS dead
+                    FROM outbox_events
+                    """
+                )
+                return dict(await cursor.fetchone() or {"pending": 0, "dead": 0})
+    except Exception:
+        return {"pending": -1, "dead": -1}
+
+
 async def probe_dependencies(request: Any) -> ReadinessResult:
     """按当前配置模式探测必要依赖。
 
     始终检查：agent 对象初始化、Postgres schema 版本。
     按配置检查：限流模式为 Redis 或 OIDC 撤销用 Redis 时检查 Redis；
     认证模式为 OIDC 时检查 JWKS 刮取与缓存。
+    可选检查（READINESS_CHECK_WORKERS=true）：Worker 心跳、Outbox 积压与死信。
     """
 
     settings = request.app.state.settings
@@ -80,5 +124,13 @@ async def probe_dependencies(request: Any) -> ReadinessResult:
                 checks["oidc"] = "ok"
             except Exception:
                 checks["oidc"] = "failed"
+
+    if getattr(settings, "readiness_check_workers", False):
+        ttl_seconds = float(getattr(settings, "worker_heartbeat_ttl_seconds", 90))
+        heartbeats = await _probe_worker_heartbeats(settings.database_url, ttl_seconds)
+        checks.update({f"worker_{worker_type}": status for worker_type, status in heartbeats.items()})
+        backlog = await _probe_outbox(settings.database_url)
+        checks["outbox_backlog"] = "ok" if backlog["pending"] >= 0 and backlog["pending"] < 100 else "degraded"
+        checks["outbox_dead"] = "ok" if backlog["dead"] == 0 else "failed"
 
     return ReadinessResult(ok=all(value == "ok" for value in checks.values()), checks=checks)

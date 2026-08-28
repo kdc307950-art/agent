@@ -13,7 +13,7 @@ from psycopg import AsyncConnection
 
 
 APP_SCHEMA_NAME = "langgraph_agent"
-APP_SCHEMA_VERSION = 14
+APP_SCHEMA_VERSION = 15
 MIGRATION_LOCK_KEY = 891274631
 
 # These are the tables created by the pinned LangGraph PostgreSQL adapters and
@@ -972,6 +972,37 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 """
             )
             current = 14
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 15:
+            # v15: 可观测性 —— Worker 心跳表与跨进程指标表。
+            # worker 是独立进程，内存指标 API 读不到；关键计数/时延写本表，
+            # /metrics 由 API 进程聚合输出。心跳用于 /ready 判定 worker 存活。
+            await cursor.execute(
+                """
+                CREATE TABLE worker_heartbeats (
+                    worker_type TEXT NOT NULL,
+                    worker_id TEXT NOT NULL,
+                    last_beat_at TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (worker_type, worker_id)
+                )
+                """
+            )
+            await cursor.execute(
+                """
+                CREATE TABLE worker_metrics (
+                    metric TEXT NOT NULL,
+                    labels JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    value DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (metric, labels)
+                )
+                """
+            )
+            current = 15
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
                 (current, APP_SCHEMA_NAME),
