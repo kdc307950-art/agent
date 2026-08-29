@@ -1,0 +1,105 @@
+========================================================================
+知识证据链收敛 + 双 Agent 治理/幂等/前端统一 —— 回归记录
+========================================================================
+
+修复日期   : 2026-08-29（第三轮收敛方案）
+基线       : 第二轮审查修复（268ec13）
+本次目标   : 统一知识工具输出契约，修复知识证据链；统一双 Agent 治理、
+             幂等、前端和验收
+
+----------------------------------------------------------------------
+一、修复内容（对照收敛方案 13 节）
+----------------------------------------------------------------------
+阶段一  统一知识工具输出契约（最高优先级）
+  - backend/knowledge/models.py 新增 KnowledgeEvidence（引用三元组 + title/content）
+  - 真实 search_knowledge（src/my_agent/helpdesk/tools.py 与 backend/copilot/tools.py）
+    统一返回 JSON {"content": 展示文本, "evidence": [KnowledgeEvidence...]}
+    —— Agent 看到 content（可读），系统经 tool_adapter 保留 evidence，不再从
+    展示文本反向解析引用
+  - tool_adapter：_parse_evidence 解析新契约（兼容旧数组）；_extract_display_content
+    分离展示文本与证据；governed_invoke 返回 content + evidence 分离
+  - agent.py：run_tool 直接调 coroutine 注入 config（修复 LangChain ainvoke
+    剥离 config 导致工具拿不到 RunContext 的问题）
+
+阶段二  两层引用门禁
+  - 第一层：模型输出引用必须存在于本轮实际工具证据（tool_evidence 白名单）
+  - 第二层：新增 KnowledgeRepository.verify_citations —— 租户/published/有效期/
+    部门 ACL/chunk 存在/版本一致的权威校验（与 lexical_search 同款过滤链）
+  - CopilotService.run_with_tenant：apply_gate 后再过 verify_citations，
+    被权威拒绝的引用丢弃并标记 authority_citation_rejected + 人工复核
+  - 场景：补充查询命中不同 chunk 可通过（不再误判）；伪造/跨租户/未发布/废弃/
+    chunk 不存在/版本不符全部拒绝；无命中生成草稿但强制人工
+
+阶段三  ToolGovernance 真实安全边界（确认）
+  - governed_invoke 已是唯一工具执行入口；scope/租户 allowlist/输入长度/超时/
+    重试/审计全链路
+  - agent.py 记录 copilot_tool_calls_total{tool,status} 指标
+
+阶段四  双 Agent 结构化 Handoff
+  - backend/tickets/models.py 新增 IntakeHandoff（Agent1 -> Agent2 契约）：
+    tenant/ticket/workflow_run/requester/category/subcategory/priority/status/
+    fields/asset/dispatch_team/expected_version；extra="forbid"
+  - CopilotRequest（Agent2 输入）由后端只读组装，租户身份从 RunContext 注入
+
+阶段五  Copilot 运行状态机对齐
+  - copilot_runs 状态：running/completed/failed/expired（schema v18）
+  - 超租约僵尸运行 -> expired（替代 failed），start_run 对 expired 重置为
+    running 允许同一 operation_id 重新执行
+  - API：running->202；completed->按 run_id 查 draft；failed->409 要求新
+    operation_id；expired->允许重跑
+  - 失败不修改工单、不停止 SLA、不创建客户消息、不产生 Outbox
+
+阶段六-八  API 与前端（上轮已实现，本轮确认）
+  - POST/GET/approve 端点语义与 503/202/409/502 状态码
+  - CopilotPanel：503 未配置提示、202 轮询、409 刷新提示、防重复点击、
+    切换工单 AbortController + ticketIdRef 守卫（旧结果不覆盖新工单）
+  - 我的处理筛选（assignedUserId）、桌面/移动侧栏无障碍、移动端搜索
+
+阶段九  测试矩阵
+  - 真实知识工具证据测试（test_helpdesk_tools.py）：输出结构、tool_adapter
+    解析、跨租户 evidence
+  - 两层门禁集成测试（test_copilot_unit.py）：真实工具证据链路、补充查询、
+    伪造 chunk 权威拒绝、无命中强制人工
+  - verify_citations Postgres 集成测试（test_knowledge_citations_postgres.py）：
+    published 通过 / draft/retired/跨租户/chunk 缺失/版本不符/ACL 拒绝
+  - 租约 expired 恢复测试（test_copilot_postgres.py）
+
+阶段十-十一  可观测性与回归
+  - copilot_tool_calls_total{tool,status} 新增；既有 runs/failures/latency/
+    no_citation/human_revision/approval 指标保持
+
+----------------------------------------------------------------------
+二、回归门禁结果
+----------------------------------------------------------------------
+ruff            : All checks passed
+mypy            : 89 文件无问题
+后端 pytest     : 315 passed, 3 deselected（live_e2e 不纳入常规回归）
+前端 oxlint     : 0 warnings / 0 errors
+前端 tsc -b     : 通过
+前端 vitest     : 29 passed
+前端 Playwright : 20 passed（chromium + mobile-chromium；含一次并发抖动
+                  重跑后 20/20 通过，与既有 copilot.spec 偶发模式一致）
+前端 build      : 成功（JS 297.53 kB / gzip 92.67 kB）
+测试容器        : compose.test.yml down -v 清理成功
+git diff --check: 通过
+
+----------------------------------------------------------------------
+三、最终表述（面试可用）
+----------------------------------------------------------------------
+> 系统采用双 Agent 架构：Agent 1 负责工单受理、分类、字段补全和派单；
+> Agent 2 负责解决阶段的知识、资产和历史工单检索，并生成带结构化引用的
+> 客服处理草稿。Agent 2 的工具调用统一经过租户、权限、审计、超时和重试
+> 治理，所有副作用操作仍由确定性服务和客服确认控制。
+
+不宣称：A2A、Agent 自由互调、Copilot 自动发消息、生产级认证、高并发/
+长期运行验证。
+
+----------------------------------------------------------------------
+四、已知限制（保持不变）
+----------------------------------------------------------------------
+- 生产认证未接入（dev token 模式）
+- Playwright 使用 mock API
+- Copilot 依赖真实 DEEPSEEK_API_KEY（未配置时 API 返回 503）
+- live_e2e 未纳入常规回归
+- 未证明高并发、灾备与长期生产稳定性
+========================================================================
