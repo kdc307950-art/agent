@@ -18,11 +18,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
-
 from backend.copilot.agent import CopilotLimits, ResolutionCopilot, _extract_json
 from backend.copilot.models import CopilotRequest
-from backend.copilot.service import CopilotService
 from backend.run_context import RunContext
 from backend.tool_governance import ToolGovernance
 from src.my_agent.helpdesk import TicketStatus
@@ -125,6 +122,16 @@ class _FakeAudit:
         self.events.append((context.run_id, event_type, kwargs))
 
 
+class _FakeMetrics:
+    """可断言的指标桩：increment 累计计数。"""
+
+    def __init__(self):
+        self.counts: dict[str, int] = {}
+
+    def increment(self, name: str, amount: int = 1, attributes=None):
+        self.counts[name] = self.counts.get(name, 0) + (amount or 1)
+
+
 def _runtime(*, scopes=frozenset({"ticket:agent"}), allowed_tools=None, tenant_id="tenant-a"):
     context = RunContext(
         run_id="run-copilot",
@@ -138,7 +145,12 @@ def _runtime(*, scopes=frozenset({"ticket:agent"}), allowed_tools=None, tenant_i
     )
     audit = _FakeAudit()
     governance = ToolGovernance(audit)
-    return SimpleNamespace(context=context, tool_governance=governance, audit=audit)
+    return SimpleNamespace(
+        context=context,
+        tool_governance=governance,
+        audit=audit,
+        metrics=_FakeMetrics(),
+    )
 
 
 def _copilot(tools: dict[str, Any], model, limits: CopilotLimits | None = None):
@@ -357,12 +369,14 @@ def test_copilot_tool_trace_includes_structured_error_code():
             {"search_knowledge": tool},
             _ToolCallModel(["search_knowledge"]),
         )
-        return await _run(copilot, _request(), runtime)
+        return await _run(copilot, _request(), runtime), runtime
 
-    result = asyncio.run(run())
+    result, runtime = asyncio.run(run())
     trace = result["tool_trace"][0]
     assert trace["status"] == "denied"
     assert trace.get("error_code") == "denied_scope"
+    # 可观测性：ACL 拒绝指标（copilot_acl_rejected_total）
+    assert runtime.metrics.counts.get("copilot_acl_rejected_total") == 1
 
 
 class _FakeKnowledge:
@@ -542,7 +556,7 @@ class _RealKnowledge:
         # 默认以 self.hits 为准；verified 集合可注入"补充查询命中但未在主 hits"的
         # 额外合法 chunk（对应真实库中 chunk 确实存在）。
         all_hits = {h.key: h for h in self.hits}
-        for key, hit in self.hits_by_query.items():
+        for _, hit in self.hits_by_query.items():
             for h in hit:
                 all_hits.setdefault(h.key, h)
         result = []
@@ -600,6 +614,7 @@ def _service_runtime(knowledge):
         knowledge=knowledge,
         knowledge_retriever=retriever,
         tool_governance=ToolGovernance(audit),
+        metrics=_FakeMetrics(),
     )
 
 
@@ -846,6 +861,42 @@ def test_service_forged_chunk_is_rejected_by_authority_gate():
     assert result.citations == []
     assert result.needs_human_review is True
     assert "authority_citation_rejected" in result.reason_codes or "missing_citations" in result.reason_codes
+
+
+def test_service_authority_rejection_counts_citation_metric():
+    """白名单通过但权威校验拒绝：authority_citation_rejected + 指标计数。
+
+    与 test_service_forged_chunk... 的区别：该场景引用不在白名单（第一层拒绝），
+    本场景引用在白名单（工具命中）但权威 verify 排除（verified 注入为空），
+    走第二层权威门禁的 dropped>0 分支，触发 copilot_citation_rejected_total。
+    """
+    from backend.copilot.agent import ResolutionCopilot
+    from backend.copilot.service import CopilotService
+    from backend.copilot.tools import search_knowledge
+
+    async def run():
+        # 工具命中 c1 -> 白名单放行；verified=set() -> 权威校验拒绝全部
+        knowledge = _RealKnowledge([_hit("vpn-guide", "c1")], verified=set())
+        runtime = _service_runtime(knowledge)
+        copilot = ResolutionCopilot(
+            model=_EvidenceModel(),
+            tools={"search_knowledge": search_knowledge},
+        )
+        service = CopilotService(copilot)
+        outcome = await service.run_with_tenant(
+            runtime=runtime,
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            run_context=runtime.context,
+        )
+        return outcome["result"], runtime
+
+    result, runtime = asyncio.run(run())
+    assert result.citations == []
+    assert result.needs_human_review is True
+    assert "authority_citation_rejected" in result.reason_codes
+    # 可观测性：权威引用拒绝指标（copilot_citation_rejected_total）
+    assert runtime.metrics.counts.get("copilot_citation_rejected_total", 0) >= 1
 
 
 def test_service_no_knowledge_hit_still_produces_draft_with_human_review():

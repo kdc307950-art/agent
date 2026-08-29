@@ -13,7 +13,6 @@ import asyncio
 from types import SimpleNamespace
 from uuid import uuid4
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -262,7 +261,6 @@ def test_copilot_generation_success_and_latest():
     import asyncio
 
     repo = client.app.state.runtime.copilot_repository
-    service = client.app.state.runtime.copilot
     async def worker_complete():
         await repo.save_draft(
             draft_id=f"draft-{uuid4().hex}",
@@ -405,9 +403,9 @@ def test_copilot_unavailable_returns_503():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
+    from backend.copilot.api import copilot_router
     from backend.metrics import RuntimeMetrics
     from backend.rate_limit import InMemoryRateLimiter
-    from backend.copilot.api import copilot_router
 
     app = FastAPI()
     # runtime.copilot = None（未配置模型服务）

@@ -304,6 +304,10 @@ class ResolutionCopilot:
                         ToolMessage(content=invocation.content, tool_call_id=call_id)
                     )
                 else:
+                    # ACL 拒绝指标：scope/租户权限不足（治理层 denied）
+                    if invocation.error_code in ("denied_scope", "denied_tenant"):
+                        if metrics is not None:
+                            metrics.increment("copilot_acl_rejected_total")
                     tool_trace.append(
                         {
                             "tool": tool_name,

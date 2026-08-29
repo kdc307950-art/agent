@@ -144,6 +144,9 @@ class CopilotService:
             kept = [c for c in gated.citations if c.citation_key in verified_keys]
             dropped = len(gated.citations) - len(kept)
             if dropped:
+                metrics = getattr(runtime, "metrics", None)
+                if metrics is not None:
+                    metrics.increment("copilot_citation_rejected_total", dropped)
                 reasons = list(gated.reason_codes)
                 reasons.append("authority_citation_rejected")
                 gated = gated.model_copy(

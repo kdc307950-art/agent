@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
 from backend.knowledge.models import RetrievalHit, RetrievalPrincipal
 from backend.knowledge.retriever import KnowledgeRetriever

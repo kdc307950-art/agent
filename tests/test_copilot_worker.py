@@ -14,8 +14,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
-from backend.copilot.repository import CopilotRepository
-from backend.copilot.worker import CopilotWorker, CopilotWorkerRunResult
+from backend.copilot.worker import CopilotWorker
 
 
 class _FakeAudit:

@@ -126,7 +126,6 @@ def test_copilot_search_knowledge_goes_through_retriever(monkeypatch):
         await setup_postgres()
         from backend.audit import audit_context
         from backend.copilot.tools import search_knowledge
-        from backend.knowledge.identity import retrieval_principal
 
         async with audit_context(DATABASE_URL) as audit:
             from backend.knowledge.repository import KnowledgeRepository
