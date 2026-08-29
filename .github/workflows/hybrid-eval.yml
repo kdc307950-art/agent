@@ -103,6 +103,14 @@ jobs:
             echo "::error::缺少 KNOWLEDGE_EMBEDDING_ENDPOINT secret：无法执行 hybrid 评测（禁止降级伪称 hybrid）。"
             exit 1
           fi
+      - name: Warm up embedding endpoint
+        # PaaS 免费实例可能休眠（Render free 空闲即睡），首次请求可能超过
+        # 评测 15s 超时；先发最小契约请求唤醒（放宽超时），再进入正式流程。
+        run: |
+          curl -sS -m 120 -X POST "$KNOWLEDGE_EMBEDDING_ENDPOINT" \
+            -H "Content-Type: application/json" \
+            -d '{"texts":["warmup"]}' \
+            -o /dev/null
       - name: Initialize schema
         run: uv run python -m backend.migrations
       - name: Initialize pgvector schema
