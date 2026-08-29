@@ -6,15 +6,18 @@ description = "LangGraph Agent Demo"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "langgraph>=0.2.0",
-    "langchain>=1.0.0",
-    "langchain-openai>=0.1.0",
+    # 依赖版本策略（收敛方案阶段五）：以 uv.lock 已验证版本为基线（langgraph 1.2.11 /
+    # langchain 1.3.17 / langchain-openai 1.5.1），设兼容上限；每次升级核心包须
+    # `uv lock --upgrade-package <pkg>` + 全量 pytest + 最小兼容性测试通过后提交。
+    "langgraph>=0.2.0,<2.0",
+    "langchain>=1.0.0,<2.0",
+    "langchain-openai>=0.1.0,<2.0",
     "python-dotenv>=1.0.0",
-    "langgraph-checkpoint-sqlite>=3.1.1",
+    "langgraph-checkpoint-sqlite>=3.1.1,<4.0",
     "fastapi>=0.141.1",
     "uvicorn>=0.52.3",
     "sse-starlette>=3.4.8",
-    "langgraph-checkpoint-postgres>=3.1.2",
+    "langgraph-checkpoint-postgres>=3.1.2,<4.0",
     "psycopg[binary,pool]>=3.3.4",
     "redis[hiredis]>=5.0",
     "pyjwt[crypto]>=2.8",
