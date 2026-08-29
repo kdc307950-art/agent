@@ -234,6 +234,16 @@ export default function CopilotPanel({
             <span className="copilot-confidence">
               置信度 {(draft.confidence * 100).toFixed(0)}%
             </span>
+            {/* 检索模式（阶段二）：hybrid 显示双路；lexical-only 显示关键词 */}
+            {draft.retrieval_mode && (
+              <span className="copilot-badge">
+                {draft.retrieval_mode === 'hybrid'
+                  ? '混合检索'
+                  : draft.degraded
+                    ? '关键词检索（向量降级）'
+                    : '关键词检索'}
+              </span>
+            )}
             {draft.needs_human_review && (
               <span className="copilot-badge">需人工复核</span>
             )}

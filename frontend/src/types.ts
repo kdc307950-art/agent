@@ -193,6 +193,9 @@ export interface CopilotDraft {
   created_at: string
   approved_by?: string | null
   approved_at?: string | null
+  /** 检索模式（阶段二）：lexical-only / hybrid；degraded 表示向量降级 */
+  retrieval_mode?: string | null
+  degraded?: boolean
 }
 
 export interface CopilotGenerateResult {
