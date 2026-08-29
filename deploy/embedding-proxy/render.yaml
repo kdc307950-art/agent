@@ -1,0 +1,32 @@
+# Render Blueprint —— 一键部署契约适配代理
+#
+# 用法（需仓库已 push 本文件）：
+#   1. https://render.com 登录 → New → Blueprint → 选择本仓库
+#   2. 按提示配置以下 envVars（sync:false 的项会在部署前让你填写）：
+#        EMBEDDING_UPSTREAM = https://<你的 DashScope 兼容端点>/v1/embeddings
+#        EMBEDDING_MODEL    = qwen3.7-text-embedding
+#        EMBEDDING_DIMENSION= 1024
+#        OPENAI_API_KEY     = <你的 DashScope API key>
+#   3. 部署完成后拿到 https://<服务名>.onrender.com，
+#      自检 POST https://<服务名>.onrender.com/ {"texts":["你好"]}
+#      返回 {"embeddings":[[...]]} 即成功；该 URL 填入
+#      GitHub Secret KNOWLEDGE_EMBEDDING_ENDPOINT。
+
+services:
+  - type: web
+    name: embedding-contract-proxy
+    runtime: docker
+    plan: free
+    dockerfilePath: deploy/embedding-proxy/Dockerfile
+    healthCheckPath: /
+    envVars:
+      - key: EMBEDDING_UPSTREAM
+        sync: false
+      - key: EMBEDDING_MODEL
+        sync: false
+      - key: EMBEDDING_DIMENSION
+        value: "1024"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: EMBEDDING_HOST
+        value: "0.0.0.0"

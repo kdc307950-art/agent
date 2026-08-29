@@ -9,12 +9,13 @@
 from __future__ import annotations
 
 import json
+from argparse import Namespace
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.embedding_proxy import create_app, transform_upstream
+from backend.embedding_proxy import _resolve_config, create_app, transform_upstream
 
 
 def test_transform_upstream_sorts_by_index_and_validates_count():
@@ -117,3 +118,66 @@ def test_proxy_rejects_dimension_mismatch():
     response = client.post("/", json={"texts": ["a"]})
     assert response.status_code == 502
     assert "contract mismatch" in response.json()["detail"]
+
+
+def _empty_args() -> Namespace:
+    return Namespace(
+        upstream=None, api_key=None, model=None, dimension=None, host=None, port=None
+    )
+
+
+def test_resolve_config_prefers_cli_over_env(monkeypatch):
+    monkeypatch.setenv("EMBEDDING_UPSTREAM", "https://env.example/v1/embeddings")
+    monkeypatch.setenv("EMBEDDING_MODEL", "env-model")
+    config = _resolve_config(
+        Namespace(
+            upstream="https://cli.example/v1/embeddings",
+            api_key="cli-key",
+            model="cli-model",
+            dimension=1024,
+            host="0.0.0.0",
+            port=9000,
+        )
+    )
+    assert config["upstream"] == "https://cli.example/v1/embeddings"
+    assert config["api_key"] == "cli-key"
+    assert config["model"] == "cli-model"
+    assert config["dimension"] == 1024
+    assert config["host"] == "0.0.0.0"
+    assert config["port"] == 9000
+
+
+def test_resolve_config_reads_env_fallbacks(monkeypatch):
+    monkeypatch.setenv("EMBEDDING_UPSTREAM", "https://env.example/v1/embeddings")
+    monkeypatch.setenv("EMBEDDING_MODEL", "env-model")
+    monkeypatch.setenv("EMBEDDING_DIMENSION", "1024")
+    monkeypatch.setenv("EMBEDDING_HOST", "0.0.0.0")
+    monkeypatch.setenv("EMBEDDING_PORT", "8200")
+    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+    config = _resolve_config(_empty_args())
+    assert config["upstream"] == "https://env.example/v1/embeddings"
+    assert config["model"] == "env-model"
+    assert config["dimension"] == 1024
+    assert config["host"] == "0.0.0.0"
+    assert config["port"] == 8200
+    assert config["api_key"] == "env-key"
+
+
+def test_resolve_config_falls_back_to_render_port(monkeypatch):
+    monkeypatch.setenv("EMBEDDING_UPSTREAM", "https://env.example/v1/embeddings")
+    monkeypatch.setenv("EMBEDDING_MODEL", "env-model")
+    monkeypatch.delenv("EMBEDDING_PORT", raising=False)
+    monkeypatch.setenv("PORT", "10000")  # Render 惯例
+    config = _resolve_config(_empty_args())
+    assert config["port"] == 10000
+    assert config["host"] == "127.0.0.1"
+
+
+def test_resolve_config_requires_upstream_and_model(monkeypatch):
+    monkeypatch.delenv("EMBEDDING_UPSTREAM", raising=False)
+    monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
+    with pytest.raises(SystemExit, match="EMBEDDING_UPSTREAM"):
+        _resolve_config(_empty_args())
+    monkeypatch.setenv("EMBEDDING_UPSTREAM", "https://env.example/v1/embeddings")
+    with pytest.raises(SystemExit, match="EMBEDDING_MODEL"):
+        _resolve_config(_empty_args())

@@ -132,42 +132,89 @@ def create_app(
     return app
 
 
+def _resolve_config(args: Any) -> dict[str, Any]:
+    """解析代理运行配置：CLI 参数优先，其次环境变量（部署平台友好）。
+
+    环境变量回退链：
+        upstream  <- EMBEDDING_UPSTREAM
+        api_key   <- OPENAI_API_KEY
+        model     <- EMBEDDING_MODEL
+        dimension <- EMBEDDING_DIMENSION
+        host      <- EMBEDDING_HOST
+        port      <- EMBEDDING_PORT / PORT（Render 等平台惯例）
+    """
+    upstream = args.upstream or os.getenv("EMBEDDING_UPSTREAM", "").strip()
+    model = args.model or os.getenv("EMBEDDING_MODEL", "").strip()
+    api_key = args.api_key or os.getenv("OPENAI_API_KEY", "").strip() or None
+    host = args.host or os.getenv("EMBEDDING_HOST", "").strip() or "127.0.0.1"
+    dimension = args.dimension
+    if dimension is None and os.getenv("EMBEDDING_DIMENSION", "").strip():
+        try:
+            dimension = int(os.getenv("EMBEDDING_DIMENSION", "").strip())
+        except ValueError as exc:
+            raise SystemExit("EMBEDDING_DIMENSION 必须是整数") from exc
+    port = args.port
+    if port is None:
+        raw_port = os.getenv("EMBEDDING_PORT", "").strip() or os.getenv("PORT", "").strip() or "8100"
+        try:
+            port = int(raw_port)
+        except ValueError as exc:
+            raise SystemExit("EMBEDDING_PORT/PORT 必须是整数") from exc
+    if not upstream:
+        raise SystemExit("缺少 --upstream 或 EMBEDDING_UPSTREAM")
+    if not model:
+        raise SystemExit("缺少 --model 或 EMBEDDING_MODEL")
+    return {
+        "upstream": upstream,
+        "api_key": api_key,
+        "model": model,
+        "dimension": dimension,
+        "host": host,
+        "port": port,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="OpenAI 兼容 embedding 契约适配代理（POST / 接收 {\"texts\": [...]}）"
     )
-    parser.add_argument("--upstream", required=True, help="OpenAI 兼容 /v1/embeddings 地址")
+    parser.add_argument("--upstream", default=None, help="OpenAI 兼容 /v1/embeddings 地址（默认读 EMBEDDING_UPSTREAM）")
     parser.add_argument(
         "--api-key", default=None, help="上游 API Key（默认读 OPENAI_API_KEY 环境变量）"
     )
-    parser.add_argument("--model", required=True, help="embedding 模型名（上游透传）")
+    parser.add_argument("--model", default=None, help="embedding 模型名（默认读 EMBEDDING_MODEL）")
     parser.add_argument(
         "--dimension",
         type=int,
         default=None,
-        help="期望维度（强校验；与 KNOWLEDGE_EMBEDDING_DIMENSION 一致）",
+        help="期望维度（强校验；默认读 EMBEDDING_DIMENSION）",
     )
-    parser.add_argument("--host", default="127.0.0.1", help="监听地址（默认仅本机）")
-    parser.add_argument("--port", type=int, default=8100, help="监听端口（默认 8100）")
+    parser.add_argument("--host", default=None, help="监听地址（默认读 EMBEDDING_HOST，否则 127.0.0.1）")
+    parser.add_argument(
+        "--port", type=int, default=None, help="监听端口（默认读 EMBEDDING_PORT/PORT，否则 8100）"
+    )
     args = parser.parse_args()
 
-    api_key = args.api_key or os.getenv("OPENAI_API_KEY", "").strip() or None
-    if not api_key:
+    config = _resolve_config(args)
+    if not config["api_key"]:
         logger.warning("未提供 --api-key 且 OPENAI_API_KEY 为空：将发送无认证请求")
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     app = create_app(
-        args.upstream, api_key, args.model, dimension=args.dimension
+        config["upstream"],
+        config["api_key"],
+        config["model"],
+        dimension=config["dimension"],
     )
     logger.info(
         "embedding proxy 监听 http://%s:%s/ -> %s (model=%s, dimension=%s)",
-        args.host,
-        args.port,
-        args.upstream,
-        args.model,
-        args.dimension,
+        config["host"],
+        config["port"],
+        config["upstream"],
+        config["model"],
+        config["dimension"],
     )
-    Server(Config(app, host=args.host, port=args.port)).run()
+    Server(Config(app, host=config["host"], port=config["port"])).run()
 
 
 if __name__ == "__main__":
