@@ -170,3 +170,37 @@ export type ChatEvent =
     }
   | { type: 'end'; run_id: string }
   | { type: 'error'; code: string; run_id?: string; content: string }
+
+/** Resolution Copilot：知识引用（与后端 CopilotCitation 对齐）。 */
+export interface CopilotCitation {
+  document_id: string
+  document_version: number
+  chunk_id: string
+  title?: string | null
+}
+
+/** Copilot 草稿（copilot_drafts 表一行的前端形态）。 */
+export interface CopilotDraft {
+  draft_id: string
+  ticket_id: string
+  run_id: string
+  draft_answer: string | null
+  steps: string[]
+  citations: CopilotCitation[]
+  confidence: number
+  needs_human_review: boolean
+  status: string
+  created_at: string
+  approved_by?: string | null
+  approved_at?: string | null
+}
+
+export interface CopilotGenerateResult {
+  run_id: string
+  draft: CopilotDraft | null
+  idempotent_replay: boolean
+}
+
+export interface CopilotLatestResult {
+  draft: CopilotDraft | null
+}

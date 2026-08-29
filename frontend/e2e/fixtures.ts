@@ -132,3 +132,68 @@ export function mockTransition(page: Page, ticket: Ticket, nextStatus: string) {
     },
   )
 }
+
+/** Copilot 生成的草稿 fixture（结构对齐后端 copilot_drafts 返回）。 */
+export interface MockCopilotDraft {
+  draft_id: string
+  ticket_id: string
+  run_id: string
+  draft_answer: string | null
+  steps: string[]
+  citations: { document_id: string; document_version: number; chunk_id: string; title?: string | null }[]
+  confidence: number
+  needs_human_review: boolean
+  status: string
+  created_at: string
+}
+
+export function mockCopilotGenerate(
+  page: Page,
+  ticketId: string,
+  draft: MockCopilotDraft,
+) {
+  return page.route(
+    (url) => url.pathname === `/api/tickets/${ticketId}/copilot`,
+    async (route, request) => {
+      if (request.method() !== 'POST') return route.continue()
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          run_id: draft.run_id,
+          draft,
+          idempotent_replay: false,
+        }),
+      })
+    },
+  )
+}
+
+export function mockCopilotLatest(page: Page, ticketId: string, draft: MockCopilotDraft | null) {
+  return page.route(
+    (url) => url.pathname === `/api/tickets/${ticketId}/copilot/latest`,
+    async (route) => {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ draft }),
+      })
+    },
+  )
+}
+
+export function mockCopilotApprove(page: Page, ticketId: string) {
+  return page.route(
+    (url) =>
+      url.pathname.startsWith(`/api/tickets/${ticketId}/copilot/`) &&
+      url.pathname.endsWith('/approve'),
+    async (route, request) => {
+      if (request.method() !== 'POST') return route.continue()
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ draft_id: 'draft-1', status: 'approved' }),
+      })
+    },
+  )
+}

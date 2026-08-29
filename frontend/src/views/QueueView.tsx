@@ -94,6 +94,8 @@ export default function QueueView({ onOpenSidebar }: { onOpenSidebar?: () => voi
   const [createOpen, setCreateOpen] = useState(false)
   // 待补全信息：工单进入 awaiting_customer 状态时后端返回的 interrupt
   const [pendingClarification, setPendingClarification] = useState<PendingInterrupt | null>(null)
+  // Copilot 采用的回复草稿：由 CopilotPanel 填充，仅作展示/复制，不自动发送
+  const [adoptedReply, setAdoptedReply] = useState('')
 
   // —— 竞态防护：详情请求与列表请求各自独立的「序号 + AbortController」 ——
   // 序号用于忽略过期响应；AbortController 用于取消尚未完成的旧请求
@@ -226,6 +228,7 @@ export default function QueueView({ onOpenSidebar }: { onOpenSidebar?: () => voi
     setSelected(null)
     setOverview(null)
     setPendingClarification(null)
+    setAdoptedReply('')  // 切换工单：清空上一张工单采用的 Copilot 草稿
     setDetailError('')
     setDetailLoading(true)
 
@@ -487,7 +490,7 @@ export default function QueueView({ onOpenSidebar }: { onOpenSidebar?: () => voi
         />
       </section>
 
-      {/* 详情面板：展示选中工单的完整上下文，并处理流转/回访/补全等操作；加载失败时提供重试 */}
+      {/* 详情面板：展示选中工单的完整上下文，并处理流转/回访/补全/Copilot 等操作；加载失败时提供重试 */}
       <TicketDetail
         ticket={selected}
         overview={overview}
@@ -502,6 +505,8 @@ export default function QueueView({ onOpenSidebar }: { onOpenSidebar?: () => voi
         onRetry={() => {
           if (ticketId) loadDetail(ticketId)
         }}
+        onAdoptDraft={setAdoptedReply}
+        adoptedReply={adoptedReply}
       />
 
       {/* 新建工单弹窗：创建+受理成功后把新工单插入列表头部，并跳转到新工单详情 */}

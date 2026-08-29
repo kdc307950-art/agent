@@ -26,6 +26,7 @@ import {
   ChevronLeft,
   CircleUserRound,
   ClipboardList,
+  Copy,
   LoaderCircle,
   Menu,
   MessageSquareText,
@@ -36,6 +37,7 @@ import {
 import type { PendingInterrupt, Ticket, TicketOverview, TicketStatus } from '../types'
 import type { ResumeIntakeInput } from '../api/tickets'
 import StatusBadge from './StatusBadge'
+import CopilotPanel from './CopilotPanel'
 import { categoryLabel, formatTime, priorityLabel, statusLabel } from '../lib/labels'
 
 // 一次状态流转动作：action 为后端状态机动作名，actor_type 为执行者类型，label 为按钮文案
@@ -67,6 +69,10 @@ interface TicketDetailProps {
   onResume: (payload: ResumeIntakeInput) => void
   onBack: () => void
   onRetry: () => void
+  /** Copilot 采用草稿：把 AI 回复填入回复编辑框（由 QueueView 持有回复状态） */
+  onAdoptDraft?: (text: string) => void
+  /** 已采用的 Copilot 草稿（QueueView 持有，展示给客服确认，不自动发送） */
+  adoptedReply?: string
 }
 
 export default function TicketDetail({
@@ -81,6 +87,8 @@ export default function TicketDetail({
   onResume,
   onBack,
   onRetry,
+  onAdoptDraft,
+  adoptedReply = '',
 }: TicketDetailProps) {
   // 信息补全表单值：字段名 → 用户输入（提交成功后清空）
   const [clarificationFields, setClarificationFields] = useState<Record<string, string>>({})
@@ -203,6 +211,36 @@ export default function TicketDetail({
           </button>
         )}
       </div>
+
+      {/* Resolution Copilot：仅 assigned/in_progress 状态可用；采用草稿填充回复框 */}
+      {(ticket.status === 'assigned' || ticket.status === 'in_progress') && (
+        <CopilotPanel
+          ticketId={ticket.ticket_id}
+          expectedVersion={ticket.version}
+          enabled={!busy && !detailLoading}
+          onAdopt={(text) => onAdoptDraft?.(text)}
+        />
+      )}
+
+      {/* 已采用的 Copilot 草稿：客服确认区（展示 + 复制，不自动发送） */}
+      {adoptedReply && (
+        <section className="detail-section adopted-reply">
+          <div className="copilot-header">
+            <MessageSquareText size={16} />
+            <h3>已采用草稿</h3>
+            <span className="copilot-badge">待客服发送</span>
+          </div>
+          <p className="description">{adoptedReply}</p>
+          <button
+            className="secondary-action"
+            onClick={() => navigator.clipboard.writeText(adoptedReply)}
+            style={{ marginTop: 8 }}
+          >
+            <Copy size={14} />
+            复制到剪贴板
+          </button>
+        </section>
+      )}
 
       {/* 信息补全面板：等待客户补充时渲染缺失字段表单，全部填写后才能提交 */}
       {pendingClarification && (
