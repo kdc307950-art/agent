@@ -43,6 +43,11 @@ on:
         description: MRR@5 门禁阈值
         required: false
         default: "0.75"
+      min-similarity:
+        description: 向量相似度拒答阈值（无答案用例低于该值视为正确拒绝）
+        required: false
+        default: "0.45"
+        default: "0.75"
 
 permissions:
   contents: read
@@ -116,7 +121,8 @@ jobs:
             --report-json artifacts/hybrid-eval-${{ github.run_id }}.json \
             --fail-under-top1 ${{ inputs.fail-under-top1 }} \
             --fail-under-recall5 ${{ inputs.fail-under-recall5 }} \
-            --fail-under-mrr ${{ inputs.fail-under-mrr }}
+            --fail-under-mrr ${{ inputs.fail-under-mrr }} \
+            --min-similarity ${{ inputs.min-similarity }}
       - name: Upload evaluation report
         uses: actions/upload-artifact@v4
         with:
