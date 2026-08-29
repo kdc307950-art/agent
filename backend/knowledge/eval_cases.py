@@ -11,6 +11,9 @@ from __future__ import annotations
 
 from typing import TypedDict
 
+# seed_eval 版本号：开发期回归集（可随检索策略调参演进，变更须留痕）
+SEED_VERSION = "2026-08-28-v1"
+
 
 class EvalCase(TypedDict):
     query: str
@@ -107,6 +110,8 @@ def document_ids_by_category() -> dict[str, tuple[str, ...]]:
         "network-001": "it.network",
         "hardware-001": "it.hardware",
         "permission-001": "it.permission",
+        # seed_demo 的 restricted 文档（部门 ACL 演示/评测）
+        "finance-001": "it.finance",
     }
     by_category: dict[str, tuple[str, ...]] = {}
     for document_id, category in mapping.items():

@@ -11,7 +11,8 @@
     - IT 策略：it.vpn -> sla-vpn（必填字段 device / operating_system / error_message / network）、it -> sla-default
     - 路由规则：it -> team-it，派单给排班中且有空闲容量的成员
     - 客服团队 team-it、成员 agent-1、全年排班
-    - 8 篇已发布知识文档（visibility=public，客户建单的 RAG 建议可召回）
+    - 9 篇已发布知识文档（8 篇 visibility=public，客户建单的 RAG 建议可召回；
+      finance-001 为 restricted，仅 finance 部门可见，用于部门 ACL 演示/评测）
     - 5 台 IT 资产（归属 customer-1 / customer-2，共享设备无使用人）
 
 幂等：重复执行不会重复插入；知识文档与排班窗口每次刷新。
@@ -197,6 +198,17 @@ KNOWLEDGE_DOCUMENTS = [
             "高危权限（管理员、批量导出、财务审批）需要部门负责人与 IT 管理员双重审批，权限默认最小化授予并定期复核。申请开通新系统权限请走审批工单。",
         ],
     },
+    {
+        "document_id": "finance-001",
+        "title": "财务报销与发票指南",
+        "category": "it.finance",
+        "visibility": "restricted",
+        "allowed_departments": ("finance",),
+        "chunks": [
+            "费用报销流程：发票开具后 30 天内提交报销单，发票抬头为公司全称与税号，附消费明细与审批记录。差旅、招待、办公用品分别走对应费用科目，超预算需部门负责人审批。",
+            "发票常见问题：电子发票重复打印无法重复报销，增值税专用发票需与进项认证同步；发票丢失需联系开票方冲红重开。报销状态可在财务系统查询。",
+        ],
+    },
 ]
 
 
@@ -212,7 +224,8 @@ def _document_input(tenant_id: str, item: dict) -> KnowledgeDocumentInput:
         source_uri=f"/knowledge/{item['document_id']}",
         status="published",
         category=item["category"],
-        visibility="public",
+        visibility=item.get("visibility", "public"),
+        allowed_departments=tuple(item.get("allowed_departments") or ()),
         created_by="seed-demo",
         valid_from=_utc(-1),
         valid_until=_utc(365),
