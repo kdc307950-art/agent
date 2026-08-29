@@ -69,13 +69,23 @@
     `/admin/copilot/runs/{run_id}/replay`（重放保留原审计）已实现并测试；
     生产级操作审批流（谁可重放、限流、审计联动）未设计。
 
-17. **Hybrid 评测未完成（holdout 集已冻结）**：独立 `hybrid_holdout` 评测集
-    已创建（`eval_holdout_cases.py`，冻结版本 `2026-08-30-v1`，覆盖口语改写/
-    跨文档/多部门 ACL/低频错误码/近义词/无答案），评测器已支持
-    `--dataset seed|hybrid_holdout`、`--report-json`、无答案/ACL 隔离单独统计；
-    CLI 阈值参数（`--fail-under-*`）已实现但**未接入 CI**（手动触发的受保护
-    workflow 已就绪，`workflow_dispatch` + secrets 注入，不随 PR 自动跑）。
-    **未配置真实 embedding，hybrid 数字空缺，不得声称 holdout 已达标。**
+17. **Hybrid 评测：本地实测通过，CI 未运行**：独立 `hybrid_holdout` 评测集
+    （`eval_holdout_cases.py`，冻结版本 `2026-08-30-v1`，19 = 14 召回 + 4 无答案
+    + 1 ACL）已用真实 embedding（`qwen3.7-text-embedding`，dim=1024，
+    经仓库契约代理 `backend/embedding_proxy.py` 接入）完成本地实测：
+
+    | 指标 | 结果 | 门禁 |
+    |---|---|---|
+    | 模式 / 降级 | hybrid / degraded=false | hybrid / false |
+    | Top1 | 85.7%（12/14） | ≥ 80% ✓ |
+    | Recall@5 | 96.4% | ≥ 90% ✓ |
+    | MRR@5 | 0.929 | ≥ 0.75 ✓ |
+    | 无答案误召回 | 0/4（min-similarity 0.45 拒答阈值） | = 0 ✓ |
+    | ACL 泄露 | 0/1 | = 0 ✓ |
+
+    **但受保护 CI（`workflow_dispatch`）尚未成功运行**——需 GitHub Secrets
+    注入 endpoint/model/dimension 后手动触发验证；**本地结果不得单独作为
+    对外达标依据**。seed_eval 的 lexical-only 基线（98.1% Top1）保持不变。
 
 > **对外统一表述**：Copilot 已完成身份快照持久化与统一检索接线；当前生产
 > 配置下使用 lexical-only。Hybrid 检索路径、降级标记和门禁机制已实现，但

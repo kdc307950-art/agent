@@ -68,7 +68,7 @@ Hybrid 评测整改（随本轮提交，见 git log）：
 ----------------------------------------------------------------------
 ruff            : All checks passed
 mypy            : 通过（不承诺文件数）
-后端 pytest     : 334 passed, 3 deselected（live_e2e 不纳入常规回归）
+后端 pytest     : 341 passed, 3 deselected（live_e2e 不纳入常规回归）
 前端 oxlint     : 0 warnings / 0 errors
 前端 tsc -b     : 通过
 前端 vitest     : 30 passed
@@ -88,9 +88,13 @@ Node   : v24.19.0；npm 11.17.0
 ----------------------------------------------------------------------
 五、未验证边界（诚实标注）
 ----------------------------------------------------------------------
-- 真实 embedding 服务未配置：Copilot 实际检索为 lexical-only；
-  hybrid holdout 评测（Top1>=80% / Recall@5>=90% / MRR@5>=0.75）**未执行**，
-  CLI 阈值参数已实现但**未接入 CI**（受保护 workflow 待 secrets 注入触发）
+- 真实 embedding 已接入并完成**本地实测**（2026-08-30，qwen3.7-text-embedding
+  dim=1024 经仓库契约代理）：holdout 19 条 hybrid 全部达标
+  （Top1 85.7% / Recall@5 96.4% / MRR@5 0.929 / 无答案误召回 0 / ACL 泄露 0，
+  min-similarity 0.45）；报告 artifacts/hybrid-eval-real.json（本地产物，未提交）。
+  生产配置下 Copilot 仍走 lexical-only（未启用 hybrid）
+- **受保护 CI 尚未成功运行**：需 GitHub Secrets 注入后手动触发
+  workflow_dispatch；本地实测不得单独作为对外达标依据
 - 多 Worker 并发领取的生产级验证未做（单机测试覆盖 SKIP LOCKED 语义）
 - 生产长期运行、高并发、灾备未验证
 - 未正式生产上线

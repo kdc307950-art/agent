@@ -90,6 +90,30 @@ python -m backend.run_knowledge_eval --dataset hybrid_holdout --embed `
   `docs/HYBRID_EVAL_RUNBOOK.md`（含 embedding 服务契约、Secrets 配置、
   本地验证、CI 触发、失败处理顺序、通过/未通过后的文档动作）。
 
+## 实测 hybrid 数字（2026-08-30，真实 embedding，本地实测）
+
+服务：DashScope MAAS 专属实例（OpenAI 兼容端点）→ 仓库契约代理
+`backend/embedding_proxy.py`；模型 `qwen3.7-text-embedding`，维度 1024；
+知识库 seed_demo 9 篇文档 / 18 分块全部向量化；数据集 `hybrid_holdout@2026-08-30-v1`
+（19 = 14 召回 + 4 无答案 + 1 ACL）。
+
+| 指标 | 值 | 门禁 |
+|---|---|---|
+| 模式 / 降级 | hybrid / degraded=false | hybrid / false |
+| Top1 | **85.7%（12/14）** | ≥ 80% |
+| Recall@5 | 96.4% | ≥ 90% |
+| MRR@5 | 0.929 | ≥ 0.75 |
+| 无答案误召回 | 0/4（min-similarity 0.45） | = 0 |
+| ACL 泄露 | 0/1 | = 0 |
+
+- 与 lexical-only 基线（seed 52 条：98.1% / 100% / 0.990）**分开记录、分开门禁**，
+  两者不可混用。
+- **状态**：本地实测通过；**受保护 CI 尚未成功运行**（需 GitHub Secrets 注入
+  endpoint/model/dimension 后手动触发 `Hybrid Eval（手动）` 验证）。本地结果
+  不得单独作为对外达标依据；CI 成功运行一次后再按 runbook 第 7 节固化。
+- 拒答阈值 0.45 的校准依据：seed 52 条有答案用例 top-1 相似度全部 ≥ 0.505；
+  holdout 4 条无答案用例为 0.298 / 0.302 / 0.304 / 0.443，全部低于 0.45。
+
 ## 评测报告应记录
 
 数据集名称与版本（seed_eval / hybrid_holdout@版本）、样本数量、检索模式

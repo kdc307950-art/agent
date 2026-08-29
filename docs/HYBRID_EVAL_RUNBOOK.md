@@ -140,8 +140,16 @@ uv run python -m backend.run_knowledge_eval `
   --report-json artifacts/hybrid-eval-local.json `
   --fail-under-top1 0.80 `
   --fail-under-recall5 0.90 `
-  --fail-under-mrr 0.75
+  --fail-under-mrr 0.75 `
+  --min-similarity 0.45
 ```
+
+> `--min-similarity`：向量相似度拒答阈值（检索后门禁）。无答案用例的最高命中
+> 相似度低于该值视为「证据不足 → 正确拒绝转人工」，不计误召回；**只影响无答案
+> 判定，不影响召回指标**。默认不传 = 按 hits 非空判定（向后兼容）。
+> 0.45 的校准依据（2026-08-30，qwen3.7-text-embedding，dim=1024）：
+> seed_eval 52 条有答案用例 top-1 相似度全部 ≥ 0.505；holdout 4 条无答案
+> 用例 top-1 相似度为 0.298 / 0.302 / 0.304 / 0.443，全部低于 0.45。
 
 ### 无 endpoint 时必须失败（预期行为）
 
@@ -164,6 +172,7 @@ topk:               5
 fail-under-top1:    0.80
 fail-under-recall5: 0.90
 fail-under-mrr:     0.75
+min-similarity:     0.45
 ```
 
 工作流依次完成（见 `.github/workflows/hybrid-eval.yml`）：
@@ -248,3 +257,27 @@ git diff --check
 - 人工转交率与误答率
 
 在这些指标有实际运行数据之前，**生产默认保持 lexical-only 是正确决策**。
+
+## 9. 真实评测记录（2026-08-30，本地实测，非 CI）
+
+服务：DashScope MAAS 专属实例（OpenAI 兼容端点）→ 仓库契约代理
+（`backend/embedding_proxy.py`）；模型 `qwen3.7-text-embedding`，维度 1024。
+知识库：seed_demo 9 篇文档 / 18 个分块，全部向量化。
+
+```text
+数据集: hybrid_holdout@2026-08-30-v1（19 = 14 召回 + 4 无答案 + 1 ACL）
+mode            = hybrid
+degraded        = false
+Top1            = 85.7%  (12/14)     >= 0.80 ✓
+Recall@5        = 96.4%              >= 0.90 ✓
+MRR@5           = 0.929              >= 0.75 ✓
+无答案误召回     = 0/4（min-similarity 0.45） ✓
+ACL 泄露         = 0/1                ✓
+```
+
+报告：`artifacts/hybrid-eval-real.json`（本次本地运行产物，未随仓库提交）。
+
+**状态**：本地真实评测通过；受保护 CI（`workflow_dispatch`）尚未成功运行——
+需要 GitHub Secrets 注入 endpoint/model/dimension 后手动触发验证。按第 7 节
+「评测通过」路径更新文档（known-limitations 第 17 条 / knowledge-evaluation /
+evidence）前，须在 CI 成功运行一次；本地结果不得单独作为对外达标依据。
