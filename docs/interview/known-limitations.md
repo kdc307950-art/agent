@@ -68,3 +68,15 @@
 16. **死信管理端点为管理面操作**：`/admin/copilot/runs`（列出 dead）与
     `/admin/copilot/runs/{run_id}/replay`（重放保留原审计）已实现并测试；
     生产级操作审批流（谁可重放、限流、审计联动）未设计。
+
+17. **Hybrid 评测未完成（holdout 集已冻结）**：独立 `hybrid_holdout` 评测集
+    已创建（`eval_holdout_cases.py`，冻结版本 `2026-08-30-v1`，覆盖口语改写/
+    跨文档/多部门 ACL/低频错误码/近义词/无答案），评测器已支持
+    `--dataset seed|hybrid_holdout`、`--report-json`、无答案/ACL 隔离单独统计；
+    CLI 阈值参数（`--fail-under-*`）已实现但**未接入 CI**（手动触发的受保护
+    workflow 已就绪，`workflow_dispatch` + secrets 注入，不随 PR 自动跑）。
+    **未配置真实 embedding，hybrid 数字空缺，不得声称 holdout 已达标。**
+
+> **对外统一表述**：Copilot 已完成身份快照持久化与统一检索接线；当前生产
+> 配置下使用 lexical-only。Hybrid 检索路径、降级标记和门禁机制已实现，但
+> 真实 embedding 的独立 holdout 评测及受保护 CI 验证尚未完成。

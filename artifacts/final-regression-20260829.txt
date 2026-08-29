@@ -50,11 +50,24 @@ tests/test_copilot_unit.py 新增：
   - copilot_acl_rejected_total（治理层 denied_scope/denied_tenant）
   - copilot_citation_rejected_total（第二层权威门禁 dropped 计数）
 
+Hybrid 评测整改（随本轮提交，见 git log）：
+  - 新建冻结 holdout 集 backend/knowledge/eval_holdout_cases.py
+    （版本 2026-08-30-v1：口语改写/跨文档/多部门 ACL/低频错误码/近义词/无答案）
+  - seed_demo 增加 finance-001（restricted，仅 finance 部门可见）
+  - run_knowledge_eval 增加 --dataset seed|hybrid_holdout、--report-json；
+    无答案/ACL 隔离用例单独统计，不混入召回指标；
+    --dataset hybrid_holdout --embed 无 endpoint 直接失败
+  - 受保护 CI：.github/workflows/hybrid-eval.yml（workflow_dispatch +
+    secrets 注入 + JSON artifact），不随 PR 自动跑
+  - 实际运行：seed lexical-only 98.1% Top1（与基线一致）；
+    holdout lexical-only 基线 Top1 64.3%（9/14）——近义词/口语难点用例，
+    门禁只在 hybrid 下判定
+
 ----------------------------------------------------------------------
 三、回归门禁结果
 ----------------------------------------------------------------------
 ruff            : All checks passed
-mypy            : 93 文件无问题
+mypy            : 通过（不承诺文件数）
 后端 pytest     : 334 passed, 3 deselected（live_e2e 不纳入常规回归）
 前端 oxlint     : 0 warnings / 0 errors
 前端 tsc -b     : 通过
@@ -75,8 +88,9 @@ Node   : v24.19.0；npm 11.17.0
 ----------------------------------------------------------------------
 五、未验证边界（诚实标注）
 ----------------------------------------------------------------------
-- 真实 embedding 服务未配置：Copilot 实际检索为 lexical-only，
-  hybrid holdout 评测（Top1>=80% / Recall@5>=90% / MRR@5>=0.75）未执行
+- 真实 embedding 服务未配置：Copilot 实际检索为 lexical-only；
+  hybrid holdout 评测（Top1>=80% / Recall@5>=90% / MRR@5>=0.75）**未执行**，
+  CLI 阈值参数已实现但**未接入 CI**（受保护 workflow 待 secrets 注入触发）
 - 多 Worker 并发领取的生产级验证未做（单机测试覆盖 SKIP LOCKED 语义）
 - 生产长期运行、高并发、灾备未验证
 - 未正式生产上线
