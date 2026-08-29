@@ -3,9 +3,10 @@
 ========================================================================
 
 生成时间   : 2026-08-29
-最终 commit: 232ba79b055dce1967cebb07d8b0139e28dd9596
-             身份快照 + 检索接线 + 前端徽标 + 面试文档全部落库后的 HEAD
-             （基线 07ce49b → 功能提交 7993c4b / 232ba79 / 本记录随文档提交）
+功能代码最终 commit: 249f427（指标补全后）
+             身份快照 + 检索接线 + 前端徽标 + 面试文档 + 指标补全全部落库
+             （基线 07ce49b → 7993c4b / 232ba79 / 048b738 / 249f427；
+              本记录文件随后单独提交）
 
 ----------------------------------------------------------------------
 一、本次修复内容
@@ -41,13 +42,20 @@ tests/test_copilot_identity_postgres.py（4 个）：
 tests/test_copilot_unit.py 新增：
   - service 层 retrieval_mode=lexical-only 断言
   - hybrid 模式标记测试（注入向量检索器 -> retrieval_mode=hybrid）
+  - ACL 拒绝指标断言（copilot_acl_rejected_total）
+  - 权威引用拒绝指标断言（copilot_citation_rejected_total，白名单通过但
+    verify 排除的 dropped>0 分支）
+
+可观测性补全（249f427）：
+  - copilot_acl_rejected_total（治理层 denied_scope/denied_tenant）
+  - copilot_citation_rejected_total（第二层权威门禁 dropped 计数）
 
 ----------------------------------------------------------------------
 三、回归门禁结果
 ----------------------------------------------------------------------
 ruff            : All checks passed
 mypy            : 93 文件无问题
-后端 pytest     : 333 passed, 3 deselected（live_e2e 不纳入常规回归）
+后端 pytest     : 334 passed, 3 deselected（live_e2e 不纳入常规回归）
 前端 oxlint     : 0 warnings / 0 errors
 前端 tsc -b     : 通过
 前端 vitest     : 30 passed
