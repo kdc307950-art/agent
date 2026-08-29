@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from psycopg import AsyncConnection
 
 APP_SCHEMA_NAME = "langgraph_agent"
-APP_SCHEMA_VERSION = 19
+APP_SCHEMA_VERSION = 20
 MIGRATION_LOCK_KEY = 891274631
 
 # These are the tables created by the pinned LangGraph PostgreSQL adapters and
@@ -1040,6 +1040,40 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 WHERE status IN ('queued', 'failed')
                 """)
             current = 19
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 20:
+            # v20: Copilot 发起人身份快照 —— 异步 Worker 使用入队时的真实身份
+            # 执行部门级知识 ACL（阶段一）。保存部门快照而非仅用户 ID：
+            # 任务执行期间权限变化不会导致同一任务前后结果不一致。
+            # requester_internal 默认 TRUE（客服工作台场景）。
+            await cursor.execute(
+                "ALTER TABLE copilot_runs ADD COLUMN IF NOT EXISTS requester_user_id TEXT NOT NULL DEFAULT ''"
+            )
+            await cursor.execute(
+                "ALTER TABLE copilot_runs ADD COLUMN IF NOT EXISTS requester_role TEXT"
+            )
+            await cursor.execute(
+                "ALTER TABLE copilot_runs ADD COLUMN IF NOT EXISTS requester_departments TEXT[] NOT NULL DEFAULT '{}'"
+            )
+            await cursor.execute(
+                "ALTER TABLE copilot_runs ADD COLUMN IF NOT EXISTS requester_internal BOOLEAN NOT NULL DEFAULT TRUE"
+            )
+            await cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_copilot_runs_requester
+                ON copilot_runs (tenant_id, requester_user_id)
+                """)
+            # 草稿元数据：检索模式（lexical-only / hybrid）与降级标记
+            await cursor.execute(
+                "ALTER TABLE copilot_drafts ADD COLUMN IF NOT EXISTS retrieval_mode TEXT"
+            )
+            await cursor.execute(
+                "ALTER TABLE copilot_drafts ADD COLUMN IF NOT EXISTS degraded BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            current = 20
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
                 (current, APP_SCHEMA_NAME),

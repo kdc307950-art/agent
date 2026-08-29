@@ -166,6 +166,9 @@ class ResolutionCopilot:
         rounds = 0
         final_draft: dict[str, Any] = {}
         error_code: str | None = None
+        # 检索模式汇总（阶段二）：最后一次 search_knowledge 的模式与降级标记
+        retrieval_modes: list[str] = []
+        degraded_flags: list[bool] = []
 
         messages: list[Any] = [SystemMessage(content=_system_prompt(request))]
         messages.append(
@@ -286,8 +289,16 @@ class ResolutionCopilot:
                     )
                 if invocation.ok:
                     evidence.extend(invocation.evidence)
+                    if invocation.retrieval_mode:
+                        retrieval_modes.append(invocation.retrieval_mode)
+                        degraded_flags.append(invocation.degraded)
                     tool_trace.append(
-                        {"tool": tool_name, "status": "completed", "elapsed_ms": elapsed_ms}
+                        {
+                            "tool": tool_name,
+                            "status": "completed",
+                            "elapsed_ms": elapsed_ms,
+                            "retrieval_mode": invocation.retrieval_mode,
+                        }
                     )
                     messages.append(
                         ToolMessage(content=invocation.content, tool_call_id=call_id)
@@ -341,5 +352,8 @@ class ResolutionCopilot:
         if error_code:
             result["error_code"] = error_code
             result["needs_human_review"] = True
+        # 检索模式（阶段二）：取最后一次 search_knowledge 的模式；任一次降级即标记
+        result["retrieval_mode"] = retrieval_modes[-1] if retrieval_modes else None
+        result["degraded"] = any(degraded_flags) if degraded_flags else False
         result["auto_reply"] = False
         return result

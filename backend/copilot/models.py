@@ -80,6 +80,9 @@ class CopilotResult(BaseModel):
     # 失败/超限编码（copilot_timeout / tool_call_limit_exceeded / model_failed ...）；
     # None 表示本次生成成功（可能仍需人工复核，见 needs_human_review）
     error_code: str | None = Field(default=None, max_length=64)
+    # 检索模式（阶段二）：lexical-only / hybrid；degraded 表示配置了向量但本次降级
+    retrieval_mode: str | None = Field(default=None, max_length=16)
+    degraded: bool = False
 
 
 class CopilotDraft(BaseModel):

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
@@ -46,11 +47,16 @@ class CopilotRepository:
         operation_id: str,
         agent_name: str = "resolution_copilot",
         lease_seconds: int = 60,
+        requester_user_id: str = "",
+        requester_role: str | None = None,
+        requester_departments: list[str] | None = None,
+        requester_internal: bool = True,
     ) -> bool:
-        """POST 入队：创建 queued 运行；同 (tenant, ticket, operation) 重复返回 False。
+        """POST 入队：创建 queued 运行，保存发起人身份快照（阶段一）。
 
-        幂等语义：expired/dead 允许重新运行（重置为 queued），
-        completed/failed/processing 则拒绝重复登记。
+        身份快照来自认证主体（POST 时服务端查询），任务执行期间权限变化
+        不影响本任务；同 (tenant, ticket, operation) 重复返回 False（幂等）。
+        expired/dead 允许重新运行（重置为 queued 并更新快照）。
         """
         async with self.pool.connection() as connection:
             async with connection.transaction(), connection.cursor() as cursor:
@@ -58,8 +64,10 @@ class CopilotRepository:
                     """
                     INSERT INTO copilot_runs (
                         run_id, tenant_id, ticket_id, agent_name, status, operation_id,
-                        lease_expires_at, heartbeat_at, attempts
-                    ) VALUES (%s, %s, %s, %s, 'queued', %s, now() + (%s * interval '1 second'), now(), 0)
+                        lease_expires_at, heartbeat_at, attempts,
+                        requester_user_id, requester_role, requester_departments, requester_internal
+                    ) VALUES (%s, %s, %s, %s, 'queued', %s, now() + (%s * interval '1 second'), now(), 0,
+                              %s, %s, %s, %s)
                     ON CONFLICT (tenant_id, ticket_id, operation_id) DO UPDATE SET
                         run_id = EXCLUDED.run_id,
                         agent_name = EXCLUDED.agent_name,
@@ -72,10 +80,18 @@ class CopilotRepository:
                         heartbeat_at = now(),
                         next_attempt_at = NULL,
                         attempts = copilot_runs.attempts + 1,
-                        completed_at = NULL
+                        completed_at = NULL,
+                        requester_user_id = EXCLUDED.requester_user_id,
+                        requester_role = EXCLUDED.requester_role,
+                        requester_departments = EXCLUDED.requester_departments,
+                        requester_internal = EXCLUDED.requester_internal
                     WHERE copilot_runs.status IN ('expired', 'dead')
                     """,
-                    (run_id, tenant_id, ticket_id, agent_name, operation_id, lease_seconds, lease_seconds),
+                    (
+                        run_id, tenant_id, ticket_id, agent_name, operation_id, lease_seconds,
+                        requester_user_id, requester_role, list(requester_departments or []),
+                        requester_internal, lease_seconds,
+                    ),
                 )
                 return cursor.rowcount == 1
 
@@ -99,19 +115,108 @@ class CopilotRepository:
     async def get_run(
         self, tenant_id: str, run_id: str
     ) -> dict[str, Any] | None:
-        """按 run_id 查询运行（GET /copilot/{run_id} 状态查询用）。"""
+        """按 run_id 查询运行（GET /copilot/{run_id} 状态查询用）。
+
+        含发起人身份快照字段（Worker 恢复真实身份构造 RunContext）。
+        """
         async with self.pool.connection() as connection:
             async with connection.cursor(row_factory=dict_row) as cursor:
                 await cursor.execute(
                     """
                     SELECT run_id, tenant_id, ticket_id, status, error_code, tool_calls,
-                           attempts, started_at, completed_at, started_at AS created_at, worker_id
+                           attempts, started_at, completed_at, started_at AS created_at, worker_id,
+                           requester_user_id, requester_role, requester_departments, requester_internal
                     FROM copilot_runs
                     WHERE tenant_id = %s AND run_id = %s
                     """,
                     (tenant_id, run_id),
                 )
                 return await cursor.fetchone()
+
+    async def list_runs(
+        self,
+        tenant_id: str,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """按租户列出运行（管理员死信查看用，可按状态过滤）。"""
+        if limit < 1 or limit > 200:
+            raise ValueError("limit 必须在 1 到 200 之间")
+        async with self.pool.connection() as connection:
+            async with connection.cursor(row_factory=dict_row) as cursor:
+                if status:
+                    await cursor.execute(
+                        """
+                        SELECT run_id, tenant_id, ticket_id, operation_id, status,
+                               error_code, tool_calls, attempts, started_at, completed_at,
+                               requester_user_id
+                        FROM copilot_runs
+                        WHERE tenant_id = %s AND status = %s
+                        ORDER BY started_at DESC
+                        LIMIT %s
+                        """,
+                        (tenant_id, status, limit),
+                    )
+                else:
+                    await cursor.execute(
+                        """
+                        SELECT run_id, tenant_id, ticket_id, operation_id, status,
+                               error_code, tool_calls, attempts, started_at, completed_at,
+                               requester_user_id
+                        FROM copilot_runs
+                        WHERE tenant_id = %s
+                        ORDER BY started_at DESC
+                        LIMIT %s
+                        """,
+                        (tenant_id, limit),
+                    )
+                return list(await cursor.fetchall())
+
+    async def replay_dead_run(
+        self,
+        *,
+        tenant_id: str,
+        run_id: str,
+        lease_seconds: int = 60,
+    ) -> str | None:
+        """重放 dead 运行：保留原审计，创建新 queued 运行（新 run_id）。
+
+        返回新 run_id；原 run 状态 dead 不变（保留错误记录与审计）。
+        同一 operation_id 的 dead 记录允许 start_run 重置，但这里显式新建
+        运行以保留原始执行历史。
+        """
+        async with self.pool.connection() as connection:
+            async with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    SELECT operation_id, agent_name, requester_user_id, requester_role,
+                           requester_departments, requester_internal
+                    FROM copilot_runs
+                    WHERE tenant_id = %s AND run_id = %s AND status = 'dead'
+                    FOR UPDATE
+                    """,
+                    (tenant_id, run_id),
+                )
+                original = await cursor.fetchone()
+                if original is None:
+                    return None
+                new_run_id = uuid4().hex
+                await cursor.execute(
+                    """
+                    INSERT INTO copilot_runs (
+                        run_id, tenant_id, ticket_id, agent_name, status, operation_id,
+                        lease_expires_at, heartbeat_at, attempts,
+                        requester_user_id, requester_role, requester_departments, requester_internal
+                    ) SELECT %s, tenant_id, ticket_id, agent_name, 'queued',
+                             operation_id || '#replay', now() + (%s * interval '1 second'), now(), 0,
+                             requester_user_id, requester_role, requester_departments, requester_internal
+                    FROM copilot_runs
+                    WHERE tenant_id = %s AND run_id = %s
+                    """,
+                    (new_run_id, lease_seconds, tenant_id, run_id),
+                )
+                return new_run_id
 
     async def claim_copilot_runs(
         self,
@@ -310,6 +415,8 @@ class CopilotRepository:
         citations: list[dict[str, Any]],
         confidence: float,
         needs_human_review: bool,
+        retrieval_mode: str | None = None,
+        degraded: bool = False,
     ) -> None:
         async with self.pool.connection() as connection:
             async with connection.cursor() as cursor:
@@ -317,8 +424,9 @@ class CopilotRepository:
                     """
                     INSERT INTO copilot_drafts (
                         draft_id, tenant_id, ticket_id, run_id, draft_answer,
-                        steps, citations, confidence, needs_human_review
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        steps, citations, confidence, needs_human_review,
+                        retrieval_mode, degraded
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         draft_id,
@@ -330,6 +438,8 @@ class CopilotRepository:
                         Jsonb(citations),
                         confidence,
                         needs_human_review,
+                        retrieval_mode,
+                        degraded,
                     ),
                 )
 
@@ -342,7 +452,8 @@ class CopilotRepository:
                     """
                     SELECT draft_id, tenant_id, ticket_id, run_id, draft_answer,
                            steps, citations, confidence, needs_human_review,
-                           status, created_at, approved_by, approved_at
+                           status, created_at, approved_by, approved_at,
+                           retrieval_mode, degraded
                     FROM copilot_drafts
                     WHERE tenant_id = %s AND ticket_id = %s
                     ORDER BY created_at DESC, draft_id DESC
@@ -362,7 +473,8 @@ class CopilotRepository:
                     """
                     SELECT draft_id, tenant_id, ticket_id, run_id, draft_answer,
                            steps, citations, confidence, needs_human_review,
-                           status, created_at, approved_by, approved_at
+                           status, created_at, approved_by, approved_at,
+                           retrieval_mode, degraded
                     FROM copilot_drafts
                     WHERE tenant_id = %s AND ticket_id = %s AND run_id = %s
                     ORDER BY created_at DESC, draft_id DESC

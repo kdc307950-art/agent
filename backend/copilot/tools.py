@@ -32,8 +32,14 @@ def _context(config: RunnableConfig | None):
     return runtime.context
 
 
-def _knowledge_result(query: str, hits, limit: int) -> str:
-    """把检索命中组装为统一契约 {content, evidence} 的 JSON 字符串。"""
+def _knowledge_result(result) -> str:
+    """把检索结果组装为统一契约 {content, evidence, retrieval_mode} 的 JSON 字符串。
+
+    retrieval_mode: "lexical-only" | "hybrid"（阶段二：显式标记，进入
+    tool_trace / copilot_runs / 指标 / 草稿元数据，评测两组分开）。
+    degraded: 向量检索失败降级标记（hybrid 配置但实际 lexical-only）。
+    """
+    hits = result.hits
     evidence = [
         {
             "document_id": h.document_id,
@@ -51,7 +57,15 @@ def _knowledge_result(query: str, hits, limit: int) -> str:
             f"- [{h.document_id}] {h.title}: {h.content[:80]}{'…' if len(h.content) > 80 else ''}"
             for h in hits
         )
-    return json.dumps({"content": content, "evidence": evidence}, ensure_ascii=False)
+    return json.dumps(
+        {
+            "content": content,
+            "evidence": evidence,
+            "retrieval_mode": result.retrieval_mode,
+            "degraded": getattr(result, "degraded", False),
+        },
+        ensure_ascii=False,
+    )
 
 
 @tool
@@ -61,26 +75,46 @@ async def search_knowledge(
     limit: int = 5,
     config: RunnableConfig | None = None,
 ) -> str:
-    """搜索当前租户的知识库（lexical 检索，含部门 ACL），返回统一结构化证据。
+    """搜索当前租户的知识库（统一 KnowledgeRetriever，含部门 ACL），返回结构化证据。
 
-    输出为 JSON：{"content": 展示文本, "evidence": [{document_id, document_version,
-    chunk_id, title, content}...]}。引用门禁只接受 evidence 中的三元组。
+    阶段二：经 runtime.knowledge_retriever.search() 执行，按 embedding 配置
+    自动切换 lexical-only / hybrid；retrieval_mode 显式标记进工具输出。
+    输出 JSON：{"content", "evidence", "retrieval_mode", "degraded"}。
+    引用门禁只接受 evidence 中的三元组。
     """
     if not query or len(query) > 1_024:
         return json.dumps(
-            {"content": "错误：查询不能为空且不能超过 1024 字符", "evidence": []},
+            {
+                "content": "错误：查询不能为空且不能超过 1024 字符",
+                "evidence": [],
+                "retrieval_mode": "lexical-only",
+                "degraded": False,
+            },
             ensure_ascii=False,
         )
     if limit < 1 or limit > 20:
         return json.dumps(
-            {"content": "错误：limit 必须在 1 到 20 之间", "evidence": []},
+            {
+                "content": "错误：limit 必须在 1 到 20 之间",
+                "evidence": [],
+                "retrieval_mode": "lexical-only",
+                "degraded": False,
+            },
             ensure_ascii=False,
         )
     runtime = _runtime(config)
     context = _context(config)
     principal = retrieval_principal(context)
-    hits = await runtime.knowledge.lexical_search(principal, query, limit=limit)
-    return _knowledge_result(query, hits, limit)
+    retriever = getattr(runtime, "knowledge_retriever", None)
+    if retriever is None:
+        # 降级兼容：无统一检索门面时直接 lexical（测试/旧装配）
+        from backend.knowledge.retriever import KnowledgeRetrievalResult
+
+        hits = await runtime.knowledge.lexical_search(principal, query, limit=limit)
+        result = KnowledgeRetrievalResult(hits=hits, retrieval_mode="lexical-only")
+    else:
+        result = await retriever.search(principal=principal, query=query, limit=limit)
+    return _knowledge_result(result)
 
 
 @tool

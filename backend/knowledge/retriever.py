@@ -28,13 +28,19 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class KnowledgeRetrievalResult:
-    """一次检索的完整结果（含模式标记与每路命中）。"""
+    """一次检索的完整结果（含模式标记与每路命中）。
+
+    retrieval_mode: "lexical-only" | "hybrid"
+    degraded: 配置了向量检索但本次向量请求失败（降级 lexical-only 时 True）；
+              未配置 embedding 时恒 False（本身即 lexical-only，不视为降级）。
+    """
 
     hits: list[RetrievalHit]
     retrieval_mode: str  # "lexical-only" | "hybrid"
     lexical_hits: list[RetrievalHit] = field(default_factory=list)
     vector_hits: list[RetrievalHit] = field(default_factory=list)
     hybrid_hits: int = 0
+    degraded: bool = False
 
 
 class KnowledgeRetriever:
@@ -87,13 +93,15 @@ class KnowledgeRetriever:
         try:
             vector = await self.vector_retriever.search(principal, query, limit=limit)
         except Exception as exc:
-            # 向量检索失败降级为 lexical-only（不阻断主流程），但记录日志
+            # 向量检索失败降级为 lexical-only（不阻断主流程），degraded=True 显式标记，
+            # 禁止把降级结果标成 hybrid
             logger.warning("向量检索失败，降级 lexical-only: %s", exc)
             return KnowledgeRetrievalResult(
                 hits=lexical[:limit],
                 retrieval_mode="lexical-only",
                 lexical_hits=lexical,
                 vector_hits=[],
+                degraded=True,
             )
         fused = reciprocal_rank_fusion(lexical, vector, limit=self.fusion_limit)
         hybrid_count = sum(h.source == "hybrid" for h in fused)

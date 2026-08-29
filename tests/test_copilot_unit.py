@@ -590,11 +590,15 @@ def _service_runtime(knowledge):
             {"search_knowledge", "search_assets", "get_ticket_history", "get_ticket_messages"}
         ),
     )
+    from backend.knowledge.retriever import KnowledgeRetriever
+
+    retriever = KnowledgeRetriever(knowledge)  # 默认 NullVectorRetriever -> lexical-only
     return SimpleNamespace(
         context=context,
         tickets=_FakeTickets(_request_as_ticket()),
         ticket_operations=_FakeOps(),
         knowledge=knowledge,
+        knowledge_retriever=retriever,
         tool_governance=ToolGovernance(audit),
     )
 
@@ -724,6 +728,44 @@ def test_service_runs_real_tool_evidence_through_two_layer_gate():
     assert result.citations[0].document_id == "vpn-guide"
     assert result.needs_human_review is False
     assert result.auto_reply is False
+    # 阶段二：检索模式进入最终结果（lexical-only，未配置 embedding）
+    assert result.retrieval_mode == "lexical-only"
+    assert result.degraded is False
+
+
+def test_service_hybrid_mode_marks_retrieval_mode():
+    """配置向量检索时：Copilot 检索标记 hybrid（经 KnowledgeRetriever）。"""
+    from backend.copilot.agent import ResolutionCopilot
+    from backend.copilot.service import CopilotService
+    from backend.copilot.tools import search_knowledge
+    from backend.knowledge.retriever import KnowledgeRetriever
+
+    async def run():
+        knowledge = _RealKnowledge([_hit("vpn-guide")])
+        runtime = _service_runtime(knowledge)
+
+        class _FakeVector:
+            async def search(self, principal, query, *, limit):
+                return []
+
+        # 注入真实向量检索器 -> KnowledgeRetriever 标记 hybrid
+        runtime.knowledge_retriever = KnowledgeRetriever(knowledge, _FakeVector())
+        copilot = ResolutionCopilot(
+            model=_EvidenceModel(),
+            tools={"search_knowledge": search_knowledge},
+        )
+        service = CopilotService(copilot)
+        outcome = await service.run_with_tenant(
+            runtime=runtime,
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            run_context=runtime.context,
+        )
+        return outcome["result"]
+
+    result = asyncio.run(run())
+    assert result.retrieval_mode == "hybrid"
+    assert result.degraded is False
 
 
 def test_service_supplementary_query_hit_passes_gate():

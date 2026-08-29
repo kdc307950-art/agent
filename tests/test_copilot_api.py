@@ -66,7 +66,7 @@ class _FakeRepo:
     async def get_run_by_operation(self, tenant_id, ticket_id, operation_id):
         return self.runs.get((tenant_id, ticket_id, operation_id))
 
-    async def start_run(self, *, run_id, tenant_id, ticket_id, operation_id, agent_name="resolution_copilot", lease_seconds=60):
+    async def start_run(self, *, run_id, tenant_id, ticket_id, operation_id, agent_name="resolution_copilot", lease_seconds=60, requester_user_id="", requester_role=None, requester_departments=None, requester_internal=True):
         key = (tenant_id, ticket_id, operation_id)
         if key in self.runs:
             return False
@@ -77,6 +77,9 @@ class _FakeRepo:
             "status": "queued",
             "error_code": None,
             "tool_calls": 0,
+            "requester_user_id": requester_user_id,
+            "requester_departments": list(requester_departments or []),
+            "requester_internal": requester_internal,
         }
         return True
 

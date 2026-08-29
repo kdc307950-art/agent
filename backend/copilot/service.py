@@ -185,6 +185,8 @@ class CopilotService:
                 reason_codes=reasons,
                 tool_trace=result.get("tool_trace", []),
                 error_code=error_code,
+                retrieval_mode=result.get("retrieval_mode"),
+                degraded=bool(result.get("degraded")),
             )
 
         raw_citations = result.get("citations") or []
@@ -232,4 +234,6 @@ class CopilotService:
             needs_human_review=needs_human_review,
             reason_codes=list(dict.fromkeys(reasons)) or ["gate_passed"],
             tool_trace=list(result.get("tool_trace") or [])[:64],
+            retrieval_mode=result.get("retrieval_mode"),
+            degraded=bool(result.get("degraded")),
         )

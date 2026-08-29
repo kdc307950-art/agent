@@ -67,6 +67,45 @@ def _copilot_runtime(request: Request):
     return runtime
 
 
+async def _lookup_agent_identity(runtime, tenant_id: str, user_id: str) -> dict:
+    """从服务端查询坐席身份快照（阶段一：部门透传）。
+
+    返回 {"role", "departments", "internal"}；来源是 support_members JOIN
+    support_teams（服务端数据），请求体不能提交部门。
+    查询失败与"用户没有部门"区分：失败返回 lookup_error=True（入队时
+    由调用方决定闭锁策略），空部门返回空列表（按 public/internal 规则检索）。
+    """
+    departments: list[str] = []
+    lookup_error = False
+    try:
+        audit = getattr(runtime, "audit", None)
+        pool = getattr(audit, "pool", None)
+        if pool is not None:
+            async with pool.connection() as connection:
+                async with connection.cursor() as cursor:
+                    await cursor.execute(
+                        """
+                        SELECT DISTINCT t.department_id
+                        FROM support_members AS m
+                        JOIN support_teams AS t
+                          ON t.tenant_id = m.tenant_id AND t.team_id = m.team_id
+                        WHERE m.tenant_id = %s AND m.member_id = %s AND m.active
+                          AND t.department_id IS NOT NULL
+                        """,
+                        (tenant_id, user_id),
+                    )
+                    rows = await cursor.fetchall()
+            departments = [str(row[0]) for row in rows if row and row[0]]
+    except Exception:
+        lookup_error = True
+    return {
+        "role": "agent",  # 坐席角色：由 ticket:agent scope 认证保证
+        "departments": departments,
+        "internal": True,  # 客服工作台场景
+        "lookup_error": lookup_error,
+    }
+
+
 @copilot_router.post("/{ticket_id}/copilot")
 async def generate_copilot(
     ticket_id: str,
@@ -146,12 +185,24 @@ async def generate_copilot(
         # 由下方 start_run 的 ON CONFLICT 分支把 expired 重置为 queued
 
     run_id = uuid4().hex
+    # 阶段一：入队时保存发起人身份快照（服务端查询，禁止请求体提交）
+    identity = await _lookup_agent_identity(runtime, principal.tenant_id, principal.user_id)
+    if identity["lookup_error"]:
+        # 身份查询失败闭锁：不创建任务、不默认全权限身份
+        metrics = getattr(runtime, "metrics", None)
+        if metrics is not None:
+            metrics.increment("copilot_identity_lookup_errors_total")
+        raise HTTPException(status_code=503, detail="无法确认坐席身份，请稍后重试")
     created = await runtime.copilot_repository.start_run(
         run_id=run_id,
         tenant_id=principal.tenant_id,
         ticket_id=ticket_id,
         operation_id=payload.operation_id,
         lease_seconds=RUN_LEASE_SECONDS,
+        requester_user_id=principal.user_id,
+        requester_role=identity["role"],
+        requester_departments=identity["departments"],
+        requester_internal=identity["internal"],
     )
     if not created:
         # 并发下另一请求已登记同一 operation：按其状态分派
@@ -284,3 +335,54 @@ async def approve_copilot_draft(
 def _require_copilot_scope(principal: Principal) -> None:
     if "ticket:agent" not in principal.scopes:
         raise HTTPException(status_code=403, detail="缺少 ticket:agent 权限")
+
+
+# ========== 管理员死信管理（阶段三） ==========
+
+admin_copilot_router = APIRouter(prefix="/admin/copilot", tags=["admin-copilot"])
+
+
+@admin_copilot_router.get("/runs")
+async def admin_list_copilot_runs(
+    request: Request,
+    status_filter: str | None = None,
+    limit: int = 50,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    """管理员查看 Copilot 运行（可按状态过滤，如 status=dead）。"""
+    _require_copilot_scope(principal)
+    runtime = _copilot_runtime(request)
+    items = await runtime.copilot_repository.list_runs(
+        tenant_id=principal.tenant_id,
+        status=status_filter,
+        limit=limit,
+    )
+    return {"items": items}
+
+
+@admin_copilot_router.post("/runs/{run_id}/replay")
+async def admin_replay_copilot_run(
+    run_id: str,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    """重放死信运行：生成新的执行尝试（保留原始运行审计记录）。
+
+    幂等：原始 run 标记为 replayed（保留 dead 审计），创建新的 queued 运行
+    关联同一 operation_id（新 run_id），由 Worker 重新领取执行。
+    """
+    _require_copilot_scope(principal)
+    runtime = _copilot_runtime(request)
+    run = await runtime.copilot_repository.get_run(principal.tenant_id, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    if run["status"] != "dead":
+        raise HTTPException(status_code=409, detail="仅 dead 运行可重放")
+    replayed = await runtime.copilot_repository.replay_dead_run(
+        tenant_id=principal.tenant_id,
+        run_id=run_id,
+        lease_seconds=RUN_LEASE_SECONDS,
+    )
+    if not replayed:
+        raise HTTPException(status_code=409, detail="重放失败：运行状态已变化")
+    return {"status": "queued", "original_run_id": run_id, "new_run_id": replayed}

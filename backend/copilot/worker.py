@@ -67,34 +67,30 @@ class CopilotWorker:
         self.worker_id = f"copilot-worker-{uuid4().hex[:8]}"
         self.worker_metrics = worker_metrics
 
-    async def _lookup_agent_departments(self, tenant_id: str, user_id: str) -> frozenset[str]:
-        """从服务端查询坐席所属部门（阶段一：部门身份透传）。
+    async def _keep_lease_alive(self, *, tenant_id: str, run_id: str) -> None:
+        """长任务期间定期续租，防止被误判为僵尸运行。
 
-        来源是 support_members JOIN support_teams（服务端数据），
-        请求体/模型不能提交部门；查询失败或非坐席返回空集合。
+        续租失败（租约被其他 Worker 接管）时提前抛错中止本任务，
+        防止两个 Worker 同时完成同一任务。
         """
+        interval = max(1.0, self.lease_seconds / 3)
         try:
-            audit = getattr(self.runtime, "audit", None)
-            pool = getattr(audit, "pool", None)
-            if pool is None:
-                return frozenset()
-            async with pool.connection() as connection:
-                async with connection.cursor() as cursor:
-                    await cursor.execute(
-                        """
-                        SELECT DISTINCT t.department_id
-                        FROM support_members AS m
-                        JOIN support_teams AS t
-                          ON t.tenant_id = m.tenant_id AND t.team_id = m.team_id
-                        WHERE m.tenant_id = %s AND m.member_id = %s AND m.active
-                          AND t.department_id IS NOT NULL
-                        """,
-                        (tenant_id, user_id),
-                    )
-                    rows = await cursor.fetchall()
-            return frozenset(str(row[0]) for row in rows if row and row[0])
-        except Exception:
-            return frozenset()
+            while True:
+                await asyncio.sleep(interval)
+                renewed = await self.runtime.copilot_repository.renew_run_lease(
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    worker_id=self.worker_id,
+                    lease_seconds=self.lease_seconds,
+                )
+                if not renewed:
+                    raise RuntimeError("copilot_lease_lost")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # 续租失败：不再写入结果，标记失败（worker 轮询会按错误码处理）
+            logger.warning("Copilot run %s 租约续期失败: %s", run_id, type(exc).__name__)
+            raise
 
     async def _build_run_context(
         self,
@@ -103,26 +99,34 @@ class CopilotWorker:
         ticket_id: str,
         run_id: str,
     ) -> RunContext:
-        """构造 Copilot 工具执行的服务端 RunContext（阶段一：身份透传）。
+        """从运行记录恢复发起人身份快照构造 RunContext（阶段一：部门透传）。
 
-        部门由服务端查询填充；internal=True（客服工作台）；
-        allowed_tools 限定 Copilot 只读 profile。
-        已知边界：copilot_runs 当前未持久化 user_id（schema 扩展属 P2），
-        异步 Worker 场景坐席部门透传暂为空集合（诚实标注，不伪造身份）。
+        身份在 POST 入队时由服务端查询并持久化（requester_user_id /
+        requester_role / requester_departments / requester_internal），
+        Worker 执行时恢复快照——任务执行期间权限变化不影响本任务。
+        身份缺失（requester_user_id 为空）视为闭锁失败：抛错转 failed，
+        不使用默认全权限身份。
         """
-        departments = await self._lookup_agent_departments(tenant_id, "copilot-worker")
+        run = await self.runtime.copilot_repository.get_run(tenant_id, run_id)
+        requester_user_id = (run or {}).get("requester_user_id") or ""
+        if not requester_user_id:
+            # 身份缺失闭锁：不伪造身份，任务失败转人工
+            raise RuntimeError("copilot_identity_missing")
+        departments = frozenset((run or {}).get("requester_departments") or [])
+        internal = bool((run or {}).get("requester_internal", True))
+        role = (run or {}).get("requester_role")
         return RunContext(
             run_id=run_id,
             request_id=f"copilot:{run_id}",
             tenant_id=tenant_id,
-            user_id="copilot-worker",
+            user_id=requester_user_id,
             thread_id=f"copilot:{tenant_id}:{ticket_id}",
             scopes=frozenset({"ticket:agent"}),
             deadline=monotonic() + self.lease_seconds * 4,
             allowed_tools=frozenset(COPILOT_ALLOWED_TOOLS),
-            role="agent",
+            role=role,
             departments=departments,
-            internal=True,
+            internal=internal,
         )
 
     async def _process_run(self, run: dict) -> None:
@@ -138,6 +142,10 @@ class CopilotWorker:
             tenant_id=tenant_id, ticket_id=ticket_id, run_id=run_id
         )
         started = monotonic()
+        # 长任务期间定期续租：防止其他 Worker 认为本任务僵尸而重复领取
+        lease_task = asyncio.create_task(
+            self._keep_lease_alive(tenant_id=tenant_id, run_id=run_id)
+        )
         try:
             outcome = await service.run_with_tenant(
                 runtime=self.runtime,
@@ -149,9 +157,23 @@ class CopilotWorker:
         except Exception as exc:
             logger.exception("Copilot run %s 处理异常: %s", run_id, type(exc).__name__)
             raise RuntimeError("copilot_generation_failed") from exc
+        finally:
+            lease_task.cancel()
+            try:
+                await lease_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
         latency_ms = int((monotonic() - started) * 1000)
         status = "completed" if gated.error_code is None else "failed"
+        # 检索模式指标（阶段二）：copilot_retrieval_total{mode} / degraded
+        metrics = getattr(self.runtime, "metrics", None)
+        if metrics is not None and gated.retrieval_mode:
+            metrics.increment(
+                "copilot_retrieval_total", attributes={"mode": gated.retrieval_mode}
+            )
+            if gated.degraded:
+                metrics.increment("copilot_retrieval_degraded_total")
         if status == "completed":
             draft_id = uuid4().hex
             await self.runtime.copilot_repository.save_draft(
@@ -164,6 +186,8 @@ class CopilotWorker:
                 citations=[c.model_dump(mode="json") for c in gated.citations],
                 confidence=gated.confidence,
                 needs_human_review=gated.needs_human_review,
+                retrieval_mode=gated.retrieval_mode,
+                degraded=gated.degraded,
             )
             await self.runtime.copilot_repository.complete_copilot_run(
                 tenant_id=tenant_id,

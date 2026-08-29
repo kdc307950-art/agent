@@ -47,6 +47,10 @@ class _FakePool:
             "attempts": 0,
             "worker_id": None,
             "lease_expires_at": None,
+            "requester_user_id": kwargs.get("requester_user_id", "test-agent"),
+            "requester_role": kwargs.get("requester_role", "agent"),
+            "requester_departments": list(kwargs.get("requester_departments") or []),
+            "requester_internal": kwargs.get("requester_internal", True),
         }
         return True
 

@@ -78,6 +78,9 @@ class ToolInvocationResult:
     status: str = "completed"  # completed / denied / timeout / failed
     denied_reason: str | None = None
     error_code: str | None = None
+    # 检索模式（阶段二）：lexical-only / hybrid + 降级标记
+    retrieval_mode: str | None = None
+    degraded: bool = False
 
 
 def _parse_evidence(tool_name: str, content: str) -> list[ToolEvidence]:
@@ -203,12 +206,35 @@ async def governed_invoke(
         )
 
     text = str(result)
+    mode, degraded = _extract_retrieval_mode(tool_name, text)
     return ToolInvocationResult(
         ok=True,
         # Agent 看到展示文本（content），evidence 单独保留给引用门禁
         content=_extract_display_content(tool_name, text),
         evidence=_parse_evidence(tool_name, text),
+        retrieval_mode=mode,
+        degraded=degraded,
     )
+
+
+def _extract_retrieval_mode(tool_name: str, raw: str) -> tuple[str | None, bool]:
+    """从工具输出解析检索模式与降级标记（阶段二）。
+
+    search_knowledge 返回 {"content", "evidence", "retrieval_mode", "degraded"}；
+    其他工具或无标记时返回 (None, False)。
+    """
+    if tool_name != "search_knowledge":
+        return None, False
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, False
+    if not isinstance(payload, dict):
+        return None, False
+    mode = payload.get("retrieval_mode")
+    if mode not in ("lexical-only", "hybrid"):
+        return None, False
+    return str(mode), bool(payload.get("degraded"))
 
 
 def _classify_governance_error(content: str) -> tuple[str, str]:

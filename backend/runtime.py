@@ -69,6 +69,7 @@ class AgentRuntime:
     agentic_rag: AgenticRAGService | None
     tool_governance: ToolGovernance
     metrics: RuntimeMetrics
+    knowledge_retriever: object | None = None
     copilot: CopilotService | None = None
     copilot_repository: CopilotRepository | None = None
     graph_mode: str = "single"
@@ -146,6 +147,7 @@ async def runtime_context(
         )
         knowledge = KnowledgeRepository(audit.pool)
         agentic_rag: AgenticRAGService | None = None
+        vector_retriever: Any = NullVectorRetriever()  # 块外初始化：未配置 embedding 时保持 Null
         if settings.deepseek_api_key:
             generator = LlmAnswerGenerator(
                 api_key=settings.deepseek_api_key,
@@ -157,7 +159,6 @@ async def runtime_context(
                 base_url=settings.llm_base_url,
                 model=settings.llm_model,
             )
-            vector_retriever: Any = NullVectorRetriever()
             if settings.knowledge_embedding_endpoint and settings.knowledge_embedding_dimension:
                 vector_retriever = PgVectorRetriever(
                     knowledge,
@@ -210,6 +211,12 @@ async def runtime_context(
                     tools=copilot_tools,
                 )
             )
+        # 统一知识检索入口（阶段二）：Copilot search_knowledge 经此执行。
+        # 未配置 embedding 时 vector_retriever 为 NullVectorRetriever，
+        # KnowledgeRetriever 自动标记 lexical-only；配置后 hybrid。
+        from .knowledge.retriever import KnowledgeRetriever
+
+        knowledge_retriever = KnowledgeRetriever(knowledge, vector_retriever)
         yield AgentRuntime(
             graph=graph,
             intake_graph=build_helpdesk_intake_graph(
@@ -230,6 +237,7 @@ async def runtime_context(
             agentic_rag=agentic_rag,
             tool_governance=tool_governance,
             metrics=runtime_metrics,
+            knowledge_retriever=knowledge_retriever,
             copilot=copilot_service,
             copilot_repository=copilot_repository,
             graph_mode=settings.agent_graph_mode,
