@@ -32,7 +32,7 @@ from .knowledge import (
     RetrievalPrincipal,
     reciprocal_rank_fusion,
 )
-from .knowledge.eval_cases import EVAL_CASES, document_ids_by_category, eval_case_count
+from .knowledge.eval_cases import EVAL_CASES, document_ids_by_category
 
 # Windows 控制台默认 GBK 编码，强制 UTF-8 输出。
 if hasattr(sys.stdout, "reconfigure"):
@@ -59,7 +59,9 @@ async def _retrieve(
     return reciprocal_rank_fusion(lexical, vector_hits, limit=topk)
 
 
-def _metrics(hits: list[RetrievalHit], expected: tuple[str, ...], topk: int) -> tuple[float, float, float]:
+def _metrics(
+    hits: list[RetrievalHit], expected: tuple[str, ...], topk: int
+) -> tuple[float, float, float]:
     top1 = 1.0 if hits and hits[0].document_id in expected else 0.0
     found = {hit.document_id for hit in hits[:topk]}
     recall = len(found & set(expected)) / len(expected)
@@ -117,9 +119,15 @@ async def _run_eval(
 
         cases = EVAL_CASES[:limit] if limit > 0 else EVAL_CASES
         totals = {"top1": 0.0, "recall": 0.0, "mrr": 0.0}
-        by_category: dict[str, dict[str, float]] = defaultdict(lambda: {"count": 0.0, "top1": 0.0, "recall": 0.0})
+        by_category: dict[str, dict[str, float]] = defaultdict(
+            lambda: {"count": 0.0, "top1": 0.0, "recall": 0.0}
+        )
         no_hits: list[str] = []
-        category_of = {doc_id: category for category, docs in document_ids_by_category().items() for doc_id in docs}
+        category_of = {
+            doc_id: category
+            for category, docs in document_ids_by_category().items()
+            for doc_id in docs
+        }
 
         for case in cases:
             hits = await _retrieve(repository, vector, principal, case["query"], topk=topk)
@@ -170,7 +178,9 @@ def _print_report(report: dict) -> None:
     print("-" * 56)
     print("按分类分项（Top1 / Recall@k / 用例数）:")
     for category, entry in report["by_category"].items():
-        print(f"  {category:<12} {entry['top1'] * 100:5.1f}%  {entry['recall'] * 100:5.1f}%  n={entry['count']}")
+        print(
+            f"  {category:<12} {entry['top1'] * 100:5.1f}%  {entry['recall'] * 100:5.1f}%  n={entry['count']}"
+        )
     print("-" * 56)
     no_hits = report["no_hits"]
     print(f"无检索命中（受理链路将转人工，不自动发送）: {len(no_hits)} 条")
@@ -184,11 +194,26 @@ def main() -> None:
     parser.add_argument("--topk", type=int, default=DEFAULT_TOPK, help="检索深度 k（默认 5）")
     parser.add_argument("--limit", type=int, default=0, help="只评测前 N 条（0 = 全部）")
     parser.add_argument("--seed", action="store_true", help="评测前先导入幂等种子数据")
-    parser.add_argument("--embed", action="store_true", help="强制启用 embedding 检索（需 KNOWLEDGE_EMBEDDING_ENDPOINT）")
-    parser.add_argument("--database-url", default=None, help="PostgreSQL 连接串（默认读 DATABASE_URL / .env）")
-    parser.add_argument("--fail-under-top1", type=float, default=None, help="Top1 门禁阈值（低于则非零退出，如 0.80）")
-    parser.add_argument("--fail-under-recall5", type=float, default=None, help="Recall@5 门禁阈值（如 0.90）")
-    parser.add_argument("--fail-under-mrr", type=float, default=None, help="MRR@5 门禁阈值（如 0.75）")
+    parser.add_argument(
+        "--embed",
+        action="store_true",
+        help="强制启用 embedding 检索（需 KNOWLEDGE_EMBEDDING_ENDPOINT）",
+    )
+    parser.add_argument(
+        "--database-url", default=None, help="PostgreSQL 连接串（默认读 DATABASE_URL / .env）"
+    )
+    parser.add_argument(
+        "--fail-under-top1",
+        type=float,
+        default=None,
+        help="Top1 门禁阈值（低于则非零退出，如 0.80）",
+    )
+    parser.add_argument(
+        "--fail-under-recall5", type=float, default=None, help="Recall@5 门禁阈值（如 0.90）"
+    )
+    parser.add_argument(
+        "--fail-under-mrr", type=float, default=None, help="MRR@5 门禁阈值（如 0.75）"
+    )
     args = parser.parse_args()
 
     load_dotenv()
@@ -218,7 +243,11 @@ def _enforce_gate(report: dict, args: argparse.Namespace) -> None:
         (args.fail_under_mrr, totals["mrr"], f"MRR@{report['topk']}"),
     ]
     failures = [
-        f"{name}={value * 100:.1f}% < {threshold * 100:.1f}%" if name != f"MRR@{report['topk']}" else f"{name}={value:.3f} < {threshold}"
+        (
+            f"{name}={value * 100:.1f}% < {threshold * 100:.1f}%"
+            if name != f"MRR@{report['topk']}"
+            else f"{name}={value:.3f} < {threshold}"
+        )
         for threshold, value, name in checks
         if threshold is not None and value < threshold
     ]

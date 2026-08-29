@@ -17,7 +17,6 @@ from typing import Any
 import httpx
 from langchain_core.tools import tool
 
-
 _GEOCODING_URL = os.getenv(
     "WEATHER_GEOCODING_URL",
     "https://geocoding-api.open-meteo.com/v1/search",

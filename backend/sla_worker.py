@@ -57,16 +57,18 @@ class SLAWorker:
                 await safe_incr(self.worker_metrics, "worker_loop_errors_total", {"worker": "sla"})
                 logger.exception(
                     "worker_round_failed",
-                    extra={"ctx": {"worker_type": "sla", "consecutive_failures": consecutive_failures}},
+                    extra={
+                        "ctx": {"worker_type": "sla", "consecutive_failures": consecutive_failures}
+                    },
                 )
                 backoff = min(self.interval_seconds * (2 ** (consecutive_failures - 1)), 120.0)
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=backoff)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
                 continue
             await safe_beat(self.worker_metrics, "sla", "sla-worker")
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=self.interval_seconds)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass

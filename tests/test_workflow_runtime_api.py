@@ -9,6 +9,7 @@ import asyncio
 import importlib
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from typing import Annotated
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,7 +18,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.graph import END, START, StateGraph, add_messages
 from langgraph.types import Command, Interrupt
-from typing_extensions import Annotated, TypedDict
+from typing_extensions import TypedDict
 
 from backend.security import make_tenant_token
 
@@ -98,22 +99,28 @@ def load_app(monkeypatch, *, graph, audit=None):
     return module
 
 
-def auth_headers(tenant="tenant-a", user="user-1", scopes=("chat:read", "chat:write", "chat:approve")):
-    return {"Authorization": "Bearer " + make_tenant_token(tenant, user, SECRET, scopes=tuple(scopes))}
+def auth_headers(
+    tenant="tenant-a", user="user-1", scopes=("chat:read", "chat:write", "chat:approve")
+):
+    return {
+        "Authorization": "Bearer " + make_tenant_token(tenant, user, SECRET, scopes=tuple(scopes))
+    }
 
 
 def sse_payloads(response) -> list[dict]:
     import json
 
     return [
-        json.loads(line[len("data: "):])
+        json.loads(line[len("data: ") :])
         for line in response.text.splitlines()
         if line.startswith("data: ")
     ]
 
 
 def interrupt_event():
-    return {"__interrupt__": (Interrupt(value={"question": "是否批准调用天气服务？"}, id=INTERRUPT_ID),)}
+    return {
+        "__interrupt__": (Interrupt(value={"question": "是否批准调用天气服务？"}, id=INTERRUPT_ID),)
+    }
 
 
 # ========== interrupt 下发 ==========
@@ -165,14 +172,18 @@ def test_usage_is_counted_for_orchestration_node_names(monkeypatch):
     status, metadata = audit.finished[-1]
     assert status == "completed"
     assert metadata["total_tokens"] == 42
-    assert [p["content"] for p in sse_payloads(response) if p["type"] == "text"] == ["北京晴，25 度。"]
+    assert [p["content"] for p in sse_payloads(response) if p["type"] == "text"] == [
+        "北京晴，25 度。"
+    ]
 
 
 def test_tool_message_from_any_node_emits_tool_done(monkeypatch):
     """工具完成事件按消息类型识别，不再依赖节点是否叫 tools。"""
-    graph = ScriptedGraph([
-        {"calc_agent": {"messages": [ToolMessage(content="42", tool_call_id="c1")]}},
-    ])
+    graph = ScriptedGraph(
+        [
+            {"calc_agent": {"messages": [ToolMessage(content="42", tool_call_id="c1")]}},
+        ]
+    )
     module = load_app(monkeypatch, graph=graph)
     with TestClient(module.app) as client:
         response = client.post("/chat/stream", headers=auth_headers(), json={"message": "算一下"})
@@ -324,7 +335,9 @@ class ScriptedModel(FakeMessagesListChatModel):
 def _tool_call_message():
     return AIMessage(
         content="",
-        tool_calls=[{"name": "echo_tool", "args": {"text": "hi"}, "id": "call-1", "type": "tool_call"}],
+        tool_calls=[
+            {"name": "echo_tool", "args": {"text": "hi"}, "id": "call-1", "type": "tool_call"}
+        ],
     )
 
 

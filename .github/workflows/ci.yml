@@ -65,6 +65,12 @@ jobs:
         env:
           KNOWLEDGE_EMBEDDING_DIMENSION: "8"
         run: uv run python -m backend.vector_migrations
+      - name: Lint with ruff
+        run: uv run ruff check .
+      - name: Format check with black
+        run: uv run black --check .
+      - name: Type check with mypy
+        run: uv run mypy backend src
       - name: Run Python tests
         run: uv run pytest -q
       - name: Build frontend

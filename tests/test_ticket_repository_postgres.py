@@ -13,7 +13,6 @@ from backend.tickets import (
 )
 from src.my_agent.helpdesk import ActorType, TicketAction, TicketCommand, TicketStatus
 
-
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
 
@@ -130,9 +129,29 @@ def test_workflow_operation_commits_intent_once_and_retries_idempotently(monkeyp
                 checkpoint_thread_id=f"helpdesk:{tenant_id}:{ticket_id}",
             )
             commands = [
-                TicketCommand(ticket_id=ticket_id, action=TicketAction.START_INTAKE, actor_type=ActorType.SYSTEM, actor_id="worker", expected_version=0),
-                TicketCommand(ticket_id=ticket_id, action=TicketAction.CLASSIFY, actor_type=ActorType.SYSTEM, actor_id="worker", expected_version=1, payload={"category": "it"}),
-                TicketCommand(ticket_id=ticket_id, action=TicketAction.QUEUE, actor_type=ActorType.SYSTEM, actor_id="worker", expected_version=2, payload={"team_id": "team-it"}),
+                TicketCommand(
+                    ticket_id=ticket_id,
+                    action=TicketAction.START_INTAKE,
+                    actor_type=ActorType.SYSTEM,
+                    actor_id="worker",
+                    expected_version=0,
+                ),
+                TicketCommand(
+                    ticket_id=ticket_id,
+                    action=TicketAction.CLASSIFY,
+                    actor_type=ActorType.SYSTEM,
+                    actor_id="worker",
+                    expected_version=1,
+                    payload={"category": "it"},
+                ),
+                TicketCommand(
+                    ticket_id=ticket_id,
+                    action=TicketAction.QUEUE,
+                    actor_type=ActorType.SYSTEM,
+                    actor_id="worker",
+                    expected_version=2,
+                    payload={"team_id": "team-it"},
+                ),
             ]
             await repository.record_workflow_intent(
                 tenant_id=tenant_id,
@@ -140,9 +159,15 @@ def test_workflow_operation_commits_intent_once_and_retries_idempotently(monkeyp
                 operation_id="operation-intake-1",
                 intent={"commands": [command.model_dump(mode="json") for command in commands]},
             )
-            committed = await repository.transition_many(tenant_id, commands, scopes={"ticket:system"}, operation_id="operation-intake-1")
-            retried = await repository.transition_many(tenant_id, commands, scopes={"ticket:system"}, operation_id="operation-intake-1")
-            operation = await repository.get_workflow_operation(tenant_id=tenant_id, ticket_id=ticket_id, operation_id="operation-intake-1")
+            committed = await repository.transition_many(
+                tenant_id, commands, scopes={"ticket:system"}, operation_id="operation-intake-1"
+            )
+            retried = await repository.transition_many(
+                tenant_id, commands, scopes={"ticket:system"}, operation_id="operation-intake-1"
+            )
+            operation = await repository.get_workflow_operation(
+                tenant_id=tenant_id, ticket_id=ticket_id, operation_id="operation-intake-1"
+            )
             events = await repository.list_status_events(tenant_id, ticket_id)
             return run, committed, retried, operation, events
         finally:

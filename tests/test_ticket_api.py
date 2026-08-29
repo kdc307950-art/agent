@@ -11,7 +11,6 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-
 from fastapi.testclient import TestClient
 from langgraph.types import Interrupt
 
@@ -20,7 +19,6 @@ from backend.security import make_tenant_token
 from backend.ticket_api import _classify_category
 from backend.tickets import AssetBindingError
 from src.my_agent.helpdesk import ActorType, TicketStatus
-
 
 SECRET = "test-tenant-secret"
 
@@ -43,8 +41,16 @@ class FakeTickets:
     async def create(self, tenant_id, request):
         # 复刻数据访问层的客户资产归属校验（与 backend/tickets/repository.py 一致）。
         if request.asset_id is not None and request.actor_type == ActorType.CUSTOMER:
-            asset = await self.assets.get(tenant_id, request.asset_id) if self.assets is not None else None
-            if asset is None or asset.owner_user_id is None or asset.owner_user_id != request.requester_id:
+            asset = (
+                await self.assets.get(tenant_id, request.asset_id)
+                if self.assets is not None
+                else None
+            )
+            if (
+                asset is None
+                or asset.owner_user_id is None
+                or asset.owner_user_id != request.requester_id
+            ):
                 raise AssetBindingError("资产不存在或不属于当前用户")
         self.created.append((tenant_id, request))
         record = SimpleNamespace(
@@ -90,7 +96,9 @@ class FakeTickets:
     async def get_workflow_operation(self, *, tenant_id, ticket_id, operation_id):
         return self.workflow_runs.get((tenant_id, ticket_id, operation_id))
 
-    async def record_workflow_intent(self, *, tenant_id, ticket_id, operation_id, intent, checkpoint_id=None):
+    async def record_workflow_intent(
+        self, *, tenant_id, ticket_id, operation_id, intent, checkpoint_id=None
+    ):
         run = self.workflow_runs[(tenant_id, ticket_id, operation_id)]
         run["status"] = "intent_recorded"
         run["intent"] = intent
@@ -132,13 +140,30 @@ class FakeTickets:
         self.inbound_calls.append((tenant_id, channel, external_event_id, payload))
         if key in self.inbound:
             return SimpleNamespace(
-                created=False, tenant_id=tenant_id, channel=channel, external_event_id=external_event_id,
-                payload_hash="hash", ticket_id=self.inbound[key]["ticket_id"], status=self.inbound[key]["status"], attempts=0,
+                created=False,
+                tenant_id=tenant_id,
+                channel=channel,
+                external_event_id=external_event_id,
+                payload_hash="hash",
+                ticket_id=self.inbound[key]["ticket_id"],
+                status=self.inbound[key]["status"],
+                attempts=0,
             )
-        self.inbound[key] = {"status": "received", "ticket_id": None, "payload": payload, "attempts": 0}
+        self.inbound[key] = {
+            "status": "received",
+            "ticket_id": None,
+            "payload": payload,
+            "attempts": 0,
+        }
         return SimpleNamespace(
-            created=True, tenant_id=tenant_id, channel=channel, external_event_id=external_event_id,
-            payload_hash="hash", ticket_id=None, status="received", attempts=0,
+            created=True,
+            tenant_id=tenant_id,
+            channel=channel,
+            external_event_id=external_event_id,
+            payload_hash="hash",
+            ticket_id=None,
+            status="received",
+            attempts=0,
         )
 
     async def get_inbound_event(self, tenant_id, channel, external_event_id):
@@ -147,9 +172,15 @@ class FakeTickets:
     async def list_inbound_events(self, tenant_id, external_event_id):
         return [
             {
-                "tenant_id": tenant_id, "channel": channel, "external_event_id": external_event_id,
-                "status": record["status"], "ticket_id": record["ticket_id"],
-                "attempts": record["attempts"], "error_code": None, "received_at": None, "processed_at": None,
+                "tenant_id": tenant_id,
+                "channel": channel,
+                "external_event_id": external_event_id,
+                "status": record["status"],
+                "ticket_id": record["ticket_id"],
+                "attempts": record["attempts"],
+                "error_code": None,
+                "received_at": None,
+                "processed_at": None,
             }
             for (tid, channel, event_id), record in self.inbound.items()
             if tid == tenant_id and event_id == external_event_id
@@ -175,7 +206,9 @@ class FakeIntakeGraph:
         return dict(self.result)
 
     async def aget_state(self, config):
-        return SimpleNamespace(tasks=(SimpleNamespace(interrupts=self.pending),) if self.pending else ())
+        return SimpleNamespace(
+            tasks=(SimpleNamespace(interrupts=self.pending),) if self.pending else ()
+        )
 
 
 class FakeOperations:
@@ -549,7 +582,12 @@ def test_inbound_event_status_query_and_idempotent_registration(monkeypatch):
 def test_intake_completes_to_queued_and_creates_sla_instance(monkeypatch):
     module, tickets, _intake = load_app(monkeypatch)
     tickets.items[("tenant-a", "ticket-1")] = SimpleNamespace(
-        ticket_id="ticket-1", requester_id="user-1", version=0, status=TicketStatus.NEW, channel="web", category=None
+        ticket_id="ticket-1",
+        requester_id="user-1",
+        version=0,
+        status=TicketStatus.NEW,
+        channel="web",
+        category=None,
     )
     with TestClient(module.app) as client:
         response = client.post(
@@ -573,11 +611,28 @@ def test_intake_completes_to_queued_and_creates_sla_instance(monkeypatch):
 def test_pending_interrupt_endpoint_rehydrates_checkpoint_after_refresh(monkeypatch):
     module, tickets, intake = load_app(monkeypatch)
     tickets.items[("tenant-a", "ticket-1")] = SimpleNamespace(
-        ticket_id="ticket-1", requester_id="user-1", version=2, status=TicketStatus.AWAITING_CUSTOMER
+        ticket_id="ticket-1",
+        requester_id="user-1",
+        version=2,
+        status=TicketStatus.AWAITING_CUSTOMER,
     )
-    intake.pending = (Interrupt(id="interrupt-refresh", value={"kind": "ticket_clarification", "ticket_id": "ticket-1", "question": "补充影响范围", "allowed_actions": ["provide_information"], "expected_actor": "customer", "expected_actor_id": "user-1"}),)
+    intake.pending = (
+        Interrupt(
+            id="interrupt-refresh",
+            value={
+                "kind": "ticket_clarification",
+                "ticket_id": "ticket-1",
+                "question": "补充影响范围",
+                "allowed_actions": ["provide_information"],
+                "expected_actor": "customer",
+                "expected_actor_id": "user-1",
+            },
+        ),
+    )
     with TestClient(module.app) as client:
-        response = client.get("/tickets/ticket-1/pending-interrupt", headers=headers("ticket:customer"))
+        response = client.get(
+            "/tickets/ticket-1/pending-interrupt", headers=headers("ticket:customer")
+        )
     assert response.status_code == 200
     assert response.json()["interrupt"]["interrupt_id"] == "interrupt-refresh"
     assert response.json()["interrupt"]["question"] == "补充影响范围"
@@ -624,16 +679,27 @@ def test_intake_operation_retries_recorded_intent_without_rerunning_graph(monkey
         "expected_version": 0,
     }
     with TestClient(module.app) as client:
-        first = client.post("/tickets/ticket-1/intake", headers=headers("ticket:customer"), json=body)
-        second = client.post("/tickets/ticket-1/intake", headers=headers("ticket:customer"), json=body)
+        first = client.post(
+            "/tickets/ticket-1/intake", headers=headers("ticket:customer"), json=body
+        )
+        second = client.post(
+            "/tickets/ticket-1/intake", headers=headers("ticket:customer"), json=body
+        )
 
     assert first.status_code == 500
     assert second.status_code == 200
     assert tickets.items[("tenant-a", "ticket-1")].status == TicketStatus.QUEUED
     assert tickets.items[("tenant-a", "ticket-1")].version == 3
     assert len(intake.inputs) == 1
-    assert [item[1].action.value for item in tickets.transitions] == ["start_intake", "classify", "queue"]
-    assert tickets.workflow_runs[("tenant-a", "ticket-1", "op-fault-injection")]["status"] == "committed"
+    assert [item[1].action.value for item in tickets.transitions] == [
+        "start_intake",
+        "classify",
+        "queue",
+    ]
+    assert (
+        tickets.workflow_runs[("tenant-a", "ticket-1", "op-fault-injection")]["status"]
+        == "committed"
+    )
 
 
 def test_intake_synchronizes_interrupt_to_awaiting_customer(monkeypatch):
@@ -658,7 +724,12 @@ def test_intake_synchronizes_interrupt_to_awaiting_customer(monkeypatch):
         response = client.post(
             "/tickets/ticket-1/intake",
             headers=headers("ticket:customer"),
-            json={"operation_id": "op-intake-interrupt", "text": "SSO failure", "fields": {}, "expected_version": 0},
+            json={
+                "operation_id": "op-intake-interrupt",
+                "text": "SSO failure",
+                "fields": {},
+                "expected_version": 0,
+            },
         )
 
     assert response.status_code == 200
@@ -672,7 +743,10 @@ def test_intake_synchronizes_interrupt_to_awaiting_customer(monkeypatch):
 def test_typed_resume_validates_real_interrupt_actor_and_version(monkeypatch):
     module, tickets, intake = load_app(monkeypatch)
     tickets.items[("tenant-a", "ticket-1")] = SimpleNamespace(
-        ticket_id="ticket-1", requester_id="user-1", version=3, status=TicketStatus.AWAITING_CUSTOMER
+        ticket_id="ticket-1",
+        requester_id="user-1",
+        version=3,
+        status=TicketStatus.AWAITING_CUSTOMER,
     )
     intake.pending = (
         Interrupt(
@@ -713,7 +787,10 @@ def test_typed_resume_validates_real_interrupt_actor_and_version(monkeypatch):
 def test_typed_resume_rejects_stale_version_and_non_customer_actor(monkeypatch):
     module, tickets, intake = load_app(monkeypatch)
     tickets.items[("tenant-a", "ticket-1")] = SimpleNamespace(
-        ticket_id="ticket-1", requester_id="user-1", version=4, status=TicketStatus.AWAITING_CUSTOMER
+        ticket_id="ticket-1",
+        requester_id="user-1",
+        version=4,
+        status=TicketStatus.AWAITING_CUSTOMER,
     )
     intake.pending = (
         Interrupt(
@@ -918,22 +995,26 @@ def _encrypt_wecom(message: bytes, corp_id: str) -> str:
     return base64.b64encode(encryptor.update(padded) + encryptor.finalize()).decode("ascii")
 
 
-def _wecom_webhook(content: str | None = None, event: str | None = None) -> tuple[bytes, str, str, str]:
+def _wecom_webhook(
+    content: str | None = None, event: str | None = None
+) -> tuple[bytes, str, str, str]:
     if event is not None:
         inner = (
             "<xml><ToUserName>corp-1</ToUserName><FromUserName>ext-user-1</FromUserName>"
             f"<CreateTime>1700000000</CreateTime><MsgType>event</MsgType><Event>{event}</Event></xml>"
-        ).encode("utf-8")
+        ).encode()
     else:
         inner = (
             f"<xml><FromUserName>ext-user-1</FromUserName><MsgId>wecom-{uuid4().hex}</MsgId>"
             f"<Content>{content}</Content></xml>"
-        ).encode("utf-8")
+        ).encode()
     encrypted = _encrypt_wecom(inner, "corp-1")
     body = f"<xml><Encrypt>{encrypted}</Encrypt></xml>".encode()
     timestamp = str(int(time.time()))
     nonce = "nonce-wecom"
-    signature = hashlib.sha1("".join(sorted(("wecom-token", timestamp, nonce, encrypted))).encode()).hexdigest()
+    signature = hashlib.sha1(
+        "".join(sorted(("wecom-token", timestamp, nonce, encrypted))).encode()
+    ).hexdigest()
     return body, timestamp, nonce, signature
 
 
@@ -979,25 +1060,47 @@ def test_wecom_webhook_get_verifies_echostr(monkeypatch):
     encrypted = _encrypt_wecom(plaintext.encode("utf-8"), "corp-1")
     timestamp = str(int(time.time()))
     nonce = "nonce-get"
-    signature = hashlib.sha1("".join(sorted(("wecom-token", timestamp, nonce, encrypted))).encode()).hexdigest()
+    signature = hashlib.sha1(
+        "".join(sorted(("wecom-token", timestamp, nonce, encrypted))).encode()
+    ).hexdigest()
     with TestClient(module.app) as client:
         ok = client.get(
             "/integrations/wecom/webhook",
-            params={"timestamp": timestamp, "nonce": nonce, "msg_signature": signature, "echostr": encrypted},
+            params={
+                "timestamp": timestamp,
+                "nonce": nonce,
+                "msg_signature": signature,
+                "echostr": encrypted,
+            },
         )
         bad_signature = client.get(
             "/integrations/wecom/webhook",
-            params={"timestamp": timestamp, "nonce": nonce, "msg_signature": "bad", "echostr": encrypted},
+            params={
+                "timestamp": timestamp,
+                "nonce": nonce,
+                "msg_signature": "bad",
+                "echostr": encrypted,
+            },
         )
         expired = client.get(
             "/integrations/wecom/webhook",
-            params={"timestamp": str(int(time.time()) - 3600), "nonce": nonce, "msg_signature": signature, "echostr": encrypted},
+            params={
+                "timestamp": str(int(time.time()) - 3600),
+                "nonce": nonce,
+                "msg_signature": signature,
+                "echostr": encrypted,
+            },
         )
         disabled_module, _tickets, _intake = load_app(monkeypatch, wecom=False)
         with TestClient(disabled_module.app) as client_disabled:
             disabled = client_disabled.get(
                 "/integrations/wecom/webhook",
-                params={"timestamp": timestamp, "nonce": nonce, "msg_signature": signature, "echostr": encrypted},
+                params={
+                    "timestamp": timestamp,
+                    "nonce": nonce,
+                    "msg_signature": signature,
+                    "echostr": encrypted,
+                },
             )
 
     assert ok.status_code == 200
@@ -1026,6 +1129,7 @@ def test_wecom_webhook_ignores_event_messages_with_ack(monkeypatch):
 
 # ========== 第二阶段：资产 / IT 策略 / 工单资产 / 知识文档管理接口 ==========
 
+
 def test_assets_api_enforces_scopes_and_supports_crud(monkeypatch):
     module, _tickets, _intake = load_app(monkeypatch)
     with TestClient(module.app) as client:
@@ -1036,8 +1140,21 @@ def test_assets_api_enforces_scopes_and_supports_crud(monkeypatch):
         )
         created = client.post(
             "/assets",
-            headers=headers("ticket:agent", "asset:read", "asset:write", "it-policy:read", "it-policy:write", "knowledge:write"),
-            json={"asset_id": "asset-1", "asset_no": "A-001", "asset_type": "laptop", "hostname": "host-a", "owner_user_id": "user-1"},
+            headers=headers(
+                "ticket:agent",
+                "asset:read",
+                "asset:write",
+                "it-policy:read",
+                "it-policy:write",
+                "knowledge:write",
+            ),
+            json={
+                "asset_id": "asset-1",
+                "asset_no": "A-001",
+                "asset_type": "laptop",
+                "hostname": "host-a",
+                "owner_user_id": "user-1",
+            },
         )
         listed = client.get("/assets", headers=headers("asset:read"))
         cleared = client.patch(
@@ -1062,12 +1179,22 @@ def test_assets_api_customer_cannot_read_or_query_other_users_assets(monkeypatch
         client.post(
             "/assets",
             headers=admin_headers,
-            json={"asset_id": "asset-other", "asset_no": "A-002", "asset_type": "laptop", "owner_user_id": "user-2"},
+            json={
+                "asset_id": "asset-other",
+                "asset_no": "A-002",
+                "asset_type": "laptop",
+                "owner_user_id": "user-2",
+            },
         )
         client.post(
             "/assets",
             headers=admin_headers,
-            json={"asset_id": "asset-mine", "asset_no": "A-003", "asset_type": "laptop", "owner_user_id": "user-1"},
+            json={
+                "asset_id": "asset-mine",
+                "asset_no": "A-003",
+                "asset_type": "laptop",
+                "owner_user_id": "user-1",
+            },
         )
         customer = headers("asset:read", user="user-1")
         # 客户读取他人资产 -> 404；读取本人资产 -> 200。
@@ -1077,7 +1204,9 @@ def test_assets_api_customer_cannot_read_or_query_other_users_assets(monkeypatch
         other_tickets = client.get("/assets/asset-other/tickets", headers=customer)
         mine_tickets = client.get("/assets/asset-mine/tickets", headers=customer)
         # 客服不受归属限制。
-        agent_read = client.get("/assets/asset-other", headers=headers("asset:read", "ticket:agent", user="agent-1"))
+        agent_read = client.get(
+            "/assets/asset-other", headers=headers("asset:read", "ticket:agent", user="agent-1")
+        )
         # 客户列表接口只返回本人资产；伪造 owner_user_id 查询参数也不能越权。
         listed = client.get("/assets", headers=customer)
         spoofed = client.get("/assets?owner_user_id=user-2", headers=customer)
@@ -1100,12 +1229,22 @@ def test_customer_cannot_bind_other_users_asset_to_ticket(monkeypatch):
         client.post(
             "/assets",
             headers=admin_headers,
-            json={"asset_id": "asset-other", "asset_no": "A-004", "asset_type": "laptop", "owner_user_id": "user-2"},
+            json={
+                "asset_id": "asset-other",
+                "asset_no": "A-004",
+                "asset_type": "laptop",
+                "owner_user_id": "user-2",
+            },
         )
         client.post(
             "/assets",
             headers=admin_headers,
-            json={"asset_id": "asset-mine", "asset_no": "A-005", "asset_type": "laptop", "owner_user_id": "user-1"},
+            json={
+                "asset_id": "asset-mine",
+                "asset_no": "A-005",
+                "asset_type": "laptop",
+                "owner_user_id": "user-1",
+            },
         )
         # 用户 A(user-1)用用户 B(user-2)的资产建单 -> 404；用本人资产建单 -> 201。
         forbidden = client.post(
@@ -1128,20 +1267,37 @@ def test_asset_ticket_list_isolated_by_requester_for_customers(monkeypatch):
     module, tickets, _intake = load_app(monkeypatch)
     admin_headers = headers("ticket:agent", "asset:read", "asset:write")
     tickets.items[("tenant-a", "ticket-a")] = SimpleNamespace(
-        ticket_id="ticket-a", requester_id="user-1", asset_id="asset-1", status=TicketStatus.IN_PROGRESS
+        ticket_id="ticket-a",
+        requester_id="user-1",
+        asset_id="asset-1",
+        status=TicketStatus.IN_PROGRESS,
     )
     # 客服误把 user-1 的资产关联到 user-2 的工单（历史数据/客服绑定场景）。
     tickets.items[("tenant-a", "ticket-b")] = SimpleNamespace(
-        ticket_id="ticket-b", requester_id="user-2", asset_id="asset-1", status=TicketStatus.IN_PROGRESS
+        ticket_id="ticket-b",
+        requester_id="user-2",
+        asset_id="asset-1",
+        status=TicketStatus.IN_PROGRESS,
     )
     with TestClient(module.app) as client:
         client.post(
             "/assets",
             headers=admin_headers,
-            json={"asset_id": "asset-1", "asset_no": "A-006", "asset_type": "laptop", "owner_user_id": "user-1"},
+            json={
+                "asset_id": "asset-1",
+                "asset_no": "A-006",
+                "asset_type": "laptop",
+                "owner_user_id": "user-1",
+            },
         )
-        customer = client.get("/assets/asset-1/tickets", headers=headers("ticket:customer", "asset:read", user="user-1"))
-        agent = client.get("/assets/asset-1/tickets", headers=headers("ticket:customer", "ticket:agent", "asset:read", user="agent-1"))
+        customer = client.get(
+            "/assets/asset-1/tickets",
+            headers=headers("ticket:customer", "asset:read", user="user-1"),
+        )
+        agent = client.get(
+            "/assets/asset-1/tickets",
+            headers=headers("ticket:customer", "ticket:agent", "asset:read", user="agent-1"),
+        )
 
     assert customer.status_code == 200
     assert [item["ticket_id"] for item in customer.json()["items"]] == ["ticket-a"]
@@ -1159,7 +1315,9 @@ def test_intake_classify_persists_full_subcategory_category(monkeypatch):
     from src.my_agent.helpdesk import TicketAction
 
     result = {"category": "it", "subcategory": "vpn", "priority": "normal"}
-    commands = _intake_outcome_commands(ticket_id="ticket-1", actor_id="intake-agent", expected_version=1, result=result)
+    commands = _intake_outcome_commands(
+        ticket_id="ticket-1", actor_id="intake-agent", expected_version=1, result=result
+    )
     classify = next(command for command in commands if command.action == TicketAction.CLASSIFY)
     assert classify.payload["category"] == "it.vpn"
 
@@ -1170,7 +1328,14 @@ def test_intake_classify_persists_full_subcategory_category(monkeypatch):
 
 def test_it_policy_admin_api_enforces_scopes_and_upserts(monkeypatch):
     module, _tickets, _intake = load_app(monkeypatch)
-    admin_headers = headers("ticket:agent", "asset:read", "asset:write", "it-policy:read", "it-policy:write", "knowledge:write")
+    admin_headers = headers(
+        "ticket:agent",
+        "asset:read",
+        "asset:write",
+        "it-policy:read",
+        "it-policy:write",
+        "knowledge:write",
+    )
     with TestClient(module.app) as client:
         forbidden = client.get("/admin/it/policies/it.vpn", headers=headers("ticket:customer"))
         missing = client.get("/admin/it/policies/it.vpn", headers=headers("it-policy:read"))
@@ -1191,7 +1356,11 @@ def test_it_policy_admin_api_enforces_scopes_and_upserts(monkeypatch):
 def test_ticket_asset_bind_and_unbind_require_agent_scope(monkeypatch):
     module, tickets, _intake = load_app(monkeypatch)
     tickets.items[("tenant-a", "ticket-1")] = SimpleNamespace(
-        ticket_id="ticket-1", requester_id="user-1", version=1, status=TicketStatus.IN_PROGRESS, asset_id=None
+        ticket_id="ticket-1",
+        requester_id="user-1",
+        version=1,
+        status=TicketStatus.IN_PROGRESS,
+        asset_id=None,
     )
     with TestClient(module.app) as client:
         forbidden = client.post(
@@ -1213,13 +1382,25 @@ def test_ticket_asset_bind_and_unbind_require_agent_scope(monkeypatch):
 
 def test_knowledge_documents_api_enforces_write_scope_and_publishes(monkeypatch):
     module, _tickets, _intake = load_app(monkeypatch)
-    admin_headers = headers("ticket:agent", "asset:read", "asset:write", "it-policy:read", "it-policy:write", "knowledge:write")
+    admin_headers = headers(
+        "ticket:agent",
+        "asset:read",
+        "asset:write",
+        "it-policy:read",
+        "it-policy:write",
+        "knowledge:write",
+    )
     with TestClient(module.app) as client:
         forbidden = client.post(
             "/knowledge/documents",
             headers=headers("ticket:agent"),
             json={
-                "document": {"document_id": "doc-1", "version": 1, "title": "VPN", "status": "draft"},
+                "document": {
+                    "document_id": "doc-1",
+                    "version": 1,
+                    "title": "VPN",
+                    "status": "draft",
+                },
                 "chunks": [{"chunk_id": "c1", "ordinal": 0, "content": "vpn setup"}],
             },
         )
@@ -1227,7 +1408,12 @@ def test_knowledge_documents_api_enforces_write_scope_and_publishes(monkeypatch)
             "/knowledge/documents",
             headers=admin_headers,
             json={
-                "document": {"document_id": "doc-1", "version": 1, "title": "VPN", "status": "draft"},
+                "document": {
+                    "document_id": "doc-1",
+                    "version": 1,
+                    "title": "VPN",
+                    "status": "draft",
+                },
                 "chunks": [{"chunk_id": "c1", "ordinal": 0, "content": "vpn setup"}],
             },
         )
@@ -1249,11 +1435,34 @@ def test_knowledge_documents_api_enforces_write_scope_and_publishes(monkeypatch)
 
 def test_admin_operations_are_audited(monkeypatch):
     module, _tickets, _intake = load_app(monkeypatch)
-    admin_headers = headers("ticket:agent", "asset:read", "asset:write", "it-policy:read", "it-policy:write", "knowledge:read", "knowledge:write")
+    admin_headers = headers(
+        "ticket:agent",
+        "asset:read",
+        "asset:write",
+        "it-policy:read",
+        "it-policy:write",
+        "knowledge:read",
+        "knowledge:write",
+    )
     with TestClient(module.app) as client:
-        client.post("/assets", headers=admin_headers, json={"asset_id": "asset-1", "asset_no": "A-1", "asset_type": "laptop"})
-        client.put("/admin/it/policies/it.vpn", headers=admin_headers, json={"category": "it.vpn", "policy_id": "sla-1"})
-        client.post("/knowledge/documents", headers=admin_headers, json={"document": {"document_id": "doc-1", "version": 1, "title": "VPN"}, "chunks": [{"chunk_id": "c1", "ordinal": 0, "content": "vpn"}]})
+        client.post(
+            "/assets",
+            headers=admin_headers,
+            json={"asset_id": "asset-1", "asset_no": "A-1", "asset_type": "laptop"},
+        )
+        client.put(
+            "/admin/it/policies/it.vpn",
+            headers=admin_headers,
+            json={"category": "it.vpn", "policy_id": "sla-1"},
+        )
+        client.post(
+            "/knowledge/documents",
+            headers=admin_headers,
+            json={
+                "document": {"document_id": "doc-1", "version": 1, "title": "VPN"},
+                "chunks": [{"chunk_id": "c1", "ordinal": 0, "content": "vpn"}],
+            },
+        )
         audit = module.app.state.runtime.audit
         actions = [event["action"] for event in audit.admin_events]
 

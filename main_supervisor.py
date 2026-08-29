@@ -13,10 +13,13 @@
 import asyncio
 import sys
 
+from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from src.my_agent.supervisor_agent import build_supervisor_agent
+
+load_dotenv()
 
 # Windows 控制台默认 GBK 编码，强制 UTF-8 输出，避免中文/emoji 报错
 if hasattr(sys.stdout, "reconfigure"):

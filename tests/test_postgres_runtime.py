@@ -4,20 +4,18 @@ from dataclasses import replace
 from uuid import uuid4
 
 import pytest
-from typing_extensions import TypedDict
-
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.store.postgres.aio import AsyncPostgresStore
 from langgraph.types import Command, interrupt
 from psycopg import AsyncConnection, sql
+from typing_extensions import TypedDict
 
 from backend.audit import audit_context
 from backend.run_context import RunContext
 from backend.runtime import runtime_context
 from backend.schema import APP_SCHEMA_VERSION, ensure_schema_version
 from backend.settings import Settings
-
 
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
@@ -74,13 +72,14 @@ def test_schema_v2_migrates_status_constraint_and_helpdesk_tables_to_current_ver
         schema_name = f"migration_{uuid4().hex}"
         async with await AsyncConnection.connect(DATABASE_URL, autocommit=True) as connection:
             async with connection.cursor() as cursor:
-                await cursor.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema_name)))
+                await cursor.execute(
+                    sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema_name))
+                )
             try:
                 await connection.execute(
                     sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema_name))
                 )
-                await connection.execute(
-                    """
+                await connection.execute("""
                     CREATE TABLE agent_runs (
                         run_id TEXT PRIMARY KEY,
                         request_id TEXT NOT NULL,
@@ -98,46 +97,38 @@ def test_schema_v2_migrates_status_constraint_and_helpdesk_tables_to_current_ver
                         error_code TEXT,
                         metadata JSONB NOT NULL DEFAULT '{}'::jsonb
                     )
-                    """
-                )
-                await connection.execute(
-                    """
+                    """)
+                await connection.execute("""
                     CREATE TABLE agent_schema_version (
                         schema_name TEXT PRIMARY KEY,
                         version INTEGER NOT NULL CHECK (version >= 1),
                         applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
                     )
-                    """
-                )
+                    """)
                 await connection.execute(
                     "INSERT INTO agent_schema_version (schema_name, version) VALUES (%s, 2)",
                     ("langgraph_agent",),
                 )
 
                 await ensure_schema_version(connection)
-                await connection.execute(
-                    """
+                await connection.execute("""
                     INSERT INTO agent_runs
                         (run_id, request_id, tenant_id, user_id, thread_id, status)
                     VALUES ('run-1', 'request-1', 'tenant-a', 'user-1', 'thread-1', 'awaiting_approval')
-                    """
-                )
+                    """)
                 version = await connection.execute(
                     "SELECT version FROM agent_schema_version WHERE schema_name = %s",
                     ("langgraph_agent",),
                 )
                 version_row = await version.fetchone()
-                constraint = await connection.execute(
-                    """
+                constraint = await connection.execute("""
                     SELECT pg_get_constraintdef(oid)
                     FROM pg_constraint
                     WHERE conrelid = 'agent_runs'::regclass
                       AND conname = 'agent_runs_status_check'
-                    """
-                )
+                    """)
                 constraint_row = await constraint.fetchone()
-                relations = await connection.execute(
-                    """
+                relations = await connection.execute("""
                     SELECT to_regclass('tickets'),
                            to_regclass('ticket_status_events'),
                            to_regclass('inbound_events'),
@@ -157,8 +148,7 @@ def test_schema_v2_migrates_status_constraint_and_helpdesk_tables_to_current_ver
                            to_regclass('it_assets'),
                            to_regclass('tenant_it_policies'),
                            to_regclass('admin_audit_events')
-                    """
-                )
+                    """)
                 relation_row = await relations.fetchone()
                 return int(version_row[0]), str(constraint_row[0]), tuple(relation_row)
             finally:
@@ -188,15 +178,13 @@ def test_schema_v9_migrates_to_current_and_is_repeatable():
                 await connection.execute(
                     sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema_name))
                 )
-                await connection.execute(
-                    """
+                await connection.execute("""
                     CREATE TABLE agent_schema_version (
                         schema_name TEXT PRIMARY KEY,
                         version INTEGER NOT NULL CHECK (version >= 1),
                         applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
                     )
-                    """
-                )
+                    """)
                 await connection.execute(
                     "INSERT INTO agent_schema_version (schema_name, version) VALUES (%s, 9)",
                     ("langgraph_agent",),
@@ -218,14 +206,12 @@ def test_schema_v9_migrates_to_current_and_is_repeatable():
                 )
                 second_version = int((await second.fetchone())[0])
 
-                relations = await connection.execute(
-                    """
+                relations = await connection.execute("""
                     SELECT to_regclass('tenant_it_policies'),
                            to_regclass('it_assets'),
                            to_regclass('admin_audit_events'),
                            to_regclass('tickets')
-                    """
-                )
+                    """)
                 relation_row = await relations.fetchone()
                 return first_version, second_version, tuple(relation_row)
             finally:
@@ -313,7 +299,9 @@ def test_postgres_interrupt_survives_reconnect_and_audit_runs_are_linked():
 
         return first_result, restored, resumed_result, first_run, resumed_run, interrupt_id
 
-    first_result, restored, resumed_result, first_run, resumed_run, interrupt_id = asyncio.run(run())
+    first_result, restored, resumed_result, first_run, resumed_run, interrupt_id = asyncio.run(
+        run()
+    )
     assert "__interrupt__" in first_result
     assert restored.tasks[0].interrupts[0].id == interrupt_id
     assert resumed_result["approved"] is True
@@ -330,7 +318,7 @@ def test_runtime_fails_explicitly_when_postgres_is_unreachable():
     )
 
     async def run():
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017 - 意图是"任何异常都算显式失败"（连接不可达）
             await asyncio.wait_for(_enter_runtime(), timeout=3)
 
     async def _enter_runtime():

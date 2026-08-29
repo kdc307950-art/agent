@@ -23,7 +23,7 @@ import argparse
 import asyncio
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from dotenv import load_dotenv
 from psycopg.rows import dict_row
@@ -54,15 +54,74 @@ IT_POLICIES = [
     ("it", "sla-default", ()),
 ]
 
-MEMBER_SKILLS = ["vpn", "account", "network", "email", "hardware", "software", "printer", "permission"]
+MEMBER_SKILLS = [
+    "vpn",
+    "account",
+    "network",
+    "email",
+    "hardware",
+    "software",
+    "printer",
+    "permission",
+]
 
 ASSETS = [
     # asset_id, asset_no, asset_type, name, hostname, ip, department, owner, location
-    ("laptop-001", "DEMO-NB-001", "laptop", "办公笔记本 001", "nb-001", "10.0.0.11", "it", "customer-1", "3F 开放区"),
-    ("laptop-002", "DEMO-NB-002", "laptop", "办公笔记本 002", "nb-002", "10.0.0.12", "it", "customer-2", "3F 开放区"),
-    ("desktop-001", "DEMO-DT-001", "desktop", "办公台式机 001", "dt-001", "10.0.0.21", "it", "customer-1", "4F 财务区"),
-    ("printer-001", "DEMO-PR-001", "printer", "共享打印机 001", "pr-001", "10.0.0.31", "it", None, "3F 打印区"),
-    ("monitor-001", "DEMO-MN-001", "monitor", "显示器 001", None, None, "it", "customer-1", "3F 开放区"),
+    (
+        "laptop-001",
+        "DEMO-NB-001",
+        "laptop",
+        "办公笔记本 001",
+        "nb-001",
+        "10.0.0.11",
+        "it",
+        "customer-1",
+        "3F 开放区",
+    ),
+    (
+        "laptop-002",
+        "DEMO-NB-002",
+        "laptop",
+        "办公笔记本 002",
+        "nb-002",
+        "10.0.0.12",
+        "it",
+        "customer-2",
+        "3F 开放区",
+    ),
+    (
+        "desktop-001",
+        "DEMO-DT-001",
+        "desktop",
+        "办公台式机 001",
+        "dt-001",
+        "10.0.0.21",
+        "it",
+        "customer-1",
+        "4F 财务区",
+    ),
+    (
+        "printer-001",
+        "DEMO-PR-001",
+        "printer",
+        "共享打印机 001",
+        "pr-001",
+        "10.0.0.31",
+        "it",
+        None,
+        "3F 打印区",
+    ),
+    (
+        "monitor-001",
+        "DEMO-MN-001",
+        "monitor",
+        "显示器 001",
+        None,
+        None,
+        "it",
+        "customer-1",
+        "3F 开放区",
+    ),
 ]
 
 KNOWLEDGE_DOCUMENTS = [
@@ -142,7 +201,7 @@ KNOWLEDGE_DOCUMENTS = [
 
 
 def _utc(offset_days: int = 0) -> datetime:
-    return datetime.now(timezone.utc) + timedelta(days=offset_days)
+    return datetime.now(UTC) + timedelta(days=offset_days)
 
 
 def _document_input(tenant_id: str, item: dict) -> KnowledgeDocumentInput:
@@ -181,7 +240,16 @@ async def _seed(tenant_id: str, conninfo: str) -> dict[str, int]:
                         ) VALUES (%s, %s, %s, 'Asia/Shanghai', %s, %s, %s, ARRAY[]::DATE[], %s, %s)
                         ON CONFLICT (tenant_id, policy_id) DO NOTHING
                         """,
-                        (tenant_id, policy_id, name, [0, 1, 2, 3, 4], "09:00", "18:00", first_response, resolution),
+                        (
+                            tenant_id,
+                            policy_id,
+                            name,
+                            [0, 1, 2, 3, 4],
+                            "09:00",
+                            "18:00",
+                            first_response,
+                            resolution,
+                        ),
                     )
                 counts["sla"] = len(SLA_POLICIES)
 
@@ -228,7 +296,17 @@ async def _seed(tenant_id: str, conninfo: str) -> dict[str, int]:
                 counts["schedule"] = 1
                 counts["routing_rule"] = 1
 
-                for asset_id, asset_no, asset_type, name, hostname, ip, department, owner, location in ASSETS:
+                for (
+                    asset_id,
+                    asset_no,
+                    asset_type,
+                    name,
+                    hostname,
+                    ip,
+                    department,
+                    owner,
+                    location,
+                ) in ASSETS:
                     await cursor.execute(
                         """
                         INSERT INTO it_assets (
@@ -238,7 +316,20 @@ async def _seed(tenant_id: str, conninfo: str) -> dict[str, int]:
                         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'in_use', %s, %s, %s, '{}'::jsonb)
                         ON CONFLICT (tenant_id, asset_id) DO NOTHING
                         """,
-                        (tenant_id, asset_id, asset_no, asset_type, name, hostname, ip, department, owner, _utc(-365), _utc(365), location),
+                        (
+                            tenant_id,
+                            asset_id,
+                            asset_no,
+                            asset_type,
+                            name,
+                            hostname,
+                            ip,
+                            department,
+                            owner,
+                            _utc(-365),
+                            _utc(365),
+                            location,
+                        ),
                     )
                 counts["asset"] = len(ASSETS)
 
@@ -276,7 +367,9 @@ async def _seed(tenant_id: str, conninfo: str) -> dict[str, int]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="生成幂等的 IT 服务台演示种子数据")
     parser.add_argument("--tenant", default=DEFAULT_TENANT, help="演示租户 ID（默认 demo）")
-    parser.add_argument("--database-url", default=None, help="PostgreSQL 连接串（默认读 DATABASE_URL / .env）")
+    parser.add_argument(
+        "--database-url", default=None, help="PostgreSQL 连接串（默认读 DATABASE_URL / .env）"
+    )
     args = parser.parse_args()
 
     load_dotenv()
@@ -290,9 +383,13 @@ def main() -> None:
         print(f"   - {key}: {value}")
     print()
     print("演示账号（开发令牌，AUTH_MODE=dev，租户与种子一致）：")
-    print(f'  uv run python -m backend.issue_dev_token {args.tenant} customer-1 --role helpdesk-customer')
-    print(f'  uv run python -m backend.issue_dev_token {args.tenant} agent-1 --role helpdesk-agent')
-    print(f'  uv run python -m backend.issue_dev_token {args.tenant} admin-1 --role helpdesk-it-admin')
+    print(
+        f"  uv run python -m backend.issue_dev_token {args.tenant} customer-1 --role helpdesk-customer"
+    )
+    print(f"  uv run python -m backend.issue_dev_token {args.tenant} agent-1 --role helpdesk-agent")
+    print(
+        f"  uv run python -m backend.issue_dev_token {args.tenant} admin-1 --role helpdesk-it-admin"
+    )
     print()
     print("客户 customer-1 的资产：laptop-001（笔记本）、desktop-001、monitor-001。")
     print("演示入口：frontend 登录后选择「新建」，提交「VPN 无法连接」工单并绑定 laptop-001。")

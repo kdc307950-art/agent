@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from .channel_adapters import NormalizedChannelEvent
@@ -92,28 +92,51 @@ class InboundWorker:
             if result.get("resumed") is True:
                 await safe_incr(self.worker_metrics, "wecom_resume_total", {"result": "resumed"})
             elif result.get("resumed") is False:
-                await safe_incr(self.worker_metrics, "wecom_resume_total", {"result": str(result.get("reason") or "noop")})
+                await safe_incr(
+                    self.worker_metrics,
+                    "wecom_resume_total",
+                    {"result": str(result.get("reason") or "noop")},
+                )
         except Exception as exc:
             error_code = getattr(exc, "error_code", None) or type(exc).__name__
             error_code_log = error_code
             if attempts >= self.max_attempts:
                 await self.runtime.tickets.fail_inbound_event(
-                    tenant_id, event_id, worker_id=self.worker_id, error_code=error_code, retry_at=None
+                    tenant_id,
+                    event_id,
+                    worker_id=self.worker_id,
+                    error_code=error_code,
+                    retry_at=None,
                 )
                 status = "dead"
-                await safe_incr(self.worker_metrics, "inbound_worker_dead_total", {"channel": channel})
+                await safe_incr(
+                    self.worker_metrics, "inbound_worker_dead_total", {"channel": channel}
+                )
             else:
-                retry_at = datetime.now(timezone.utc) + timedelta(
+                retry_at = datetime.now(UTC) + timedelta(
                     seconds=self.backoff_base_seconds * (2 ** (attempts - 1))
                 )
                 await self.runtime.tickets.fail_inbound_event(
-                    tenant_id, event_id, worker_id=self.worker_id, error_code=error_code, retry_at=retry_at
+                    tenant_id,
+                    event_id,
+                    worker_id=self.worker_id,
+                    error_code=error_code,
+                    retry_at=retry_at,
                 )
                 status = "failed"
-                await safe_incr(self.worker_metrics, "inbound_worker_retry_total", {"channel": channel})
+                await safe_incr(
+                    self.worker_metrics, "inbound_worker_retry_total", {"channel": channel}
+                )
         duration_ms = (time.perf_counter() - started) * 1000
-        await safe_incr(self.worker_metrics, "inbound_events_total", {"channel": channel, "status": status})
-        await safe_observe(self.worker_metrics, "inbound_event_processing_seconds", duration_ms / 1000, {"channel": channel})
+        await safe_incr(
+            self.worker_metrics, "inbound_events_total", {"channel": channel, "status": status}
+        )
+        await safe_observe(
+            self.worker_metrics,
+            "inbound_event_processing_seconds",
+            duration_ms / 1000,
+            {"channel": channel},
+        )
         logger.info(
             "inbound_event_processed",
             extra={
@@ -131,7 +154,9 @@ class InboundWorker:
             },
         )
 
-    async def run_forever(self, *, poll_interval_seconds: float = 1.0, stop_event: asyncio.Event | None = None) -> None:
+    async def run_forever(
+        self, *, poll_interval_seconds: float = 1.0, stop_event: asyncio.Event | None = None
+    ) -> None:
         stop_event = stop_event or asyncio.Event()
         consecutive_failures = 0
         while not stop_event.is_set():
@@ -141,19 +166,26 @@ class InboundWorker:
             except Exception:
                 # 单轮失败（含 DB 领取阶段不可用）不终止常驻进程：记录 + 计数 + 退避后继续下一轮。
                 consecutive_failures += 1
-                await safe_incr(self.worker_metrics, "worker_loop_errors_total", {"worker": "inbound"})
+                await safe_incr(
+                    self.worker_metrics, "worker_loop_errors_total", {"worker": "inbound"}
+                )
                 logger.exception(
                     "worker_round_failed",
-                    extra={"ctx": {"worker_type": "inbound", "consecutive_failures": consecutive_failures}},
+                    extra={
+                        "ctx": {
+                            "worker_type": "inbound",
+                            "consecutive_failures": consecutive_failures,
+                        }
+                    },
                 )
                 backoff = min(poll_interval_seconds * (2 ** (consecutive_failures - 1)), 30.0)
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=backoff)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
                 continue
             await safe_beat(self.worker_metrics, "inbound", self.worker_id)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=poll_interval_seconds)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass

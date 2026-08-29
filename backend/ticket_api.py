@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -11,26 +10,22 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from langgraph.types import Command
-
 from src.my_agent.helpdesk import (
     ActorType,
     InvalidTicketTransition,
-    PendingTicketInterrupt,
     TicketAction,
     TicketCommand,
     TicketPermissionDenied,
     TicketResumeCommand,
     TicketStatus,
-    validate_resume_command,
 )
 
 from .channel_adapters import (
     DingTalkWebhookAdapter,
     IgnoreWebhookEvent,
     NormalizedChannelEvent,
-    WeComWebhookAdapter,
     WebhookVerificationError,
+    WeComWebhookAdapter,
 )
 from .security import Principal, enforce_rate_limit, rate_limit_dependency
 from .ticket_intake import (
@@ -58,7 +53,6 @@ from .tickets import (
     UpsertItPolicy,
 )
 
-
 router = APIRouter(prefix="/tickets", tags=["tickets"])
 channel_router = APIRouter(prefix="/integrations", tags=["integrations"])
 admin_router = APIRouter(prefix="/admin/it", tags=["admin-it"])
@@ -73,13 +67,17 @@ class BindAssetRequest(BaseModel):
 class CreateTicketRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    ticket_id: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+    ticket_id: str | None = Field(
+        default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$"
+    )
     channel: str = Field(default="web", min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_.-]+$")
     external_ticket_id: str | None = Field(default=None, min_length=1, max_length=256)
     title: str = Field(min_length=1, max_length=512)
     description: str = Field(default="", max_length=8_000)
     priority: Literal["low", "normal", "high", "urgent"] = "normal"
-    asset_id: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+    asset_id: str | None = Field(
+        default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$"
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -211,7 +209,9 @@ def _event_payload(event: NormalizedChannelEvent) -> dict[str, Any]:
     }
 
 
-async def _ack_channel_event(runtime, event: NormalizedChannelEvent, *, actor_id: str) -> dict[str, Any]:
+async def _ack_channel_event(
+    runtime, event: NormalizedChannelEvent, *, actor_id: str
+) -> dict[str, Any]:
     """渠道入站快速 ACK：只登记事件（received）并返回，业务由 InboundWorker 异步执行。
 
     幂等：同 (tenant, channel, external_event_id) 重复登记返回原记录（created=False）。
@@ -231,7 +231,16 @@ def _map_domain_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, TicketPermissionDenied):
         return HTTPException(status_code=403, detail=str(exc))
-    if isinstance(exc, (TicketAlreadyExists, TicketVersionConflict, TicketCapacityExceeded, InboundEventConflict, InvalidTicketTransition)):
+    if isinstance(
+        exc,
+        (
+            TicketAlreadyExists,
+            TicketVersionConflict,
+            TicketCapacityExceeded,
+            InboundEventConflict,
+            InvalidTicketTransition,
+        ),
+    ):
         return HTTPException(status_code=409, detail=str(exc))
     return HTTPException(status_code=500, detail="工单服务内部错误")
 
@@ -289,7 +298,11 @@ async def list_tickets_api(
         statuses=tuple(statuses),
         category=category,
         assigned_team_id=assigned_team_id if is_agent else None,
-        assigned_user_id=(principal.user_id if assigned_user_id == "current_user" else assigned_user_id) if is_agent else None,
+        assigned_user_id=(
+            (principal.user_id if assigned_user_id == "current_user" else assigned_user_id)
+            if is_agent
+            else None
+        ),
         priority=priority if is_agent else None,
         query_text=q,
         updated_before=_decode_cursor(cursor),
@@ -330,10 +343,14 @@ async def get_ticket_overview(
         raise HTTPException(status_code=403, detail="缺少工单读取权限")
     runtime = _runtime(request)
     ticket = await runtime.tickets.get(principal.tenant_id, ticket_id)
-    if ticket is None or ("ticket:agent" not in principal.scopes and ticket.requester_id != principal.user_id):
+    if ticket is None or (
+        "ticket:agent" not in principal.scopes and ticket.requester_id != principal.user_id
+    ):
         raise HTTPException(status_code=404, detail="工单不存在")
     overview = await runtime.ticket_operations.get_ticket_overview(principal.tenant_id, ticket_id)
-    overview["status_events"] = await runtime.tickets.list_status_events(principal.tenant_id, ticket_id)
+    overview["status_events"] = await runtime.tickets.list_status_events(
+        principal.tenant_id, ticket_id
+    )
     return overview
 
 
@@ -347,7 +364,9 @@ async def get_pending_ticket_interrupt(
         raise HTTPException(status_code=403, detail="缺少工单读取权限")
     runtime = _runtime(request)
     ticket = await runtime.tickets.get(principal.tenant_id, ticket_id)
-    if ticket is None or ("ticket:agent" not in principal.scopes and ticket.requester_id != principal.user_id):
+    if ticket is None or (
+        "ticket:agent" not in principal.scopes and ticket.requester_id != principal.user_id
+    ):
         raise HTTPException(status_code=404, detail="工单不存在")
     return {"interrupt": await _pending_intake_interrupt(runtime, principal.tenant_id, ticket_id)}
 
@@ -363,7 +382,9 @@ async def get_ticket_intake_status(
         raise HTTPException(status_code=403, detail="缺少工单读取权限")
     runtime = _runtime(request)
     ticket = await runtime.tickets.get(principal.tenant_id, ticket_id)
-    if ticket is None or ("ticket:agent" not in principal.scopes and ticket.requester_id != principal.user_id):
+    if ticket is None or (
+        "ticket:agent" not in principal.scopes and ticket.requester_id != principal.user_id
+    ):
         raise HTTPException(status_code=404, detail="工单不存在")
     pending = await runtime.tickets.get_pending_intake(principal.tenant_id, ticket_id)
     return {
@@ -391,7 +412,13 @@ async def start_ticket_intake(
             tenant_id=principal.tenant_id, ticket_id=ticket_id, operation_id=payload.operation_id
         )
         if existing is not None and existing["status"] == "committed":
-            return {"ticket": ticket, "state": {}, "interrupt": await _pending_intake_interrupt(runtime, principal.tenant_id, ticket_id)}
+            return {
+                "ticket": ticket,
+                "state": {},
+                "interrupt": await _pending_intake_interrupt(
+                    runtime, principal.tenant_id, ticket_id
+                ),
+            }
         raise HTTPException(status_code=409, detail="工单版本已变化，请刷新后重试")
     try:
         run = await runtime.tickets.start_workflow_operation(
@@ -400,10 +427,18 @@ async def start_ticket_intake(
             operation_id=payload.operation_id,
             command_type="intake",
             expected_version=ticket.version,
-            checkpoint_thread_id=_intake_config(principal.tenant_id, ticket_id)["configurable"]["thread_id"],
+            checkpoint_thread_id=_intake_config(principal.tenant_id, ticket_id)["configurable"][
+                "thread_id"
+            ],
         )
         if run["status"] == "committed":
-            return {"ticket": ticket, "state": {}, "interrupt": await _pending_intake_interrupt(runtime, principal.tenant_id, ticket_id)}
+            return {
+                "ticket": ticket,
+                "state": {},
+                "interrupt": await _pending_intake_interrupt(
+                    runtime, principal.tenant_id, ticket_id
+                ),
+            }
         if run["intent"] is not None:
             commands = _deserialize_commands(run["intent"])
             result = dict(run["intent"].get("result") or {})
@@ -412,15 +447,62 @@ async def start_ticket_intake(
                 raise InvalidTicketTransition(f"状态 {ticket.status} 不能启动受理")
             config = _intake_config(principal.tenant_id, ticket_id)
             result = await runtime.intake_graph.ainvoke(
-                {"ticket_id": ticket_id, "requester_id": principal.user_id, "text": payload.text, "fields": payload.fields, "clarification_rounds": 0},
+                {
+                    "ticket_id": ticket_id,
+                    "requester_id": principal.user_id,
+                    "text": payload.text,
+                    "fields": payload.fields,
+                    "clarification_rounds": 0,
+                },
                 config,
             )
-            prefix = [] if ticket.status == TicketStatus.INTAKING else [TicketCommand(ticket_id=ticket_id, action=TicketAction.START_INTAKE, actor_type=ActorType.SYSTEM, actor_id="intake-agent", expected_version=ticket.version)]
+            prefix = (
+                []
+                if ticket.status == TicketStatus.INTAKING
+                else [
+                    TicketCommand(
+                        ticket_id=ticket_id,
+                        action=TicketAction.START_INTAKE,
+                        actor_type=ActorType.SYSTEM,
+                        actor_id="intake-agent",
+                        expected_version=ticket.version,
+                    )
+                ]
+            )
             next_version = ticket.version + len(prefix)
-            commands = [*prefix, *_intake_outcome_commands(ticket_id=ticket_id, actor_id="intake-agent", expected_version=next_version, result=result)]
-            commands = await _apply_operational_routing(runtime, commands, result, tenant_id=principal.tenant_id, channel=getattr(ticket, "channel", "web"))
-            await runtime.tickets.record_workflow_intent(tenant_id=principal.tenant_id, ticket_id=ticket_id, operation_id=payload.operation_id, intent={"commands": _serialize_commands(commands), "result": {key: value for key, value in result.items() if key != "__interrupt__"}})
-        ticket = await runtime.tickets.transition_many(principal.tenant_id, commands, scopes={"ticket:system"}, operation_id=payload.operation_id)
+            commands = [
+                *prefix,
+                *_intake_outcome_commands(
+                    ticket_id=ticket_id,
+                    actor_id="intake-agent",
+                    expected_version=next_version,
+                    result=result,
+                ),
+            ]
+            commands = await _apply_operational_routing(
+                runtime,
+                commands,
+                result,
+                tenant_id=principal.tenant_id,
+                channel=getattr(ticket, "channel", "web"),
+            )
+            await runtime.tickets.record_workflow_intent(
+                tenant_id=principal.tenant_id,
+                ticket_id=ticket_id,
+                operation_id=payload.operation_id,
+                intent={
+                    "commands": _serialize_commands(commands),
+                    "result": {
+                        key: value for key, value in result.items() if key != "__interrupt__"
+                    },
+                },
+            )
+        ticket = await runtime.tickets.transition_many(
+            principal.tenant_id,
+            commands,
+            scopes={"ticket:system"},
+            operation_id=payload.operation_id,
+        )
         if ticket.status in {TicketStatus.QUEUED, TicketStatus.ASSIGNED}:
             await runtime.ticket_operations.ensure_sla_for_ticket(
                 tenant_id=principal.tenant_id,
@@ -428,7 +510,9 @@ async def start_ticket_intake(
                 channel=getattr(ticket, "channel", "web"),
                 category=getattr(ticket, "category", None),
             )
-        snapshot = await runtime.intake_graph.aget_state(_intake_config(principal.tenant_id, ticket_id))
+        snapshot = await runtime.intake_graph.aget_state(
+            _intake_config(principal.tenant_id, ticket_id)
+        )
         return _serialize_intake_result(ticket, result, snapshot)
     except Exception as exc:
         raise _map_domain_error(exc) from exc
@@ -455,7 +539,13 @@ async def resume_ticket_intake(
             tenant_id=principal.tenant_id, ticket_id=ticket_id, operation_id=payload.operation_id
         )
         if existing is not None and existing["status"] == "committed":
-            return {"ticket": ticket, "state": {}, "interrupt": await _pending_intake_interrupt(runtime, principal.tenant_id, ticket_id)}
+            return {
+                "ticket": ticket,
+                "state": {},
+                "interrupt": await _pending_intake_interrupt(
+                    runtime, principal.tenant_id, ticket_id
+                ),
+            }
         raise HTTPException(status_code=409, detail="工单版本已变化，请刷新后重试")
     try:
         server_command = payload.model_copy(update={"actor_id": principal.user_id})
@@ -470,8 +560,17 @@ async def resume_ticket_intake(
             scopes=set(principal.scopes),
             channel=getattr(ticket, "channel", "web"),
         )
-        return {"ticket": outcome["ticket"], "state": outcome["result"], "interrupt": outcome["interrupt"]}
-    except (ValueError, TicketPermissionDenied, TicketVersionConflict, InvalidTicketTransition) as exc:
+        return {
+            "ticket": outcome["ticket"],
+            "state": outcome["result"],
+            "interrupt": outcome["interrupt"],
+        }
+    except (
+        ValueError,
+        TicketPermissionDenied,
+        TicketVersionConflict,
+        InvalidTicketTransition,
+    ) as exc:
         if isinstance(exc, TicketPermissionDenied):
             code = 403
         else:
@@ -495,7 +594,7 @@ async def create_ticket_survey(
         tenant_id=principal.tenant_id,
         ticket_id=ticket_id,
         survey_id=survey_id,
-        expires_at=datetime.now(timezone.utc) + timedelta(days=payload.expires_in_days),
+        expires_at=datetime.now(UTC) + timedelta(days=payload.expires_in_days),
         outbox_event_id=f"survey-{survey_id}",
     )
     if not created:
@@ -562,9 +661,13 @@ async def transition_ticket_api(
             scopes=principal.scopes,
         )
         if updated.status == TicketStatus.AWAITING_CUSTOMER:
-            await runtime.ticket_operations.pause_sla(principal.tenant_id, ticket_id, reason="awaiting_customer")
+            await runtime.ticket_operations.pause_sla(
+                principal.tenant_id, ticket_id, reason="awaiting_customer"
+            )
         elif updated.status in {TicketStatus.IN_PROGRESS, TicketStatus.RESOLVED}:
-            await runtime.ticket_operations.resume_sla(principal.tenant_id, ticket_id, resumed_at=datetime.now(timezone.utc))
+            await runtime.ticket_operations.resume_sla(
+                principal.tenant_id, ticket_id, resumed_at=datetime.now(UTC)
+            )
             await runtime.ticket_operations.mark_first_response(principal.tenant_id, ticket_id)
         return updated
     except Exception as exc:
@@ -578,7 +681,11 @@ async def list_dead_outbox_events(
     principal: Principal = Depends(rate_limit_dependency),
 ):
     _require_scope(principal, "ticket:agent")
-    return {"items": await _runtime(request).ticket_operations.list_dead_outbox(tenant_id=principal.tenant_id, limit=limit)}
+    return {
+        "items": await _runtime(request).ticket_operations.list_dead_outbox(
+            tenant_id=principal.tenant_id, limit=limit
+        )
+    }
 
 
 @channel_router.post("/outbox/replay")
@@ -588,7 +695,9 @@ async def replay_dead_outbox_event(
     principal: Principal = Depends(rate_limit_dependency),
 ):
     _require_scope(principal, "ticket:agent")
-    replayed = await _runtime(request).ticket_operations.replay_dead_outbox(principal.tenant_id, payload.event_id)
+    replayed = await _runtime(request).ticket_operations.replay_dead_outbox(
+        principal.tenant_id, payload.event_id
+    )
     if not replayed:
         raise HTTPException(status_code=404, detail="死信事件不存在")
     return {"event_id": payload.event_id, "status": "pending"}
@@ -663,7 +772,14 @@ async def verify_wecom_webhook(
     只做验证与解密，不建单、不访问业务表；失败统一 401（不暴露配置差异）。
     """
     settings = request.app.state.settings
-    if not all((settings.wecom_tenant_id, settings.wecom_token, settings.wecom_encoding_aes_key, settings.wecom_corp_id)):
+    if not all(
+        (
+            settings.wecom_tenant_id,
+            settings.wecom_token,
+            settings.wecom_encoding_aes_key,
+            settings.wecom_corp_id,
+        )
+    ):
         raise HTTPException(status_code=503, detail="企业微信 Webhook 未配置")
     adapter = WeComWebhookAdapter(
         tenant_id=settings.wecom_tenant_id,
@@ -693,7 +809,14 @@ async def receive_wecom_webhook(
     msg_signature: str = Query(min_length=1, max_length=128),
 ):
     settings = request.app.state.settings
-    if not all((settings.wecom_tenant_id, settings.wecom_token, settings.wecom_encoding_aes_key, settings.wecom_corp_id)):
+    if not all(
+        (
+            settings.wecom_tenant_id,
+            settings.wecom_token,
+            settings.wecom_encoding_aes_key,
+            settings.wecom_corp_id,
+        )
+    ):
         raise HTTPException(status_code=503, detail="企业微信 Webhook 未配置")
     adapter = WeComWebhookAdapter(
         tenant_id=settings.wecom_tenant_id,
@@ -751,6 +874,7 @@ async def receive_dingtalk_webhook(
 
 
 # ========== IT 策略管理（/admin/it/policies） ==========
+
 
 @admin_router.get("/pending-intakes")
 async def list_pending_intakes(
@@ -841,6 +965,7 @@ async def upsert_it_policy(
 
 
 # ========== 工单资产绑定（POST/DELETE /tickets/{ticket_id}/asset） ==========
+
 
 @router.post("/{ticket_id}/asset")
 async def bind_ticket_asset(

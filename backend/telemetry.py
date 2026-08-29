@@ -18,9 +18,9 @@ class Telemetry:
 
     def __init__(self, app) -> None:
         self.app = app
-        self._instrumented = bool(os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()) or os.getenv(
-            "OTEL_TRACES_ENABLED", "false"
-        ).lower() in {"1", "true", "yes"}
+        self._instrumented = bool(
+            os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+        ) or os.getenv("OTEL_TRACES_ENABLED", "false").lower() in {"1", "true", "yes"}
         service_name = os.getenv("OTEL_SERVICE_NAME", "langgraph-agent")
         resource = Resource.create(
             {

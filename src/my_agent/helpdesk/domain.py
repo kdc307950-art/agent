@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -86,17 +87,29 @@ _TRANSITIONS = MappingProxyType(
         (TicketStatus.CLASSIFIED, TicketAction.PROPOSE_ANSWER): TicketStatus.ANSWER_PROPOSED,
         (TicketStatus.CLASSIFIED, TicketAction.QUEUE): TicketStatus.QUEUED,
         (TicketStatus.CLASSIFIED, TicketAction.CANCEL): TicketStatus.CANCELLED,
-        (TicketStatus.ANSWER_PROPOSED, TicketAction.REQUEST_CONFIRMATION): TicketStatus.AWAITING_CUSTOMER_CONFIRMATION,
+        (
+            TicketStatus.ANSWER_PROPOSED,
+            TicketAction.REQUEST_CONFIRMATION,
+        ): TicketStatus.AWAITING_CUSTOMER_CONFIRMATION,
         (TicketStatus.ANSWER_PROPOSED, TicketAction.QUEUE): TicketStatus.QUEUED,
-        (TicketStatus.AWAITING_CUSTOMER_CONFIRMATION, TicketAction.CONFIRM_RESOLVED): TicketStatus.RESOLVED,
-        (TicketStatus.AWAITING_CUSTOMER_CONFIRMATION, TicketAction.REPORT_UNRESOLVED): TicketStatus.QUEUED,
+        (
+            TicketStatus.AWAITING_CUSTOMER_CONFIRMATION,
+            TicketAction.CONFIRM_RESOLVED,
+        ): TicketStatus.RESOLVED,
+        (
+            TicketStatus.AWAITING_CUSTOMER_CONFIRMATION,
+            TicketAction.REPORT_UNRESOLVED,
+        ): TicketStatus.QUEUED,
         (TicketStatus.AWAITING_CUSTOMER_CONFIRMATION, TicketAction.CANCEL): TicketStatus.CANCELLED,
         (TicketStatus.QUEUED, TicketAction.ASSIGN): TicketStatus.ASSIGNED,
         (TicketStatus.QUEUED, TicketAction.CANCEL): TicketStatus.CANCELLED,
         (TicketStatus.ASSIGNED, TicketAction.START_WORK): TicketStatus.IN_PROGRESS,
         (TicketStatus.ASSIGNED, TicketAction.QUEUE): TicketStatus.QUEUED,
         (TicketStatus.ASSIGNED, TicketAction.CANCEL): TicketStatus.CANCELLED,
-        (TicketStatus.IN_PROGRESS, TicketAction.REQUEST_INFORMATION): TicketStatus.AWAITING_CUSTOMER,
+        (
+            TicketStatus.IN_PROGRESS,
+            TicketAction.REQUEST_INFORMATION,
+        ): TicketStatus.AWAITING_CUSTOMER,
         (TicketStatus.IN_PROGRESS, TicketAction.REQUEST_APPROVAL): TicketStatus.AWAITING_APPROVAL,
         (TicketStatus.IN_PROGRESS, TicketAction.RESOLVE): TicketStatus.RESOLVED,
         (TicketStatus.IN_PROGRESS, TicketAction.QUEUE): TicketStatus.QUEUED,
@@ -178,13 +191,11 @@ class PendingTicketInterrupt(BaseModel):
     allowed_actions: frozenset[ResumeAction] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def actions_must_match_actor(self) -> "PendingTicketInterrupt":
+    def actions_must_match_actor(self) -> PendingTicketInterrupt:
         for action in self.allowed_actions:
             ticket_action = _RESUME_TO_TICKET_ACTION[action]
             if self.expected_actor not in _ACTION_ACTORS[ticket_action]:
-                raise ValueError(
-                    f"恢复动作 {action} 不允许由 {self.expected_actor} 执行"
-                )
+                raise ValueError(f"恢复动作 {action} 不允许由 {self.expected_actor} 执行")
         return self
 
 
@@ -276,9 +287,5 @@ def validate_resume_command(
 
 def allowed_actions(status: TicketStatus) -> Mapping[TicketAction, TicketStatus]:
     return MappingProxyType(
-        {
-            action: target
-            for (source, action), target in _TRANSITIONS.items()
-            if source == status
-        }
+        {action: target for (source, action), target in _TRANSITIONS.items() if source == status}
     )

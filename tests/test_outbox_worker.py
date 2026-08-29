@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from backend.outbox_worker import OutboxWorker, TransientDeliveryError
 
@@ -11,7 +11,9 @@ class FakeRepository:
         self.failed = []
 
     async def claim_outbox(self, *, worker_id, lease_seconds, limit, tenant_id=None):
-        return [event for event in self.events if tenant_id is None or event["tenant_id"] == tenant_id][:limit]
+        return [
+            event for event in self.events if tenant_id is None or event["tenant_id"] == tenant_id
+        ][:limit]
 
     async def renew_outbox_lease(self, tenant_id, event_id, *, worker_id, lease_seconds):
         return True
@@ -51,7 +53,7 @@ def test_worker_delivers_success_and_marks_unknown_type_dead():
     sender = Sender()
     worker = OutboxWorker(repository, {"ticket_message.send": sender})
 
-    result = asyncio.run(worker.run_once(now=datetime(2026, 1, 1, tzinfo=timezone.utc)))
+    result = asyncio.run(worker.run_once(now=datetime(2026, 1, 1, tzinfo=UTC)))
 
     assert result.claimed == 2
     assert result.delivered == 1
@@ -62,16 +64,20 @@ def test_worker_delivers_success_and_marks_unknown_type_dead():
 
 
 def test_transient_failure_retries_with_backoff_then_becomes_dead():
-    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
     retry_repository = FakeRepository([event("retry", attempts=2)])
     dead_repository = FakeRepository([event("dead", attempts=5)])
     sender = Sender(TransientDeliveryError("temporary"))
 
     retried = asyncio.run(
-        OutboxWorker(retry_repository, {"ticket_message.send": sender}, max_attempts=5).run_once(now=now)
+        OutboxWorker(retry_repository, {"ticket_message.send": sender}, max_attempts=5).run_once(
+            now=now
+        )
     )
     dead = asyncio.run(
-        OutboxWorker(dead_repository, {"ticket_message.send": sender}, max_attempts=5).run_once(now=now)
+        OutboxWorker(dead_repository, {"ticket_message.send": sender}, max_attempts=5).run_once(
+            now=now
+        )
     )
 
     assert retried.retried == 1
@@ -86,7 +92,7 @@ def test_permanent_sender_failure_is_not_retried():
 
     result = asyncio.run(
         OutboxWorker(repository, {"ticket_message.send": sender}).run_once(
-            now=datetime(2026, 1, 1, tzinfo=timezone.utc)
+            now=datetime(2026, 1, 1, tzinfo=UTC)
         )
     )
 

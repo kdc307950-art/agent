@@ -21,7 +21,6 @@ import pytest
 from backend.inbound_worker import InboundWorker
 from backend.outbox_worker import OutboxWorker
 
-
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 
 
@@ -136,6 +135,7 @@ async def _run_with_stop(coro_factory, *, seconds: float = 0.15):
 
 # ---------- 不依赖 PostgreSQL 的隔离用例 ----------
 
+
 def test_claim_failure_does_not_kill_run_forever():
     """claim 阶段 DB 故障：run_forever 不退出，记录 worker_loop_errors_total 后继续下一轮。"""
     tickets = FlakyTickets(failures=2)
@@ -154,7 +154,9 @@ def test_claim_failure_does_not_kill_run_forever():
 def test_heartbeat_failure_does_not_kill_run_forever():
     """心跳写入失败：进程不退出，循环持续直到 stop_event。"""
     metrics = ExplodingMetrics()
-    worker = InboundWorker(FakeRuntime(FlakyTickets(failures=0)), batch_size=10, worker_metrics=metrics)
+    worker = InboundWorker(
+        FakeRuntime(FlakyTickets(failures=0)), batch_size=10, worker_metrics=metrics
+    )
 
     async def run(stop_event):
         await worker.run_forever(poll_interval_seconds=0.01, stop_event=stop_event)
@@ -178,6 +180,7 @@ def test_outbox_backlog_query_failure_does_not_kill_loop_and_never_fake_zero():
 
 
 # ---------- 依赖 PostgreSQL 的隔离用例 ----------
+
 
 @pytest.mark.skipif(not _db_reachable(), reason="TEST_DATABASE_URL 不可达（PostgreSQL 未运行）")
 def test_metrics_failure_does_not_change_inbound_commit(monkeypatch):

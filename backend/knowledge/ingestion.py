@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol, Sequence
+from typing import Protocol
 
 from .models import KnowledgeChunkInput, KnowledgeDocumentInput, RetrievalPrincipal
 from .pgvector import PgVectorRetriever
@@ -37,7 +38,10 @@ class KnowledgeIngestionService:
         self.embedder = embedder
         self.embedding_model = embedding_model
         self.policy = policy or IngestionPolicy()
-        if self.policy.chunk_chars < 200 or not 0 <= self.policy.overlap_chars < self.policy.chunk_chars:
+        if (
+            self.policy.chunk_chars < 200
+            or not 0 <= self.policy.overlap_chars < self.policy.chunk_chars
+        ):
             raise ValueError("知识切片参数无效")
 
     def clean_text(self, text: str) -> str:
@@ -85,7 +89,9 @@ class KnowledgeIngestionService:
             document.model_copy(update={"status": "draft"}),
             chunks,
         )
-        principal = RetrievalPrincipal(tenant_id=tenant_id, departments=set(document.allowed_departments))
+        principal = RetrievalPrincipal(
+            tenant_id=tenant_id, departments=frozenset(document.allowed_departments)
+        )
         for chunk, embedding in zip(chunks, embeddings, strict=True):
             await self.vector.put_embedding(
                 principal,

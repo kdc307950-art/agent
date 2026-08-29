@@ -8,13 +8,14 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import Any
 
-from psycopg import AsyncConnection
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres.aio import AsyncPostgresStore
+from psycopg import AsyncConnection
 
 from src.my_agent.agent import build_agent
 from src.my_agent.helpdesk import build_helpdesk_intake_graph
@@ -38,7 +39,12 @@ from .metrics import RuntimeMetrics
 from .repositories import LongTermMemoryRepository
 from .schema import check_schema_ready, ensure_schema_version
 from .settings import Settings
-from .tickets import ItPolicyRepository, RoutingRepository, TicketOperationsRepository, TicketRepository
+from .tickets import (
+    ItPolicyRepository,
+    RoutingRepository,
+    TicketOperationsRepository,
+    TicketRepository,
+)
 from .tool_governance import ToolGovernance
 from .workflow_loader import load_workflow_spec
 
@@ -116,9 +122,7 @@ async def runtime_context(
         store = await stack.enter_async_context(
             AsyncPostgresStore.from_conn_string(settings.database_url)
         )
-        audit = await stack.enter_async_context(
-            audit_context(settings.database_url)
-        )
+        audit = await stack.enter_async_context(audit_context(settings.database_url))
         if settings.auto_setup:
             await checkpointer.setup()
             await store.setup()
@@ -148,11 +152,8 @@ async def runtime_context(
                 base_url=settings.llm_base_url,
                 model=settings.llm_model,
             )
-            vector_retriever = NullVectorRetriever()
-            if (
-                settings.knowledge_embedding_endpoint
-                and settings.knowledge_embedding_dimension
-            ):
+            vector_retriever: Any = NullVectorRetriever()
+            if settings.knowledge_embedding_endpoint and settings.knowledge_embedding_dimension:
                 vector_retriever = PgVectorRetriever(
                     knowledge,
                     HttpEmbeddingProvider(
@@ -165,7 +166,9 @@ async def runtime_context(
                 knowledge,
                 vector_retriever,
                 generator,
-                gate_policy=AnswerGatePolicy(require_both_retrievers=True, sensitive_categories=frozenset({"finance"})),
+                gate_policy=AnswerGatePolicy(
+                    require_both_retrievers=True, sensitive_categories=frozenset({"finance"})
+                ),
             )
             agentic_rag = AgenticRAGService(
                 answer_service,

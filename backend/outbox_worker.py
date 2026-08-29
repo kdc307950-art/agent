@@ -8,10 +8,11 @@ import hmac
 import json
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Any, Protocol
 from uuid import uuid4
-from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping, Protocol
 
 import httpx
 
@@ -116,21 +117,30 @@ class OutboxWorker:
             except Exception:
                 # 单轮失败（含 DB 领取阶段不可用）不终止常驻进程：记录 + 计数 + 退避后继续下一轮。
                 consecutive_failures += 1
-                await safe_incr(self.worker_metrics, "worker_loop_errors_total", {"worker": "outbox"})
+                await safe_incr(
+                    self.worker_metrics, "worker_loop_errors_total", {"worker": "outbox"}
+                )
                 logger.exception(
                     "worker_round_failed",
-                    extra={"ctx": {"worker_type": "outbox", "consecutive_failures": consecutive_failures}},
+                    extra={
+                        "ctx": {
+                            "worker_type": "outbox",
+                            "consecutive_failures": consecutive_failures,
+                        }
+                    },
                 )
                 backoff = min(poll_interval_seconds * (2 ** (consecutive_failures - 1)), 30.0)
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=backoff)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
                 continue
             await safe_beat(self.worker_metrics, "outbox", self.worker_id)
             if self.worker_metrics is not None:
                 try:
-                    dead = (await self.worker_metrics.check_outbox_backlog(self.repository.pool))["dead"]
+                    dead = (await self.worker_metrics.check_outbox_backlog(self.repository.pool))[
+                        "dead"
+                    ]
                 except Exception:
                     # 查询失败时不假设 dead=0：故障期间死信指标不得假 0，只记录错误计数。
                     await safe_incr(self.worker_metrics, "outbox_backlog_check_errors_total")
@@ -139,7 +149,7 @@ class OutboxWorker:
                     await safe_incr(self.worker_metrics, "outbox_dead_present_total")
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=poll_interval_seconds)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
 
     async def _send_with_heartbeat(self, event: Mapping[str, Any], sender: OutboxSender) -> None:
@@ -152,7 +162,7 @@ class OutboxWorker:
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=interval)
                     break
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     renewed = await self.repository.renew_outbox_lease(
                         event["tenant_id"],
                         event["event_id"],
@@ -180,7 +190,7 @@ class OutboxWorker:
         now: datetime | None = None,
         tenant_id: str | None = None,
     ) -> OutboxRunResult:
-        reference = now or datetime.now(timezone.utc)
+        reference = now or datetime.now(UTC)
         events = await self.repository.claim_outbox(
             worker_id=self.worker_id,
             lease_seconds=self.lease_seconds,
@@ -191,27 +201,54 @@ class OutboxWorker:
         for event in events:
             sender = self.senders.get(str(event["event_type"]))
             if sender is None:
-                await self.repository.fail_outbox(event["tenant_id"], event["event_id"], worker_id=self.worker_id, error_code="unsupported_event_type", retry_at=None)
+                await self.repository.fail_outbox(
+                    event["tenant_id"],
+                    event["event_id"],
+                    worker_id=self.worker_id,
+                    error_code="unsupported_event_type",
+                    retry_at=None,
+                )
                 dead += 1
                 continue
             try:
                 await self._send_with_heartbeat(event, sender)
             except TransientDeliveryError as exc:
                 attempts = int(event.get("attempts", 1))
-                retry_at = reference + timedelta(seconds=min(2 ** (attempts - 1), 300)) if attempts < self.max_attempts else None
-                await self.repository.fail_outbox(event["tenant_id"], event["event_id"], worker_id=self.worker_id, error_code=type(exc).__name__, retry_at=retry_at)
+                retry_at = (
+                    reference + timedelta(seconds=min(2 ** (attempts - 1), 300))
+                    if attempts < self.max_attempts
+                    else None
+                )
+                await self.repository.fail_outbox(
+                    event["tenant_id"],
+                    event["event_id"],
+                    worker_id=self.worker_id,
+                    error_code=type(exc).__name__,
+                    retry_at=retry_at,
+                )
                 if retry_at is None:
                     dead += 1
                 else:
                     retried += 1
             except Exception as exc:
-                await self.repository.fail_outbox(event["tenant_id"], event["event_id"], worker_id=self.worker_id, error_code=type(exc).__name__, retry_at=None)
+                await self.repository.fail_outbox(
+                    event["tenant_id"],
+                    event["event_id"],
+                    worker_id=self.worker_id,
+                    error_code=type(exc).__name__,
+                    retry_at=None,
+                )
                 dead += 1
             else:
-                await self.repository.complete_outbox(event["tenant_id"], event["event_id"], worker_id=self.worker_id)
+                await self.repository.complete_outbox(
+                    event["tenant_id"], event["event_id"], worker_id=self.worker_id
+                )
                 delivered += 1
         self.metrics.increment("outbox_claimed_total", len(events))
-        self.metrics.increment("outbox_lease_recovered_total", sum(bool(event.get("lease_recovered")) for event in events))
+        self.metrics.increment(
+            "outbox_lease_recovered_total",
+            sum(bool(event.get("lease_recovered")) for event in events),
+        )
         self.metrics.increment("outbox_delivered_total", delivered)
         self.metrics.increment("outbox_retried_total", retried)
         self.metrics.increment("outbox_dead_total", dead)

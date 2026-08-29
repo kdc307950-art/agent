@@ -15,7 +15,6 @@ from backend.knowledge import (
 from backend.tickets import TicketRepository
 from backend.vector_migrations import setup_vector_schema
 
-
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
 
@@ -35,9 +34,11 @@ def test_pgvector_search_enforces_tenant_and_department_acl(monkeypatch):
 
     async def run():
         async with await AsyncConnection.connect(DATABASE_URL) as connection:
-            row = await (await connection.execute(
-                "SELECT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector')"
-            )).fetchone()
+            row = await (
+                await connection.execute(
+                    "SELECT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector')"
+                )
+            ).fetchone()
         if not row[0]:
             return None
         monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
@@ -71,9 +72,7 @@ def test_pgvector_search_enforces_tenant_and_department_acl(monkeypatch):
                     embedding=_EMBEDDING,
                     embedding_model="test-1536",
                 )
-            public = await retriever.search(
-                RetrievalPrincipal(tenant_id=tenant), "query", limit=10
-            )
+            public = await retriever.search(RetrievalPrincipal(tenant_id=tenant), "query", limit=10)
             finance = await retriever.search(
                 RetrievalPrincipal(tenant_id=tenant, departments={"finance"}, internal=True),
                 "query",

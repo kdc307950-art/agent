@@ -16,15 +16,15 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import Any
 
-from psycopg.types.json import Jsonb
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from .run_context import RunContext
-
 
 logger = logging.getLogger("langgraph.audit")
 
@@ -141,7 +141,7 @@ class AuditRepository:
         min_size: int = 1,
         max_size: int = 4,
         payload_limit: int = 2048,
-    ) -> "AuditRepository":
+    ) -> AuditRepository:
         pool = AsyncConnectionPool(
             conninfo,
             min_size=min_size,
@@ -167,11 +167,16 @@ class AuditRepository:
                 await cursor.execute(
                     "SELECT to_regclass('public.agent_runs'), to_regclass('public.agent_events')"
                 )
-                runs, events = await cursor.fetchone()
+                row = await cursor.fetchone()
+                if row is None:
+                    raise RuntimeError("审计表探测查询无结果")
+                runs, events = row
         if runs is None or events is None:
             raise RuntimeError("审计表未初始化，请先运行: uv run python -m backend.migrations")
 
-    async def start_run(self, context: RunContext, *, metadata: dict[str, Any] | None = None) -> None:
+    async def start_run(
+        self, context: RunContext, *, metadata: dict[str, Any] | None = None
+    ) -> None:
         safe_metadata = sanitize_payload(metadata, max_chars=self.payload_limit)
         async with self.pool.connection() as connection:
             async with connection.cursor() as cursor:
@@ -339,7 +344,15 @@ class AuditRepository:
                         tenant_id, user_id, action, resource_type, resource_id, status, detail
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (tenant_id, user_id, action, resource_type, resource_id, status, Jsonb(safe_detail)),
+                    (
+                        tenant_id,
+                        user_id,
+                        action,
+                        resource_type,
+                        resource_id,
+                        status,
+                        Jsonb(safe_detail),
+                    ),
                 )
 
     async def list_admin_events(self, tenant_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
@@ -403,7 +416,9 @@ class NoopAuditRepository:
 
 
 @asynccontextmanager
-async def audit_context(conninfo: str, *, payload_limit: int = 2048) -> AsyncIterator[AuditRepository]:
+async def audit_context(
+    conninfo: str, *, payload_limit: int = 2048
+) -> AsyncIterator[AuditRepository]:
     repository = await AuditRepository.connect(conninfo, payload_limit=payload_limit)
     try:
         yield repository

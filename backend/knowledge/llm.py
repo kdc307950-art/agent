@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Sequence
+from collections.abc import Sequence
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
 from .models import RetrievalHit
 from .service import GeneratedAnswer, GeneratedCitation
@@ -17,13 +18,13 @@ logger = logging.getLogger(__name__)
 
 _SYSTEM_GENERATE = (
     "你是客服知识库回答助手。仅依据提供的上下文回答问题；"
-    "输出严格 JSON：{\"text\": 答案, \"citations\": [{\"document_id\", \"document_version\", \"chunk_id\"}], \"abstained\": bool}。"
+    '输出严格 JSON：{"text": 答案, "citations": [{"document_id", "document_version", "chunk_id"}], "abstained": bool}。'
     "citations 只能引用提供的上下文；没有把握时 abstained 设为 true。"
 )
 
 _SYSTEM_PLAN = (
     "你是客服检索规划器。根据问题和已有检索结果决定是否需要补充检索。"
-    "输出严格 JSON：{\"queries\": [字符串列表]}；不需要补充检索时输出 {\"queries\": []}。"
+    '输出严格 JSON：{"queries": [字符串列表]}；不需要补充检索时输出 {"queries": []}。'
 )
 
 
@@ -35,13 +36,15 @@ def _extract_json(text: str) -> dict:
 
 
 class LlmAnswerGenerator:
-    def __init__(self, *, api_key: str, base_url: str, model: str, temperature: float = 0.1) -> None:
+    def __init__(
+        self, *, api_key: str, base_url: str, model: str, temperature: float = 0.1
+    ) -> None:
         self._client = ChatOpenAI(
-            api_key=api_key,
+            api_key=SecretStr(api_key),
             base_url=base_url,
             model=model,
             temperature=temperature,
-            max_tokens=1200,
+            max_tokens=1200,  # type: ignore[call-arg]  # langchain-openai 1.5.x 透传 kwargs，运行时生效
         )
 
     async def generate(
@@ -50,7 +53,8 @@ class LlmAnswerGenerator:
         contexts: Sequence[RetrievalHit],
     ) -> GeneratedAnswer:
         context_text = "\n---\n".join(
-            f"[{hit.document_id}/{hit.document_version}/{hit.chunk_id}] {hit.content}" for hit in contexts
+            f"[{hit.document_id}/{hit.document_version}/{hit.chunk_id}] {hit.content}"
+            for hit in contexts
         )
         try:
             response = await self._client.ainvoke(
@@ -81,13 +85,15 @@ class LlmAnswerGenerator:
 
 
 class LlmRetrievalPlanner:
-    def __init__(self, *, api_key: str, base_url: str, model: str, temperature: float = 0.0) -> None:
+    def __init__(
+        self, *, api_key: str, base_url: str, model: str, temperature: float = 0.0
+    ) -> None:
         self._client = ChatOpenAI(
-            api_key=api_key,
+            api_key=SecretStr(api_key),
             base_url=base_url,
             model=model,
             temperature=temperature,
-            max_tokens=400,
+            max_tokens=400,  # type: ignore[call-arg]  # langchain-openai 1.5.x 透传 kwargs，运行时生效
         )
 
     async def next_queries(

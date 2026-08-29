@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-import asyncio
 from uuid import uuid4
 
 import httpx
 import pytest
-
 
 RUN_LIVE_E2E = os.getenv("RUN_LIVE_E2E", "false").strip().lower() == "true"
 BASE_URL = os.getenv("LIVE_AGENT_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
@@ -40,7 +39,10 @@ def test_live_text_stream_has_end_event():
             return await client.post(
                 "/chat/stream",
                 headers=_headers(),
-                json={"message": "用一句话回答：2+2 等于多少？", "thread_id": f"live-{uuid4().hex}"},
+                json={
+                    "message": "用一句话回答：2+2 等于多少？",
+                    "thread_id": f"live-{uuid4().hex}",
+                },
             )
 
     response = asyncio.run(run())
@@ -54,6 +56,7 @@ def test_live_text_stream_has_end_event():
 
 def test_live_tool_call_is_governed_and_streamed():
     thread_id = f"live-tool-{uuid4().hex}"
+
     async def run():
         async with httpx.AsyncClient(base_url=BASE_URL, timeout=90.0) as client:
             return await client.post(
@@ -74,6 +77,7 @@ def test_live_tool_call_is_governed_and_streamed():
 
 def test_live_thread_can_continue_after_first_run():
     thread_id = f"live-thread-{uuid4().hex}"
+
     async def run():
         async with httpx.AsyncClient(base_url=BASE_URL, timeout=90.0) as client:
             first = await client.post(
@@ -93,5 +97,7 @@ def test_live_thread_can_continue_after_first_run():
     assert second.status_code == 200, second.text
     second_events = _events(second.text)
     assert second_events[-1]["type"] == "end"
-    text = "".join(event.get("content", "") for event in second_events if event.get("type") == "text")
+    text = "".join(
+        event.get("content", "") for event in second_events if event.get("type") == "text"
+    )
     assert "BLUE-17" in text

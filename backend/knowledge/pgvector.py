@@ -83,7 +83,14 @@ class PgVectorRetriever:
                     WHERE tenant_id = %s AND document_id = %s
                       AND document_version = %s AND chunk_id = %s
                     """,
-                    (literal, embedding_model, principal.tenant_id, document_id, document_version, chunk_id),
+                    (
+                        literal,
+                        embedding_model,
+                        principal.tenant_id,
+                        document_id,
+                        document_version,
+                        chunk_id,
+                    ),
                 )
                 return cursor.rowcount == 1
 

@@ -8,7 +8,6 @@ import pytest
 from backend.migrations import setup_postgres
 from backend.tickets import ItPolicyNotFound, ItPolicyRepository, TicketRepository, UpsertItPolicy
 
-
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
 
@@ -38,7 +37,9 @@ def test_it_policy_upsert_requires_existing_sla_policy_and_returns_sla_minutes(m
             await _seed_sla_policy(tickets, tenant, "it-default-sla")
             policy = await repository.upsert(
                 tenant,
-                UpsertItPolicy(category="it.vpn", policy_id="it-default-sla", default_priority="high"),
+                UpsertItPolicy(
+                    category="it.vpn", policy_id="it-default-sla", default_priority="high"
+                ),
             )
             fetched = await repository.get(tenant, "it.vpn")
             active = await repository.list_active(tenant)

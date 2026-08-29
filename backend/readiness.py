@@ -11,7 +11,6 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any
 
-import redis.asyncio as redis
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 
@@ -78,14 +77,12 @@ async def _probe_outbox(database_url: str) -> dict[str, Any]:
     try:
         async with await AsyncConnection.connect(database_url) as connection:
             async with connection.cursor(row_factory=dict_row) as cursor:
-                await cursor.execute(
-                    """
+                await cursor.execute("""
                     SELECT
                         count(*) FILTER (WHERE status = 'pending' AND available_at <= now()) AS pending,
                         count(*) FILTER (WHERE status = 'dead') AS dead
                     FROM outbox_events
-                    """
-                )
+                    """)
                 return dict(await cursor.fetchone() or {"pending": 0, "dead": 0})
     except Exception:
         return {"pending": -1, "dead": -1}
@@ -111,7 +108,9 @@ async def probe_dependencies(request: Any) -> ReadinessResult:
         settings.auth_mode == "oidc" and settings.oidc_revocation_mode == "redis"
     )
     if redis_required:
-        checks["redis"] = await _probe_redis(getattr(request.app.state, "redis_client", None), timeout)
+        checks["redis"] = await _probe_redis(
+            getattr(request.app.state, "redis_client", None), timeout
+        )
 
     if settings.auth_mode == "oidc":
         verifier = getattr(request.app.state, "auth_verifier", None)
@@ -128,9 +127,13 @@ async def probe_dependencies(request: Any) -> ReadinessResult:
     if getattr(settings, "readiness_check_workers", False):
         ttl_seconds = float(getattr(settings, "worker_heartbeat_ttl_seconds", 90))
         heartbeats = await _probe_worker_heartbeats(settings.database_url, ttl_seconds)
-        checks.update({f"worker_{worker_type}": status for worker_type, status in heartbeats.items()})
+        checks.update(
+            {f"worker_{worker_type}": status for worker_type, status in heartbeats.items()}
+        )
         backlog = await _probe_outbox(settings.database_url)
-        checks["outbox_backlog"] = "ok" if backlog["pending"] >= 0 and backlog["pending"] < 100 else "degraded"
+        checks["outbox_backlog"] = (
+            "ok" if backlog["pending"] >= 0 and backlog["pending"] < 100 else "degraded"
+        )
         checks["outbox_dead"] = "ok" if backlog["dead"] == 0 else "failed"
 
     return ReadinessResult(ok=all(value == "ok" for value in checks.values()), checks=checks)

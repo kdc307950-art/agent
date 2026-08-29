@@ -40,7 +40,10 @@ EVAL_CASES: tuple[EvalCase, ...] = (
     {"query": "打印机添加设备找不到共享打印机", "expected_document_ids": ("printer-001",)},
     {"query": "打印卡纸了怎么处理", "expected_document_ids": ("printer-001",)},
     {"query": "打印报错硒鼓余量不足", "expected_document_ids": ("printer-001",)},
-    {"query": "共享打印机 \\\\print-server\\printer-001 怎么装驱动", "expected_document_ids": ("printer-001",)},
+    {
+        "query": "共享打印机 \\\\print-server\\printer-001 怎么装驱动",
+        "expected_document_ids": ("printer-001",),
+    },
     {"query": "打印机一直显示离线", "expected_document_ids": ("printer-001",)},
     # ---------- it.software（software-001） ----------
     {"query": "办公软件去哪里自助安装", "expected_document_ids": ("software-001",)},
@@ -67,8 +70,14 @@ EVAL_CASES: tuple[EvalCase, ...] = (
     {"query": "离职员工的权限什么时候回收", "expected_document_ids": ("permission-001",)},
     {"query": "财务审批权限怎么申请", "expected_document_ids": ("permission-001",)},
     # ---------- 跨文档（症状关联两个分类） ----------
-    {"query": "打印机装不上驱动，网络也断着", "expected_document_ids": ("printer-001", "network-001")},
-    {"query": "电脑报修顺便申请权限开通", "expected_document_ids": ("hardware-001", "permission-001")},
+    {
+        "query": "打印机装不上驱动，网络也断着",
+        "expected_document_ids": ("printer-001", "network-001"),
+    },
+    {
+        "query": "电脑报修顺便申请权限开通",
+        "expected_document_ids": ("hardware-001", "permission-001"),
+    },
     # ---------- 补充：口语/场景问法（50+ 门禁） ----------
     {"query": "办公室 Wi-Fi 连不上，一直转圈", "expected_document_ids": ("network-001",)},
     {"query": "SSO 账号被锁定进不去了", "expected_document_ids": ("password-001",)},

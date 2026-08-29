@@ -10,8 +10,8 @@ Lua 在 Redis 单线程里整段执行，不会被其他命令插入。
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import hashlib
+from datetime import UTC, datetime, timedelta
 
 
 class TenantBudgetExceeded(RuntimeError):
@@ -61,8 +61,8 @@ class TenantBudget:
     @staticmethod
     def _day_end() -> int:
         """当日 24:00（UTC）的 Unix 时间戳，用作 key 的绝对过期时刻。"""
-        now = datetime.now(timezone.utc)
-        end = datetime.combine((now + timedelta(days=1)).date(), datetime.min.time(), tzinfo=timezone.utc)
+        now = datetime.now(UTC)
+        end = datetime.combine((now + timedelta(days=1)).date(), datetime.min.time(), tzinfo=UTC)
         return int(end.timestamp())
 
     def _key(self, tenant_id: str) -> str:
@@ -73,12 +73,14 @@ class TenantBudget:
         日期写进 key 而非依赖 TTL 计算，保证跨日切换是干净的换 key，不是改计数。
         """
         digest = hashlib.sha256(tenant_id.encode("utf-8")).hexdigest()[:32]
-        day = datetime.now(timezone.utc).date().isoformat()
+        day = datetime.now(UTC).date().isoformat()
         return f"{self.key_prefix}:{digest}:{day}"
 
     async def can_start(self, tenant_id: str) -> bool:
         """运行开始前的准入检查。True 表示尚有额度。"""
-        result = await self.client.eval(_CURRENT_USAGE, 1, self._key(tenant_id), self.daily_limit_micro_usd)
+        result = await self.client.eval(
+            _CURRENT_USAGE, 1, self._key(tenant_id), self.daily_limit_micro_usd
+        )
         return bool(int(result[0]))
 
     async def record(self, tenant_id: str, cost_usd: float) -> bool:

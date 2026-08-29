@@ -13,16 +13,16 @@ import json
 import logging
 import os
 import time
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator, Sequence
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from psycopg_pool import AsyncConnectionPool
 
 from .metrics import RuntimeMetrics
 from .settings import database_url_from_env
-
 
 logger = logging.getLogger("langgraph.retention")
 
@@ -83,7 +83,7 @@ class RetentionConfig:
             raise ValueError("max_runtime_seconds must be > 0")
 
     @classmethod
-    def from_env(cls) -> "RetentionConfig":
+    def from_env(cls) -> RetentionConfig:
         return cls(
             retention_days=_env_int("AUDIT_RETENTION_DAYS", 30, 1),
             batch_size=_env_int("AUDIT_RETENTION_BATCH_SIZE", 1000, 1),
@@ -92,7 +92,7 @@ class RetentionConfig:
         )
 
     @classmethod
-    def from_settings(cls, settings: Any) -> "RetentionConfig":
+    def from_settings(cls, settings: Any) -> RetentionConfig:
         """Build a retention config from the application's Settings object."""
         return cls(
             retention_days=settings.audit_retention_days,
@@ -144,7 +144,7 @@ class _MutableResult:
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class AuditRetention:
@@ -171,7 +171,7 @@ class AuditRetention:
         metrics: RuntimeMetrics | None = None,
         min_size: int = 1,
         max_size: int = 1,
-    ) -> "AuditRetention":
+    ) -> AuditRetention:
         pool = AsyncConnectionPool(
             conninfo,
             min_size=min_size,
@@ -187,7 +187,7 @@ class AuditRetention:
         if self._owns_metrics:
             self.metrics.shutdown()
 
-    async def __aenter__(self) -> "AuditRetention":
+    async def __aenter__(self) -> AuditRetention:
         return self
 
     async def __aexit__(self, _exc_type, _exc, _tb) -> None:
@@ -211,8 +211,8 @@ class AuditRetention:
         self.metrics.increment("audit_retention_runs_total")
         reference_now = now or _utc_now()
         if reference_now.tzinfo is None:
-            reference_now = reference_now.replace(tzinfo=timezone.utc)
-        cutoff = reference_now.astimezone(timezone.utc) - timedelta(days=self.config.retention_days)
+            reference_now = reference_now.replace(tzinfo=UTC)
+        cutoff = reference_now.astimezone(UTC) - timedelta(days=self.config.retention_days)
         result = _MutableResult(cutoff=cutoff, dry_run=dry_run)
 
         async with self.pool.connection() as connection:
@@ -317,7 +317,9 @@ class AuditRetention:
     @staticmethod
     async def _delete_events(connection, run_ids: Sequence[str]) -> int:
         async with connection.cursor() as cursor:
-            await cursor.execute("DELETE FROM agent_events WHERE run_id = ANY(%s)", (list(run_ids),))
+            await cursor.execute(
+                "DELETE FROM agent_events WHERE run_id = ANY(%s)", (list(run_ids),)
+            )
             return max(cursor.rowcount, 0)
 
     @staticmethod
@@ -383,7 +385,9 @@ def _result_json(result: RetentionResult) -> str:
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="清理过期 Agent 审计记录")
     parser.add_argument("--dry-run", action="store_true", help="只统计，不删除")
-    parser.add_argument("--force", action="store_true", help="覆盖 AUDIT_RETENTION_ENABLED=false 的保护")
+    parser.add_argument(
+        "--force", action="store_true", help="覆盖 AUDIT_RETENTION_ENABLED=false 的保护"
+    )
     parser.add_argument("--retention-days", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--max-runtime-seconds", type=float, default=None)

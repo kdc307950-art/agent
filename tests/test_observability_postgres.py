@@ -19,7 +19,6 @@ from backend.seed_demo import _seed
 from backend.settings import Settings
 from backend.worker_metrics import WorkerMetricsDB, prometheus_text, render_latency_quantile
 
-
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
 
@@ -54,7 +53,9 @@ def test_worker_metrics_incr_observe_and_heartbeat(monkeypatch):
     by_key = {(row["metric"], tuple(sorted(row["labels"].items()))): row["value"] for row in rows}
     assert by_key[("inbound_events_total", (("channel", "wecom"), ("status", "committed")))] == 2
     assert by_key[("inbound_event_processing_seconds_count", (("channel", "wecom"),))] == 2
-    assert by_key["inbound_event_processing_seconds_sum", (("channel", "wecom"),)] == pytest.approx(1.5)
+    assert by_key["inbound_event_processing_seconds_sum", (("channel", "wecom"),)] == pytest.approx(
+        1.5
+    )
     assert 'inbound_events_total{channel="wecom",status="committed"} 2' in text
     assert p95 is not None and p95["count"] == 2
 
@@ -112,9 +113,17 @@ def test_metrics_endpoint_includes_worker_metrics(monkeypatch):
                 worker_metrics=WorkerMetricsDB(runtime.tickets.pool),
             )
             await runtime.tickets.register_inbound_event(
-                tenant, "wecom", f"evt-{uuid4().hex}",
-                {"requester_id": "u1", "external_ticket_id": None, "title": "VPN 无法连接",
-                 "content": "VPN 无法连接，错误码 809", "channel": "wecom", "raw": {}},
+                tenant,
+                "wecom",
+                f"evt-{uuid4().hex}",
+                {
+                    "requester_id": "u1",
+                    "external_ticket_id": None,
+                    "title": "VPN 无法连接",
+                    "content": "VPN 无法连接，错误码 809",
+                    "channel": "wecom",
+                    "raw": {},
+                },
             )
             await worker.run_once()
 

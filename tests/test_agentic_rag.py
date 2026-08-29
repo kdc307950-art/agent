@@ -38,7 +38,9 @@ class Generator:
     async def generate(self, question, contexts):
         return GeneratedAnswer(
             text="Use the runbook.",
-            citations=(GeneratedCitation(document_id="doc-1", document_version=1, chunk_id="chunk-1"),),
+            citations=(
+                GeneratedCitation(document_id="doc-1", document_version=1, chunk_id="chunk-1"),
+            ),
         )
 
 

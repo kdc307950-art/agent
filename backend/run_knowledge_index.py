@@ -18,7 +18,7 @@ import argparse
 import asyncio
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from dotenv import load_dotenv
 from psycopg.rows import dict_row
@@ -73,7 +73,14 @@ async def _mark_ready(pool, chunk: dict, model: str) -> None:
             WHERE tenant_id = %s AND document_id = %s
               AND document_version = %s AND chunk_id = %s
             """,
-            (model, datetime.now(timezone.utc), chunk["tenant_id"], chunk["document_id"], chunk["document_version"], chunk["chunk_id"]),
+            (
+                model,
+                datetime.now(UTC),
+                chunk["tenant_id"],
+                chunk["document_id"],
+                chunk["document_version"],
+                chunk["chunk_id"],
+            ),
         )
 
 
@@ -95,7 +102,9 @@ async def _run(tenant_id: str, conninfo: str, *, batch_size: int, embed: bool) -
             return {"mode": "dry-run", "pending": len(chunks), "ready": 0}
         repository = KnowledgeRepository(pool)
         vector = PgVectorRetriever(
-            repository, HttpEmbeddingProvider(embedding_endpoint, dimension=dimension), dimension=dimension
+            repository,
+            HttpEmbeddingProvider(embedding_endpoint, dimension=dimension),
+            dimension=dimension,
         )
         ready = 0
         for start in range(0, len(chunks), batch_size):
@@ -105,7 +114,9 @@ async def _run(tenant_id: str, conninfo: str, *, batch_size: int, embed: bool) -
                 raise RuntimeError(f"embedding 返回数量 {len(embeddings)} != 输入数量 {len(batch)}")
             for chunk, embedding in zip(batch, embeddings, strict=True):
                 if len(embedding) != dimension:
-                    raise RuntimeError(f"embedding 维度 {len(embedding)} != 配置 {dimension}（chunk {chunk['document_id']}/{chunk['chunk_id']}）")
+                    raise RuntimeError(
+                        f"embedding 维度 {len(embedding)} != 配置 {dimension}（chunk {chunk['document_id']}/{chunk['chunk_id']}）"
+                    )
                 principal = RetrievalPrincipal(
                     tenant_id=chunk["tenant_id"],
                     departments=frozenset(chunk["allowed_departments"] or []),
@@ -120,7 +131,9 @@ async def _run(tenant_id: str, conninfo: str, *, batch_size: int, embed: bool) -
                     embedding_model=embedding_model,
                 )
                 if not ok:
-                    raise RuntimeError(f"写入 embedding 失败: {chunk['document_id']}/{chunk['chunk_id']}")
+                    raise RuntimeError(
+                        f"写入 embedding 失败: {chunk['document_id']}/{chunk['chunk_id']}"
+                    )
                 await _mark_ready(pool, chunk, embedding_model)
                 ready += 1
         return {"mode": "embed", "pending": len(chunks) - ready, "ready": ready}
@@ -133,7 +146,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="知识文档向量化导入")
     parser.add_argument("--tenant", default="demo")
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--embed", action="store_true", help="强制执行向量化（需 KNOWLEDGE_EMBEDDING_ENDPOINT）")
+    parser.add_argument(
+        "--embed", action="store_true", help="强制执行向量化（需 KNOWLEDGE_EMBEDDING_ENDPOINT）"
+    )
     parser.add_argument("--database-url", default=None)
     args = parser.parse_args()
     conninfo = args.database_url or os.getenv("DATABASE_URL", "").strip()
@@ -141,7 +156,9 @@ def main() -> None:
         raise SystemExit("缺少 DATABASE_URL")
     result = asyncio.run(_run(args.tenant, conninfo, batch_size=args.batch_size, embed=args.embed))
     if result["mode"] == "dry-run":
-        print(f"dry-run: 租户 {args.tenant} 有 {result['pending']} 个待向量化分块；配置 KNOWLEDGE_EMBEDDING_ENDPOINT 后加 --embed 执行")
+        print(
+            f"dry-run: 租户 {args.tenant} 有 {result['pending']} 个待向量化分块；配置 KNOWLEDGE_EMBEDDING_ENDPOINT 后加 --embed 执行"
+        )
     else:
         print(f"embed 完成: ready={result['ready']} pending={result['pending']}")
         if result["pending"]:

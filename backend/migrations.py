@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import asyncio
 
-from psycopg import AsyncConnection
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres.aio import AsyncPostgresStore
+from psycopg import AsyncConnection
 
 from .audit import audit_context
 from .schema import MIGRATION_LOCK_KEY, ensure_schema_version

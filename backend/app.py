@@ -27,37 +27,36 @@ import redis.asyncio as redis
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langgraph.types import Command
-
+from .assets.api import router as asset_router
+from .audit import NoopAuditRepository
+from .budget import TenantBudget, TenantBudgetExceeded
+from .knowledge.api import router as knowledge_router
+from .metrics import RuntimeMetrics
+from .rate_limit import RedisRateLimiter
+from .readiness import probe_dependencies
+from .repositories import tenant_thread_id
+from .revocation import RedisRevocationStore
+from .run_context import RunContext
+from .runtime import runtime_context
 from .security import (
-    authenticate,
     InMemoryRateLimiter,
     OIDCVerifier,
     Principal,
+    authenticate,
     cors_origins,
     rate_limit_dependency,
 )
-from .rate_limit import RedisRateLimiter
-from .revocation import RedisRevocationStore
-from .audit import NoopAuditRepository
-from .budget import TenantBudget, TenantBudgetExceeded
-from .metrics import RuntimeMetrics
-from .worker_metrics import WorkerMetricsDB, prometheus_text
-from .run_context import RunContext
-from .runtime import runtime_context
-from .repositories import tenant_thread_id
-from .readiness import probe_dependencies
 from .settings import Settings
 from .telemetry import Telemetry
-from .assets.api import router as asset_router
-from .knowledge.api import router as knowledge_router
-from .ticket_api import admin_router, channel_router, router as ticket_router
+from .ticket_api import admin_router, channel_router
+from .ticket_api import router as ticket_router
 from .usage import extract_model_usage, usage_cost_usd
-
+from .worker_metrics import WorkerMetricsDB, prometheus_text
 
 logger = logging.getLogger("langgraph.api")
 
@@ -109,9 +108,13 @@ class ResumeRequest(BaseModel):
     )
     approved: bool
     # 由 interrupt 事件下发，用于防重复审批与防串批；省略则只校验「存在挂起审批」
-    interrupt_id: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
+    interrupt_id: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$"
+    )
     # 挂起那一轮的 run_id，客户端原样回传，仅用于审计串联展示（不作为授权依据）
-    resumed_from: str | None = Field(default=None, min_length=8, max_length=64, pattern=r"^[A-Za-z0-9]+$")
+    resumed_from: str | None = Field(
+        default=None, min_length=8, max_length=64, pattern=r"^[A-Za-z0-9]+$"
+    )
 
 
 class RevokeTokenRequest(BaseModel):
@@ -220,7 +223,7 @@ async def lifespan(app: FastAPI):
             settings.auth_mode == "oidc" and settings.oidc_revocation_mode == "redis"
         ):
             redis_client = redis.from_url(
-                settings.redis_url,
+                settings.redis_url or "",
                 encoding="utf-8",
                 decode_responses=True,
                 socket_timeout=settings.redis_socket_timeout_seconds,
@@ -231,7 +234,7 @@ async def lifespan(app: FastAPI):
             except Exception:
                 await redis_client.aclose()
                 if settings.redis_fail_mode == "closed":
-                    raise RuntimeError("Redis 不可用，按 fail-closed 策略拒绝启动")
+                    raise RuntimeError("Redis 不可用，按 fail-closed 策略拒绝启动") from None
                 redis_client = None
             app.state.redis_client = redis_client
 
@@ -254,13 +257,17 @@ async def lifespan(app: FastAPI):
             app.state.rate_limiter = InMemoryRateLimiter(settings.rate_limit_capacity)
 
         if settings.auth_mode == "oidc":
-            revocation_store = RedisRevocationStore(redis_client) if settings.oidc_revocation_mode == "redis" and redis_client else None
+            revocation_store = (
+                RedisRevocationStore(redis_client)
+                if settings.oidc_revocation_mode == "redis" and redis_client
+                else None
+            )
             if settings.oidc_revocation_mode == "redis" and revocation_store is None:
                 raise RuntimeError("OIDC_REVOCATION_MODE=redis 但 Redis 不可用")
             app.state.revocation_store = revocation_store
             auth_verifier = OIDCVerifier(
-                issuer=settings.oidc_issuer_url,
-                audience=settings.oidc_audience,
+                issuer=settings.oidc_issuer_url or "",
+                audience=settings.oidc_audience or "",
                 jwks_url=settings.oidc_jwks_url,
                 tenant_claim=settings.oidc_tenant_claim,
                 clock_skew_seconds=settings.oidc_clock_skew_seconds,
@@ -271,7 +278,11 @@ async def lifespan(app: FastAPI):
                 max_token_age_seconds=settings.oidc_max_token_age_seconds,
             )
         app.state.auth_verifier = auth_verifier
-        logger.info("正在初始化 LangGraph Agent runtime auth_mode=%s rate_limit_backend=%s", settings.auth_mode, settings.rate_limit_backend)
+        logger.info(
+            "正在初始化 LangGraph Agent runtime auth_mode=%s rate_limit_backend=%s",
+            settings.auth_mode,
+            settings.rate_limit_backend,
+        )
         try:
             runtime_manager = runtime_context(settings, metrics=app.state.metrics)
         except TypeError:
@@ -336,7 +347,9 @@ async def _execute_run(
     run_id = uuid4().hex
     run_started = monotonic()
     http_request.state.run_id = run_id
-    http_request.state.tenant_hash = hashlib.sha256(principal.tenant_id.encode("utf-8")).hexdigest()[:16]
+    http_request.state.tenant_hash = hashlib.sha256(
+        principal.tenant_id.encode("utf-8")
+    ).hexdigest()[:16]
     http_request.app.state.metrics.increment("agent_runs_total")
     physical_thread_id = tenant_thread_id(principal.tenant_id, principal.user_id, thread_id)
     config = {"configurable": {"thread_id": physical_thread_id, "checkpoint_ns": ""}}
@@ -370,7 +383,9 @@ async def _execute_run(
             )
     except Exception as exc:
         http_request.app.state.metrics.increment("audit_errors_total")
-        logger.exception("无法创建运行审计记录 request_id=%s run_id=%s", run_context.request_id, run_id)
+        logger.exception(
+            "无法创建运行审计记录 request_id=%s run_id=%s", run_context.request_id, run_id
+        )
         raise HTTPException(status_code=503, detail="运行审计服务暂时不可用") from exc
 
     usage_totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
@@ -402,7 +417,12 @@ async def _execute_run(
             )
         except Exception:
             http_request.app.state.metrics.increment("audit_errors_total")
-            logger.exception("无法更新运行审计状态 request_id=%s run_id=%s status=%s", run_context.request_id, run_id, status)
+            logger.exception(
+                "无法更新运行审计状态 request_id=%s run_id=%s status=%s",
+                run_context.request_id,
+                run_id,
+                status,
+            )
 
     async def event_generator():
         nonlocal total_cost_usd
@@ -423,7 +443,9 @@ async def _execute_run(
                                 interrupt_id = str(getattr(item, "id", "") or "")
                                 question = _interrupt_question(item)
                                 try:
-                                    async with asyncio.timeout(settings.audit_write_timeout_seconds):
+                                    async with asyncio.timeout(
+                                        settings.audit_write_timeout_seconds
+                                    ):
                                         await audit.record_event(
                                             run_context,
                                             "interrupt_raised",
@@ -473,10 +495,14 @@ async def _execute_run(
                                     int(round(cost * 1_000_000)),
                                     {"model": settings.llm_model},
                                 )
-                                if budget is not None and not await budget.record(principal.tenant_id, cost):
+                                if budget is not None and not await budget.record(
+                                    principal.tenant_id, cost
+                                ):
                                     raise TenantBudgetExceeded("tenant daily model budget exceeded")
                                 try:
-                                    async with asyncio.timeout(settings.audit_write_timeout_seconds):
+                                    async with asyncio.timeout(
+                                        settings.audit_write_timeout_seconds
+                                    ):
                                         await audit.record_event(
                                             run_context,
                                             "model_usage",
@@ -509,20 +535,30 @@ async def _execute_run(
             await finish_run("budget_exceeded", error_code="tenant_budget_exceeded")
             http_request.app.state.metrics.increment("tenant_budget_exceeded_total")
             yield f"data: {json.dumps({'type': 'error', 'code': 'tenant_budget_exceeded', 'run_id': run_id, 'content': '租户模型预算已用尽'}, ensure_ascii=False)}\n\n"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await finish_run("timeout", error_code="agent_timeout")
             http_request.app.state.metrics.increment("agent_timeouts_total")
-            logger.warning("Agent stream timed out request_id=%s run_id=%s", http_request.state.request_id, run_id)
+            logger.warning(
+                "Agent stream timed out request_id=%s run_id=%s",
+                http_request.state.request_id,
+                run_id,
+            )
             yield f"data: {json.dumps({'type': 'error', 'code': 'agent_timeout', 'run_id': run_id, 'content': '请求超时，请稍后重试'}, ensure_ascii=False)}\n\n"
         except asyncio.CancelledError:
             await finish_run("cancelled", error_code="client_cancelled")
             http_request.app.state.metrics.increment("agent_cancellations_total")
-            logger.info("Agent stream cancelled request_id=%s run_id=%s", http_request.state.request_id, run_id)
+            logger.info(
+                "Agent stream cancelled request_id=%s run_id=%s",
+                http_request.state.request_id,
+                run_id,
+            )
             raise
         except Exception:
             await finish_run("failed", error_code="agent_failed")
             http_request.app.state.metrics.increment("agent_errors_total")
-            logger.exception("Agent stream failed request_id=%s run_id=%s", http_request.state.request_id, run_id)
+            logger.exception(
+                "Agent stream failed request_id=%s run_id=%s", http_request.state.request_id, run_id
+            )
             yield f"data: {json.dumps({'type': 'error', 'code': 'agent_failed', 'run_id': run_id, 'content': '服务暂时不可用，请稍后重试'}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
@@ -679,7 +715,9 @@ async def readiness_check(request: Request):
     result = await probe_dependencies(request)
     status_code = 200 if result.ok else 503
     return Response(
-        content=json.dumps({"status": "ready" if result.ok else "not_ready", "checks": result.checks}),
+        content=json.dumps(
+            {"status": "ready" if result.ok else "not_ready", "checks": result.checks}
+        ),
         media_type="application/json",
         status_code=status_code,
     )
@@ -710,7 +748,7 @@ async def _worker_metrics_payload(request: Request) -> bytes:
     text = prometheus_text(rows)
     if not text:
         return b""
-    return f"\n# worker metrics (from worker_metrics table)\n{text}".encode("utf-8")
+    return f"\n# worker metrics (from worker_metrics table)\n{text}".encode()
 
 
 if __name__ == "__main__":

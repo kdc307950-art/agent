@@ -10,20 +10,27 @@ from __future__ import annotations
 
 import os
 from collections import Counter
+from collections.abc import Mapping
 from threading import Lock
-from typing import Mapping
+from typing import Any
 
 from opentelemetry.exporter.prometheus import PrometheusMetricReader
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.resources import Resource
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, generate_latest
 
+# OTLP 为可选补充导出；import 失败时 graceful degrade（类型统一为 Any 便于降级赋值）。
+OTLPMetricExporter: Any = None
+PeriodicExportingMetricReader: Any = None
 try:
-    from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-    from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+    from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
+        OTLPMetricExporter as OTLPMetricExporter,
+    )
+    from opentelemetry.sdk.metrics.export import (
+        PeriodicExportingMetricReader as PeriodicExportingMetricReader,
+    )
 except ImportError:  # pragma: no cover - optional OTLP dependency
-    OTLPMetricExporter = None
-    PeriodicExportingMetricReader = None
+    pass
 
 
 class RuntimeMetrics:
@@ -46,15 +53,21 @@ class RuntimeMetrics:
     ) -> None:
         self._counts: Counter[str] = Counter()  # 本地快照用（测试/诊断）
         self._lock = Lock()  # 多线程 FastAPI 下需要——创建计器/柱状图都要涉及 dict 改写
-        self._counters = {}  # 名字→计数器对象，激活时创建（OTel 的对象难以销毁，故懒创）
-        self._histograms = {}  # 名字→柱状图对象，激活时创建
+        self._counters: dict[str, Any] = (
+            {}
+        )  # 名字→计数器对象，激活时创建（OTel 的对象难以销毁，故懒创）
+        self._histograms: dict[str, Any] = {}  # 名字→柱状图对象，激活时创建
         self._registry = CollectorRegistry()  # Prometheus 注册表，所有指标刮取从这里拿
-        readers = [PrometheusMetricReader(registry=self._registry)]
-        endpoint = (otlp_endpoint or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")).strip()
+        readers: list[Any] = [PrometheusMetricReader(registry=self._registry)]
+        endpoint = (otlp_endpoint or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT") or "").strip()
         self._otlp_reader = None
         # OTLP 是可选的补充导出（推送到观测后端）——生产跨集群才需要，
         # 本地开发和单机 Prometheus 都不需要。import 失败时 graceful degrade
-        if endpoint and OTLPMetricExporter is not None and PeriodicExportingMetricReader is not None:
+        if (
+            endpoint
+            and OTLPMetricExporter is not None
+            and PeriodicExportingMetricReader is not None
+        ):
             exporter = OTLPMetricExporter(
                 endpoint=endpoint,
                 insecure=endpoint.startswith("http://"),
@@ -62,14 +75,16 @@ class RuntimeMetrics:
             )
             self._otlp_reader = PeriodicExportingMetricReader(
                 exporter,
-                export_interval_millis=float(os.getenv("OTEL_METRIC_EXPORT_INTERVAL_MILLIS", "15000")),
+                export_interval_millis=float(
+                    os.getenv("OTEL_METRIC_EXPORT_INTERVAL_MILLIS", "15000")
+                ),
                 export_timeout_millis=5000,
             )
             readers.append(self._otlp_reader)
         resource = Resource.create(
             {
-                "service.name": service_name or os.getenv("OTEL_SERVICE_NAME", "langgraph-agent"),
-                "service.version": os.getenv("APP_VERSION", "0.1.0"),
+                "service.name": service_name or os.getenv("OTEL_SERVICE_NAME") or "langgraph-agent",
+                "service.version": os.getenv("APP_VERSION") or "0.1.0",
             }
         )
         self._provider = MeterProvider(resource=resource, metric_readers=readers)

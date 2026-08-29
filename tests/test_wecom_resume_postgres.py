@@ -6,7 +6,7 @@
 
 import asyncio
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -17,7 +17,6 @@ from backend.runtime import runtime_context
 from backend.seed_demo import _seed
 from backend.settings import Settings
 from src.my_agent.helpdesk import TicketStatus
-
 
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
@@ -55,14 +54,18 @@ def test_wecom_reply_resumes_original_ticket_not_new_one(monkeypatch):
             worker = InboundWorker(runtime, batch_size=10, tenant_id=tenant)
             # 1) 首次消息：建单 + 追问，登记待补全
             first_event = f"evt-{uuid4().hex}"
-            await runtime.tickets.register_inbound_event(tenant, "wecom", first_event, _payload("VPN 无法连接，错误码 809"))
+            await runtime.tickets.register_inbound_event(
+                tenant, "wecom", first_event, _payload("VPN 无法连接，错误码 809")
+            )
             await worker.run_once()
             first_ticket = await runtime.tickets.get_inbound_event(tenant, "wecom", first_event)
             ticket = await runtime.tickets.get(tenant, first_ticket["ticket_id"])
             pending = await runtime.tickets.get_pending_intake(tenant, ticket.ticket_id)
             # 2) 客户回复补字段：恢复原工单
             reply_event = f"evt-{uuid4().hex}"
-            await runtime.tickets.register_inbound_event(tenant, "wecom", reply_event, _payload(FULL_REPLY))
+            await runtime.tickets.register_inbound_event(
+                tenant, "wecom", reply_event, _payload(FULL_REPLY)
+            )
             await worker.run_once()
             reply_record = await runtime.tickets.get_inbound_event(tenant, "wecom", reply_event)
             ticket_after = await runtime.tickets.get(tenant, ticket.ticket_id)
@@ -70,7 +73,9 @@ def test_wecom_reply_resumes_original_ticket_not_new_one(monkeypatch):
             total = await _count_tickets(runtime, tenant)
             return first_ticket, ticket, pending, reply_record, ticket_after, pending_after, total
 
-    first_ticket, ticket, pending, reply_record, ticket_after, pending_after, total = asyncio.run(run())
+    first_ticket, ticket, pending, reply_record, ticket_after, pending_after, total = asyncio.run(
+        run()
+    )
     assert first_ticket["status"] == "committed"
     assert ticket.status == "awaiting_customer"
     assert pending is not None and pending["status"] == "awaiting"
@@ -95,16 +100,31 @@ def test_wecom_reply_idempotent_same_msgid(monkeypatch):
             await _seed(tenant, DATABASE_URL)
             worker = InboundWorker(runtime, batch_size=10, tenant_id=tenant)
             first_event = f"evt-{uuid4().hex}"
-            await runtime.tickets.register_inbound_event(tenant, "wecom", first_event, _payload("VPN 无法连接，错误码 809"))
+            await runtime.tickets.register_inbound_event(
+                tenant, "wecom", first_event, _payload("VPN 无法连接，错误码 809")
+            )
             await worker.run_once()
-            ticket = await runtime.tickets.get(tenant, (await runtime.tickets.get_inbound_event(tenant, "wecom", first_event))["ticket_id"])
+            ticket = await runtime.tickets.get(
+                tenant,
+                (await runtime.tickets.get_inbound_event(tenant, "wecom", first_event))[
+                    "ticket_id"
+                ],
+            )
             # 同一条回复 MsgId 重放：第二次登记返回 created=False，worker 不重复处理
             reply_event = f"evt-{uuid4().hex}"
-            await runtime.tickets.register_inbound_event(tenant, "wecom", reply_event, _payload(FULL_REPLY))
-            second_reg = await runtime.tickets.register_inbound_event(tenant, "wecom", reply_event, _payload(FULL_REPLY))
+            await runtime.tickets.register_inbound_event(
+                tenant, "wecom", reply_event, _payload(FULL_REPLY)
+            )
+            second_reg = await runtime.tickets.register_inbound_event(
+                tenant, "wecom", reply_event, _payload(FULL_REPLY)
+            )
             await worker.run_once()
             total = await _count_tickets(runtime, tenant)
-            return second_reg.created, total, (await runtime.tickets.get(tenant, ticket.ticket_id)).status
+            return (
+                second_reg.created,
+                total,
+                (await runtime.tickets.get(tenant, ticket.ticket_id)).status,
+            )
 
     created, total, status = asyncio.run(run())
     assert created is False
@@ -122,7 +142,9 @@ def test_wecom_reply_without_pending_creates_new_ticket(monkeypatch):
             worker = InboundWorker(runtime, batch_size=10, tenant_id=tenant)
             # 无待补全记录的用户直接发消息 -> 新建工单
             event = f"evt-{uuid4().hex}"
-            await runtime.tickets.register_inbound_event(tenant, "wecom", event, _payload("打印机卡纸了", requester="other-user"))
+            await runtime.tickets.register_inbound_event(
+                tenant, "wecom", event, _payload("打印机卡纸了", requester="other-user")
+            )
             await worker.run_once()
             record = await runtime.tickets.get_inbound_event(tenant, "wecom", event)
             ticket = await runtime.tickets.get(tenant, record["ticket_id"])
@@ -143,14 +165,23 @@ def test_wecom_reply_expired_pending_not_resumed(monkeypatch):
             await _seed(tenant, DATABASE_URL)
             worker = InboundWorker(runtime, batch_size=10, tenant_id=tenant)
             first_event = f"evt-{uuid4().hex}"
-            await runtime.tickets.register_inbound_event(tenant, "wecom", first_event, _payload("VPN 无法连接，错误码 809"))
+            await runtime.tickets.register_inbound_event(
+                tenant, "wecom", first_event, _payload("VPN 无法连接，错误码 809")
+            )
             await worker.run_once()
-            ticket = await runtime.tickets.get(tenant, (await runtime.tickets.get_inbound_event(tenant, "wecom", first_event))["ticket_id"])
+            ticket = await runtime.tickets.get(
+                tenant,
+                (await runtime.tickets.get_inbound_event(tenant, "wecom", first_event))[
+                    "ticket_id"
+                ],
+            )
             # 过期待补全
-            await runtime.tickets.expire_pending_intakes(now=datetime.now(timezone.utc) + timedelta(days=30))
+            await runtime.tickets.expire_pending_intakes(now=datetime.now(UTC) + timedelta(days=30))
             # 客户过期后回复 -> 不 resume，按新消息建单
             reply_event = f"evt-{uuid4().hex}"
-            await runtime.tickets.register_inbound_event(tenant, "wecom", reply_event, _payload(FULL_REPLY))
+            await runtime.tickets.register_inbound_event(
+                tenant, "wecom", reply_event, _payload(FULL_REPLY)
+            )
             await worker.run_once()
             reply_record = await runtime.tickets.get_inbound_event(tenant, "wecom", reply_event)
             total = await _count_tickets(runtime, tenant)

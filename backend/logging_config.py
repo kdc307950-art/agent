@@ -10,20 +10,32 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, object] = {
-            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "ts": datetime.now(UTC).isoformat(timespec="milliseconds"),
             "level": record.levelname,
             "logger": record.name,
             "msg": record.getMessage(),
         }
         context = getattr(record, "ctx", None)
         if isinstance(context, dict):
-            allowed = ("tenant_id", "channel", "event_id", "ticket_id", "operation_id", "worker_id", "attempt", "status", "duration_ms", "error_code", "worker_type")
+            allowed = (
+                "tenant_id",
+                "channel",
+                "event_id",
+                "ticket_id",
+                "operation_id",
+                "worker_id",
+                "attempt",
+                "status",
+                "duration_ms",
+                "error_code",
+                "worker_type",
+            )
             payload.update({key: value for key, value in context.items() if key in allowed})
         if record.exc_info:
             payload["exc"] = self.formatException(record.exc_info)

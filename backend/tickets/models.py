@@ -22,7 +22,9 @@ class CreateTicket(BaseModel):
     priority: str = Field(default="normal", pattern=r"^(low|normal|high|urgent)$")
     actor_type: ActorType
     actor_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
-    asset_id: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+    asset_id: str | None = Field(
+        default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$"
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

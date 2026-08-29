@@ -11,9 +11,14 @@
 
 import asyncio
 import os
+
+from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
+
 from src.my_agent.agent import build_agent
+
+load_dotenv()
 
 # ====== 配置 ======
 MAX_MESSAGES_BEFORE_SUMMARY = 15  # 超过 15 条消息触发摘要
@@ -27,11 +32,13 @@ def smart_summarize(messages, model):
     # 1. 保留最近 5 条消息（确保对话连续性）
     recent = messages[-5:]
     # 2. 将之前的消息转为文本用于摘要
-    history_text = "\n".join([
-        f"{'用户' if msg.type == 'human' else '助手'}: {msg.content}"
-        for msg in messages[:-5]
-        if hasattr(msg, 'content') and msg.content
-    ])
+    history_text = "\n".join(
+        [
+            f"{'用户' if msg.type == 'human' else '助手'}: {msg.content}"
+            for msg in messages[:-5]
+            if hasattr(msg, "content") and msg.content
+        ]
+    )
 
     # 3. 生成摘要
     summary_prompt = f"""请用中文总结以下对话的核心内容，提取所有关键事实（如名字、地点、数字、偏好），摘要不超过 200 字：

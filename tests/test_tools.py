@@ -21,7 +21,13 @@ class FakeClient:
     async def get(self, url, params):
         self.calls.append((url, params))
         if len(self.calls) == 1:
-            return FakeResponse({"results": [{"name": "北京", "country": "中国", "latitude": 39.9, "longitude": 116.4}]})
+            return FakeResponse(
+                {
+                    "results": [
+                        {"name": "北京", "country": "中国", "latitude": 39.9, "longitude": 116.4}
+                    ]
+                }
+            )
         return FakeResponse(
             {
                 "current": {

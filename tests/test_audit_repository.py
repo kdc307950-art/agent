@@ -7,7 +7,6 @@ import pytest
 from backend.audit import audit_context
 from backend.run_context import RunContext
 
-
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
 
@@ -47,8 +46,7 @@ def test_awaiting_approval_is_persisted_with_matching_event():
     assert stored["status"] == "awaiting_approval"
     assert stored["finished_at"] is not None
     assert any(
-        event["event_type"] == "run_awaiting_approval"
-        and event["status"] == "awaiting_approval"
+        event["event_type"] == "run_awaiting_approval" and event["status"] == "awaiting_approval"
         for event in events
     )
 

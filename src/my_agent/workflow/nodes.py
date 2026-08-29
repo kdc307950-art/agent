@@ -17,7 +17,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from langchain_core.messages import AIMessage
 from langgraph.types import interrupt
@@ -77,8 +78,10 @@ def _build_supervisor_prompt(config: dict[str, Any]) -> str:
     targets = config.get("targets") or {}
     if not targets:
         raise ValueError("supervisor 节点必须配置 targets: {目标词: 描述}")
-    lines = ["你是主管 Agent（Supervisor），负责把用户问题路由给最合适的子 Agent。",
-             "只能回复一个词，可选目标："]
+    lines = [
+        "你是主管 Agent（Supervisor），负责把用户问题路由给最合适的子 Agent。",
+        "只能回复一个词，可选目标：",
+    ]
     for word, desc in targets.items():
         lines.append(f"- {word}：{desc}")
     lines.append("不要回复其他内容，只回复目标词。")
@@ -100,9 +103,7 @@ def supervisor_factory(node: NodeSpec, ctx: BuildContext) -> Callable:
 
     async def supervisor_node(state: dict[str, Any]) -> dict[str, Any]:
         messages = state.get("messages") or []
-        resp = await model.ainvoke(
-            [{"role": "system", "content": system_prompt}] + list(messages)
-        )
+        resp = await model.ainvoke([{"role": "system", "content": system_prompt}] + list(messages))
         decision = (getattr(resp, "content", "") or "").strip().lower()
         nxt = fallback
         for word in targets:
@@ -116,7 +117,7 @@ def supervisor_factory(node: NodeSpec, ctx: BuildContext) -> Callable:
 
 
 # ========== agent：create_agent 子 Agent ==========
-def agent_factory(node: NodeSpec, ctx: BuildContext) -> Callable:
+def agent_factory(node: NodeSpec, ctx: BuildContext) -> Any:
     from langchain.agents import create_agent  # 延迟导入，避免启动开销
 
     config = node.config
@@ -128,13 +129,15 @@ def agent_factory(node: NodeSpec, ctx: BuildContext) -> Callable:
     if not tool_names:
         raise ValueError(f"节点 {node.id} (agent) 必须配置 tools 列表")
     selected_tools = _require_tools(ctx, tool_names)
-    middleware = ()
-    if ctx.tool_call_wrapper is not None:
+    middleware: tuple[Any, ...] = ()
+    wrapper = ctx.tool_call_wrapper
+    if wrapper is not None:
         from langchain.agents.middleware import AgentMiddleware
 
         class GovernanceMiddleware(AgentMiddleware):
             async def awrap_tool_call(self, request, handler):
-                return await ctx.tool_call_wrapper(request, handler)
+                assert wrapper is not None  # 闭包内收窄，mypy 不追踪 if 块外的可变捕获
+                return await wrapper(request, handler)
 
         middleware = (GovernanceMiddleware(),)
     return create_agent(
@@ -163,7 +166,7 @@ def condition_factory(node: NodeSpec, ctx: BuildContext) -> Callable:
         raise ValueError(f"节点 {node.id} (condition) 必须配置 field")
     rules: dict[str, str] = dict(config.get("rules") or {})
     if not rules:
-        raise ValueError(f"节点 {node.id} (condition) 必须配置 rules: {值: 目标节点}")
+        raise ValueError(f"节点 {node.id} (condition) 必须配置 rules: {{值: 目标节点}}")
     route_field = config.get("route_field", "next")
     default_target = config.get("default", "finish")
 
@@ -188,9 +191,7 @@ def human_approval_factory(node: NodeSpec, ctx: BuildContext) -> Callable:
     config = node.config
     route_field = config.get("route_field", "next")
     question_template = config.get("question_template", "是否批准将问题交给 {next} 处理？")
-    reject_message_template = config.get(
-        "reject_message", "[已拒绝] 用户取消了 {next} 的操作。"
-    )
+    reject_message_template = config.get("reject_message", "[已拒绝] 用户取消了 {next} 的操作。")
     reject_next = config.get("reject_next", "finish")
 
     def approval_node(state: dict[str, Any]) -> dict[str, Any]:

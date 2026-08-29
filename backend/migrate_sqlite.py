@@ -20,8 +20,8 @@ from pathlib import Path
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from .settings import database_url_from_env
 from .repositories import tenant_thread_id
+from .settings import database_url_from_env
 
 
 async def migrate_checkpoint_tuples(source, target, thread_id_mapper=None) -> int:

@@ -13,7 +13,6 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
 
@@ -145,9 +144,11 @@ class Settings:
     readiness_check_workers: bool
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         auto_setup = os.getenv("LANGGRAPH_AUTO_SETUP", "false").strip().lower()
-        app_env = _choice_setting("APP_ENV", "development", {"development", "test", "staging", "production"})
+        app_env = _choice_setting(
+            "APP_ENV", "development", {"development", "test", "staging", "production"}
+        )
         auth_mode = _choice_setting("AUTH_MODE", "dev", {"dev", "oidc"})
         tenant_token_secret = os.getenv("TENANT_TOKEN_SECRET", "").strip() or None
         issuer = os.getenv("OIDC_ISSUER_URL", "").strip() or None
@@ -184,13 +185,17 @@ class Settings:
         metrics_auth_token = os.getenv("METRICS_AUTH_TOKEN", "").strip() or None
         if app_env == "production" and metrics_enabled and not metrics_auth_token:
             raise RuntimeError("APP_ENV=production 启用 metrics 时必须配置 METRICS_AUTH_TOKEN")
-        if (rate_limit_backend == "redis" or (auth_mode == "oidc" and revocation_mode == "redis")) and not redis_url:
+        if (
+            rate_limit_backend == "redis" or (auth_mode == "oidc" and revocation_mode == "redis")
+        ) and not redis_url:
             raise RuntimeError("当前配置需要 Redis，必须配置 REDIS_URL")
         refill_rate = float(os.getenv("RATE_LIMIT_REFILL_PER_SECOND", "1"))
         if refill_rate <= 0:
             raise RuntimeError("RATE_LIMIT_REFILL_PER_SECOND 必须 > 0")
         required_scopes = frozenset(
-            scope.strip() for scope in os.getenv("OIDC_REQUIRED_SCOPES", "chat:write").split(",") if scope.strip()
+            scope.strip()
+            for scope in os.getenv("OIDC_REQUIRED_SCOPES", "chat:write").split(",")
+            if scope.strip()
         )
         if auth_mode == "oidc" and not required_scopes:
             raise RuntimeError("AUTH_MODE=oidc 必须至少配置一个 OIDC_REQUIRED_SCOPES")
@@ -199,7 +204,12 @@ class Settings:
             raise RuntimeError("启用 TENANT_DAILY_BUDGET_USD 时必须配置 REDIS_URL")
         input_cost = _float_setting("MODEL_INPUT_COST_PER_1K_USD", 0.0, 0.0)
         output_cost = _float_setting("MODEL_OUTPUT_COST_PER_1K_USD", 0.0, 0.0)
-        if app_env == "production" and tenant_daily_budget_usd > 0 and input_cost <= 0 and output_cost <= 0:
+        if (
+            app_env == "production"
+            and tenant_daily_budget_usd > 0
+            and input_cost <= 0
+            and output_cost <= 0
+        ):
             raise RuntimeError("生产启用租户预算时必须配置模型输入或输出价格")
         # 图形态：single=单 Agent（默认，向后兼容）；workflow=按 JSON 编排图
         agent_graph_mode = _choice_setting("AGENT_GRAPH_MODE", "single", {"single", "workflow"})
@@ -213,7 +223,9 @@ class Settings:
             "corp_id": os.getenv("WECOM_CORP_ID", "").strip() or None,
         }
         if any(wecom_values.values()) and not all(wecom_values.values()):
-            raise RuntimeError("企业微信 Webhook 必须完整配置 WECOM_TENANT_ID/TOKEN/ENCODING_AES_KEY/CORP_ID")
+            raise RuntimeError(
+                "企业微信 Webhook 必须完整配置 WECOM_TENANT_ID/TOKEN/ENCODING_AES_KEY/CORP_ID"
+            )
         if wecom_values["encoding_aes_key"] and len(wecom_values["encoding_aes_key"]) != 43:
             raise RuntimeError("WECOM_ENCODING_AES_KEY 必须为 43 个字符")
         dingtalk_values = {
@@ -279,7 +291,9 @@ class Settings:
                 if os.getenv("KNOWLEDGE_EMBEDDING_DIMENSION", "").strip()
                 else None
             ),
-            knowledge_embedding_endpoint=os.getenv("KNOWLEDGE_EMBEDDING_ENDPOINT", "").strip() or None,
+            knowledge_embedding_endpoint=os.getenv("KNOWLEDGE_EMBEDDING_ENDPOINT", "").strip()
+            or None,
             worker_heartbeat_ttl_seconds=_int_setting("WORKER_HEARTBEAT_TTL_SECONDS", 90, 5),
-            readiness_check_workers=os.getenv("READINESS_CHECK_WORKERS", "false").strip().lower() in ("1", "true", "yes"),
+            readiness_check_workers=os.getenv("READINESS_CHECK_WORKERS", "false").strip().lower()
+            in ("1", "true", "yes"),
         )

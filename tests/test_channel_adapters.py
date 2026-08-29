@@ -11,10 +11,9 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from backend.channel_adapters import (
     DingTalkWebhookAdapter,
     IgnoreWebhookEvent,
-    WeComWebhookAdapter,
     WebhookVerificationError,
+    WeComWebhookAdapter,
 )
-
 
 WECOM_KEY = b"0123456789abcdef0123456789abcdef"
 WECOM_ENCODING_KEY = base64.b64encode(WECOM_KEY).decode("ascii").rstrip("=")
@@ -30,9 +29,9 @@ def encrypt_wecom(message: bytes, corp_id: str) -> str:
 
 def wecom_body(*, corp_id="corp-1"):
     inner = (
-        "<xml><FromUserName>user-1</FromUserName><MsgId>msg-1</MsgId>"
-        "<Content>SSO login failed</Content></xml>"
-    ).encode("utf-8")
+        b"<xml><FromUserName>user-1</FromUserName><MsgId>msg-1</MsgId>"
+        b"<Content>SSO login failed</Content></xml>"
+    )
     encrypted = encrypt_wecom(inner, corp_id)
     return f"<xml><Encrypt>{encrypted}</Encrypt></xml>".encode(), encrypted
 
@@ -41,7 +40,7 @@ def wecom_event_body(event: str = "enter_agent", *, corp_id="corp-1"):
     inner = (
         "<xml><ToUserName>corp-1</ToUserName><FromUserName>user-1</FromUserName>"
         f"<CreateTime>1700000000</CreateTime><MsgType>event</MsgType><Event>{event}</Event></xml>"
-    ).encode("utf-8")
+    ).encode()
     encrypted = encrypt_wecom(inner, corp_id)
     return f"<xml><Encrypt>{encrypted}</Encrypt></xml>".encode(), encrypted
 
@@ -51,7 +50,9 @@ def test_wecom_verifies_signature_decrypts_and_normalizes():
     timestamp = "1700000000"
     nonce = "nonce-1"
     token = "token-1"
-    signature = hashlib.sha1("".join(sorted((token, timestamp, nonce, encrypted))).encode()).hexdigest()
+    signature = hashlib.sha1(
+        "".join(sorted((token, timestamp, nonce, encrypted))).encode()
+    ).hexdigest()
     adapter = WeComWebhookAdapter(
         tenant_id="tenant-a",
         token=token,
@@ -79,7 +80,9 @@ def test_wecom_rejects_bad_signature_expired_timestamp_corp_and_dangerous_xml():
     timestamp = "1700000000"
     nonce = "nonce-1"
     token = "token-1"
-    signature = hashlib.sha1("".join(sorted((token, timestamp, nonce, encrypted))).encode()).hexdigest()
+    signature = hashlib.sha1(
+        "".join(sorted((token, timestamp, nonce, encrypted))).encode()
+    ).hexdigest()
     adapter = WeComWebhookAdapter(
         tenant_id="tenant-a",
         token=token,
@@ -88,9 +91,13 @@ def test_wecom_rejects_bad_signature_expired_timestamp_corp_and_dangerous_xml():
         replay_window_seconds=60,
     )
     with pytest.raises(WebhookVerificationError, match="签名"):
-        adapter.verify_and_parse(body, timestamp=timestamp, nonce=nonce, signature="bad", now=1700000000)
+        adapter.verify_and_parse(
+            body, timestamp=timestamp, nonce=nonce, signature="bad", now=1700000000
+        )
     with pytest.raises(WebhookVerificationError, match="过期"):
-        adapter.verify_and_parse(body, timestamp=timestamp, nonce=nonce, signature=signature, now=1700001000)
+        adapter.verify_and_parse(
+            body, timestamp=timestamp, nonce=nonce, signature=signature, now=1700001000
+        )
 
     wrong_body, wrong_encrypted = wecom_body(corp_id="other-corp")
     wrong_signature = hashlib.sha1(
@@ -120,7 +127,9 @@ def test_wecom_verify_url_returns_decrypted_echostr():
     nonce = "nonce-1"
     token = "token-1"
     encrypted = encrypt_wecom(plaintext, "corp-1")
-    signature = hashlib.sha1("".join(sorted((token, timestamp, nonce, encrypted))).encode()).hexdigest()
+    signature = hashlib.sha1(
+        "".join(sorted((token, timestamp, nonce, encrypted))).encode()
+    ).hexdigest()
     adapter = WeComWebhookAdapter(
         tenant_id="tenant-a",
         token=token,
@@ -145,7 +154,9 @@ def test_wecom_verify_url_rejects_bad_signature_expired_wrong_corp_and_bad_ciphe
     nonce = "nonce-1"
     token = "token-1"
     encrypted = encrypt_wecom(plaintext, "corp-1")
-    signature = hashlib.sha1("".join(sorted((token, timestamp, nonce, encrypted))).encode()).hexdigest()
+    signature = hashlib.sha1(
+        "".join(sorted((token, timestamp, nonce, encrypted))).encode()
+    ).hexdigest()
     adapter = WeComWebhookAdapter(
         tenant_id="tenant-a",
         token=token,
@@ -155,20 +166,40 @@ def test_wecom_verify_url_rejects_bad_signature_expired_wrong_corp_and_bad_ciphe
     )
 
     with pytest.raises(WebhookVerificationError, match="签名"):
-        adapter.verify_url(timestamp=timestamp, nonce=nonce, signature="bad", echostr=encrypted, now=1700000000)
+        adapter.verify_url(
+            timestamp=timestamp, nonce=nonce, signature="bad", echostr=encrypted, now=1700000000
+        )
     with pytest.raises(WebhookVerificationError, match="过期"):
-        adapter.verify_url(timestamp=timestamp, nonce=nonce, signature=signature, echostr=encrypted, now=1700001000)
+        adapter.verify_url(
+            timestamp=timestamp, nonce=nonce, signature=signature, echostr=encrypted, now=1700001000
+        )
 
     wrong_encrypted = encrypt_wecom(plaintext, "other-corp")
-    wrong_signature = hashlib.sha1("".join(sorted((token, timestamp, nonce, wrong_encrypted))).encode()).hexdigest()
+    wrong_signature = hashlib.sha1(
+        "".join(sorted((token, timestamp, nonce, wrong_encrypted))).encode()
+    ).hexdigest()
     with pytest.raises(WebhookVerificationError, match="CorpID"):
-        adapter.verify_url(timestamp=timestamp, nonce=nonce, signature=wrong_signature, echostr=wrong_encrypted, now=1700000000)
+        adapter.verify_url(
+            timestamp=timestamp,
+            nonce=nonce,
+            signature=wrong_signature,
+            echostr=wrong_encrypted,
+            now=1700000000,
+        )
 
     # 坏密文需配对应签名才能通过验签，随后在解密阶段被拒。
     bad_encrypted = "not-valid-ciphertext"
-    bad_signature = hashlib.sha1("".join(sorted((token, timestamp, nonce, bad_encrypted))).encode()).hexdigest()
+    bad_signature = hashlib.sha1(
+        "".join(sorted((token, timestamp, nonce, bad_encrypted))).encode()
+    ).hexdigest()
     with pytest.raises(WebhookVerificationError, match="密文"):
-        adapter.verify_url(timestamp=timestamp, nonce=nonce, signature=bad_signature, echostr=bad_encrypted, now=1700000000)
+        adapter.verify_url(
+            timestamp=timestamp,
+            nonce=nonce,
+            signature=bad_signature,
+            echostr=bad_encrypted,
+            now=1700000000,
+        )
 
 
 def test_wecom_verify_url_does_not_parse_post_xml():
@@ -177,7 +208,9 @@ def test_wecom_verify_url_does_not_parse_post_xml():
     timestamp = "1700000000"
     nonce = "nonce-1"
     token = "token-1"
-    signature = hashlib.sha1("".join(sorted((token, timestamp, nonce, encrypted))).encode()).hexdigest()
+    signature = hashlib.sha1(
+        "".join(sorted((token, timestamp, nonce, encrypted))).encode()
+    ).hexdigest()
     adapter = WeComWebhookAdapter(
         tenant_id="tenant-a",
         token=token,
@@ -207,7 +240,9 @@ def test_wecom_event_messages_raise_ignore_not_parsed():
         timestamp = "1700000000"
         nonce = "nonce-1"
         token = "token-1"
-        signature = hashlib.sha1("".join(sorted((token, timestamp, nonce, encrypted))).encode()).hexdigest()
+        signature = hashlib.sha1(
+            "".join(sorted((token, timestamp, nonce, encrypted))).encode()
+        ).hexdigest()
         adapter = WeComWebhookAdapter(
             tenant_id="tenant-a",
             token=token,

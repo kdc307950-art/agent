@@ -1,14 +1,18 @@
 import asyncio
 import os
-from datetime import datetime, time, timedelta, timezone
+from datetime import UTC, datetime, time, timedelta
 from uuid import uuid4
 
 import pytest
 
 from backend.migrations import setup_postgres
-from backend.tickets import BusinessCalendar, CreateTicket, TicketOperationsRepository, TicketRepository
+from backend.tickets import (
+    BusinessCalendar,
+    CreateTicket,
+    TicketOperationsRepository,
+    TicketRepository,
+)
 from src.my_agent.helpdesk import ActorType
-
 
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
@@ -71,19 +75,29 @@ def test_ensure_sla_for_ticket_uses_subcategory_policy_chain(monkeypatch):
             network_ticket = await create_ticket("network", tenant)
             bare_ticket = await create_ticket("bare", no_policy_tenant)
 
-            await operations.ensure_sla_for_ticket(tenant_id=tenant, ticket_id=vpn_ticket, category="it.vpn")
-            await operations.ensure_sla_for_ticket(tenant_id=tenant, ticket_id=account_ticket, category="it.account")
-            await operations.ensure_sla_for_ticket(tenant_id=tenant, ticket_id=network_ticket, category="it.network")
-            await operations.ensure_sla_for_ticket(tenant_id=no_policy_tenant, ticket_id=bare_ticket, category="it.vpn")
+            await operations.ensure_sla_for_ticket(
+                tenant_id=tenant, ticket_id=vpn_ticket, category="it.vpn"
+            )
+            await operations.ensure_sla_for_ticket(
+                tenant_id=tenant, ticket_id=account_ticket, category="it.account"
+            )
+            await operations.ensure_sla_for_ticket(
+                tenant_id=tenant, ticket_id=network_ticket, category="it.network"
+            )
+            await operations.ensure_sla_for_ticket(
+                tenant_id=no_policy_tenant, ticket_id=bare_ticket, category="it.vpn"
+            )
 
             async with tickets.pool.connection() as connection:
-                rows = await (await connection.execute(
-                    """
+                rows = await (
+                    await connection.execute(
+                        """
                     SELECT ticket_id, policy_id FROM ticket_sla
                     WHERE tenant_id = %s OR tenant_id = %s
                     """,
-                    (tenant, no_policy_tenant),
-                )).fetchall()
+                        (tenant, no_policy_tenant),
+                    )
+                ).fetchall()
             policy_by_ticket = {row[0]: row[1] for row in rows}
             return policy_by_ticket, vpn_ticket, account_ticket, network_ticket, bare_ticket
         finally:
@@ -127,13 +141,19 @@ def test_ensure_sla_for_ticket_auto_creates_instance_once(monkeypatch):
                     """,
                     (tenant_id, [0, 1, 2, 3, 4], time(9), time(18)),
                 )
-            first = await operations.ensure_sla_for_ticket(tenant_id=tenant_id, ticket_id=ticket_id, channel="wecom")
-            second = await operations.ensure_sla_for_ticket(tenant_id=tenant_id, ticket_id=ticket_id, channel="wecom")
+            first = await operations.ensure_sla_for_ticket(
+                tenant_id=tenant_id, ticket_id=ticket_id, channel="wecom"
+            )
+            second = await operations.ensure_sla_for_ticket(
+                tenant_id=tenant_id, ticket_id=ticket_id, channel="wecom"
+            )
             async with tickets.pool.connection() as connection:
-                rows = await (await connection.execute(
-                    "SELECT count(*) FROM ticket_sla WHERE tenant_id = %s AND ticket_id = %s",
-                    (tenant_id, ticket_id),
-                )).fetchone()
+                rows = await (
+                    await connection.execute(
+                        "SELECT count(*) FROM ticket_sla WHERE tenant_id = %s AND ticket_id = %s",
+                        (tenant_id, ticket_id),
+                    )
+                ).fetchone()
             return first, second, int(rows[0])
         finally:
             await tickets.close()
@@ -199,7 +219,9 @@ def test_outbox_sla_and_survey_lifecycle(monkeypatch):
                 idempotency_key=f"ticket:{ticket_id}:received",
                 payload={"ticket_id": ticket_id},
             )
-            claimed = await operations.claim_outbox(worker_id="worker-1", limit=10, tenant_id=tenant_id)
+            claimed = await operations.claim_outbox(
+                worker_id="worker-1", limit=10, tenant_id=tenant_id
+            )
             completed = await operations.complete_outbox(tenant_id, "event-1", worker_id="worker-1")
             await operations.append_outbound_message(
                 tenant_id=tenant_id,
@@ -213,16 +235,24 @@ def test_outbox_sla_and_survey_lifecycle(monkeypatch):
                 idempotency_key=f"ticket:{ticket_id}:lease",
                 payload={"ticket_id": ticket_id},
             )
-            first_lease = await operations.claim_outbox(worker_id="worker-crashed", lease_seconds=1, limit=10, tenant_id=tenant_id)
+            first_lease = await operations.claim_outbox(
+                worker_id="worker-crashed", lease_seconds=1, limit=10, tenant_id=tenant_id
+            )
             assert [event["event_id"] for event in first_lease] == ["event-lease"]
             async with tickets.pool.connection() as connection:
                 await connection.execute(
                     "UPDATE outbox_events SET lease_expires_at = now() - interval '1 second' WHERE tenant_id = %s AND event_id = 'event-lease'",
                     (tenant_id,),
                 )
-            recovered_lease = await operations.claim_outbox(worker_id="worker-recovery", lease_seconds=60, limit=10, tenant_id=tenant_id)
-            stale_complete = await operations.complete_outbox(tenant_id, "event-lease", worker_id="worker-crashed")
-            recovered_complete = await operations.complete_outbox(tenant_id, "event-lease", worker_id="worker-recovery")
+            await operations.claim_outbox(
+                worker_id="worker-recovery", lease_seconds=60, limit=10, tenant_id=tenant_id
+            )
+            stale_complete = await operations.complete_outbox(
+                tenant_id, "event-lease", worker_id="worker-crashed"
+            )
+            recovered_complete = await operations.complete_outbox(
+                tenant_id, "event-lease", worker_id="worker-recovery"
+            )
 
             calendar = BusinessCalendar(
                 timezone_name="UTC",
@@ -230,7 +260,7 @@ def test_outbox_sla_and_survey_lifecycle(monkeypatch):
                 work_start=time(9),
                 work_end=time(18),
             )
-            started = datetime(2026, 3, 2, 9, 0, tzinfo=timezone.utc)
+            started = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)
             await operations.create_sla(
                 tenant_id=tenant_id,
                 ticket_id=ticket_id,
@@ -252,7 +282,7 @@ def test_outbox_sla_and_survey_lifecycle(monkeypatch):
                 ticket_id,
                 resumed_at=started + timedelta(minutes=90),
             )
-            scan_at = datetime.now(timezone.utc)
+            scan_at = datetime.now(UTC)
             async with tickets.pool.connection() as connection:
                 await connection.execute(
                     """
@@ -260,7 +290,12 @@ def test_outbox_sla_and_survey_lifecycle(monkeypatch):
                     SET first_response_due_at = %s, resolution_due_at = %s
                     WHERE tenant_id = %s AND ticket_id = %s
                     """,
-                    (scan_at - timedelta(minutes=2), scan_at - timedelta(minutes=1), tenant_id, ticket_id),
+                    (
+                        scan_at - timedelta(minutes=2),
+                        scan_at - timedelta(minutes=1),
+                        tenant_id,
+                        ticket_id,
+                    ),
                 )
             first_scan = await operations.scan_sla_breaches(now=scan_at, tenant_id=tenant_id)
             second_scan = await operations.scan_sla_breaches(now=scan_at, tenant_id=tenant_id)
@@ -269,14 +304,14 @@ def test_outbox_sla_and_survey_lifecycle(monkeypatch):
                 tenant_id=tenant_id,
                 ticket_id=ticket_id,
                 survey_id="survey-1",
-                expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+                expires_at=datetime.now(UTC) + timedelta(days=7),
                 outbox_event_id="survey-event-1",
             )
             survey_duplicate = await operations.create_survey(
                 tenant_id=tenant_id,
                 ticket_id=ticket_id,
                 survey_id="survey-2",
-                expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+                expires_at=datetime.now(UTC) + timedelta(days=7),
                 outbox_event_id="survey-event-2",
             )
             responded = await operations.respond_survey(

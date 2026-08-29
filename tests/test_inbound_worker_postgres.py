@@ -16,7 +16,6 @@ from backend.runtime import runtime_context
 from backend.seed_demo import _seed
 from backend.settings import Settings
 
-
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
 
@@ -41,7 +40,9 @@ def test_inbound_worker_creates_ticket_and_commits(monkeypatch):
         await setup_postgres()
         async with runtime_context(Settings.from_env()) as runtime:
             await _seed(tenant, DATABASE_URL)
-            await runtime.tickets.register_inbound_event(tenant, "wecom", event_id, _event_payload())
+            await runtime.tickets.register_inbound_event(
+                tenant, "wecom", event_id, _event_payload()
+            )
             worker = InboundWorker(runtime, batch_size=10, tenant_id=tenant)
             processed = await worker.run_once()
             event = await runtime.tickets.get_inbound_event(tenant, "wecom", event_id)
@@ -77,11 +78,15 @@ def test_inbound_worker_retries_then_dead_letters_and_replays(monkeypatch):
         await setup_postgres()
         async with runtime_context(Settings.from_env()) as runtime:
             await _seed(tenant, DATABASE_URL)
-            await runtime.tickets.register_inbound_event(tenant, "wecom", event_id, _event_payload())
+            await runtime.tickets.register_inbound_event(
+                tenant, "wecom", event_id, _event_payload()
+            )
             import backend.inbound_worker as worker_module
 
             monkeypatch.setattr(worker_module, "process_inbound_event", failing_process)
-            worker = InboundWorker(runtime, max_attempts=3, backoff_base_seconds=0, batch_size=10, tenant_id=tenant)
+            worker = InboundWorker(
+                runtime, max_attempts=3, backoff_base_seconds=0, batch_size=10, tenant_id=tenant
+            )
             await worker.run_once()  # 第 1 次失败 -> failed（可重试）
             event = await runtime.tickets.get_inbound_event(tenant, "wecom", event_id)
             first_status = event["status"]
@@ -101,9 +106,20 @@ def test_inbound_worker_retries_then_dead_letters_and_replays(monkeypatch):
             replayed_status = event["status"]
             await worker.run_once()  # 第 4 次成功 -> committed
             event = await runtime.tickets.get_inbound_event(tenant, "wecom", event_id)
-            return first_status, first_attempts, second_status, dead_status, replayed, replayed_status, event["status"], event["ticket_id"]
+            return (
+                first_status,
+                first_attempts,
+                second_status,
+                dead_status,
+                replayed,
+                replayed_status,
+                event["status"],
+                event["ticket_id"],
+            )
 
-    first, first_attempts, second, dead, replayed, replayed_status, final, ticket_id = asyncio.run(run())
+    first, first_attempts, second, dead, replayed, replayed_status, final, ticket_id = asyncio.run(
+        run()
+    )
     assert first == "failed" and first_attempts == 1
     assert second == "failed"
     assert dead == "dead"
@@ -123,7 +139,9 @@ def test_inbound_worker_recovers_expired_lease(monkeypatch):
         await setup_postgres()
         async with runtime_context(Settings.from_env()) as runtime:
             await _seed(tenant, DATABASE_URL)
-            await runtime.tickets.register_inbound_event(tenant, "wecom", event_id, _event_payload())
+            await runtime.tickets.register_inbound_event(
+                tenant, "wecom", event_id, _event_payload()
+            )
             # 模拟上次 Worker 崩溃：事件卡在 processing 且租约已过期。
             async with runtime.tickets.pool.connection() as connection:
                 await connection.execute(

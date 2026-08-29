@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol, Sequence
+from typing import Protocol
 
 from .models import RetrievalHit, RetrievalPrincipal
 from .service import AnswerDecision, KnowledgeAnswerService
@@ -64,7 +65,9 @@ class AgenticRAGService:
                 if decision.auto_reply and self.policy.allow_auto_reply:
                     return decision
             # Planner receives only sanitized retrieval leaves, never tenant-wide objects.
-            lexical = await self.answer_service.repository.lexical_search(principal, queries[0], limit=limit)
+            lexical = await self.answer_service.repository.lexical_search(
+                principal, queries[0], limit=limit
+            )
             all_hits.extend(lexical)
             if len(all_hits) >= self.policy.max_contexts:
                 break

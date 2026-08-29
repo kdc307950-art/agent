@@ -7,7 +7,6 @@ import redis.asyncio as redis
 
 from backend.rate_limit import RedisRateLimiter
 
-
 REDIS_URL = os.getenv("REDIS_URL", "").strip()
 pytestmark = pytest.mark.skipif(not REDIS_URL, reason="REDIS_URL is not configured")
 

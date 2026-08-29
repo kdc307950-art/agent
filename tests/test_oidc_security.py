@@ -92,7 +92,13 @@ def test_oidc_verifier_rejects_wrong_audience():
     )
     verifier._client = FakeClient({"keys": [{**json.loads(public_jwk), "kid": "key-1"}]})
     token = jwt.encode(
-        {"iss": "https://issuer.example", "aud": "other-api", "sub": "user-1", "tenant_id": "tenant-a", "exp": int(time.time()) + 60},
+        {
+            "iss": "https://issuer.example",
+            "aud": "other-api",
+            "sub": "user-1",
+            "tenant_id": "tenant-a",
+            "exp": int(time.time()) + 60,
+        },
         private_key,
         algorithm="RS256",
         headers={"kid": "key-1"},

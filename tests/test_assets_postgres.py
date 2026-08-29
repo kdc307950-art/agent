@@ -6,11 +6,10 @@ import psycopg
 import pytest
 
 from backend.assets import AssetAlreadyExists, AssetRepository
-from backend.assets.models import AssetStatus, CreateAsset, UpdateAsset
+from backend.assets.models import CreateAsset, UpdateAsset
 from backend.migrations import setup_postgres
 from backend.tickets import AssetBindingError, CreateTicket, TicketRepository
 from src.my_agent.helpdesk import ActorType
-
 
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
@@ -37,7 +36,9 @@ def test_asset_crud_is_tenant_scoped_and_clears_fields_on_explicit_null(monkeypa
         await setup_postgres()
         repository = await AssetRepository.connect(DATABASE_URL)
         try:
-            created = await repository.create(tenant, create_request(f"asset-{uuid4().hex}", "A-001"))
+            created = await repository.create(
+                tenant, create_request(f"asset-{uuid4().hex}", "A-001")
+            )
             foreign = await repository.get(other, created.asset_id)
             cleared = await repository.update(
                 tenant, created.asset_id, UpdateAsset(hostname=None, ip_address="10.0.0.5")
@@ -62,12 +63,16 @@ def test_asset_unique_violation_is_reported_and_soft_deleted_no_reusable(monkeyp
         await setup_postgres()
         repository = await AssetRepository.connect(DATABASE_URL)
         try:
-            first = await repository.create(tenant, create_request(f"asset-{uuid4().hex}", asset_no))
+            first = await repository.create(
+                tenant, create_request(f"asset-{uuid4().hex}", asset_no)
+            )
             with pytest.raises(AssetAlreadyExists):
                 await repository.create(tenant, create_request(f"asset-{uuid4().hex}", asset_no))
             assert await repository.soft_delete(tenant, first.asset_id) is True
             assert await repository.get(tenant, first.asset_id) is None
-            rebuilt = await repository.create(tenant, create_request(f"asset-{uuid4().hex}", asset_no))
+            rebuilt = await repository.create(
+                tenant, create_request(f"asset-{uuid4().hex}", asset_no)
+            )
             return rebuilt
         finally:
             await repository.close()
@@ -145,9 +150,13 @@ def test_customer_asset_binding_ownership_is_enforced_before_insert(monkeypatch)
         tickets = await TicketRepository.connect(DATABASE_URL)
         try:
             mine = await assets.create(tenant, create_request(f"asset-{uuid4().hex}", "A-OWN-001"))
-            other_asset = await assets.create(tenant, create_request(f"asset-{uuid4().hex}", "A-OWN-002"))
+            other_asset = await assets.create(
+                tenant, create_request(f"asset-{uuid4().hex}", "A-OWN-002")
+            )
             await assets.update(tenant, other_asset.asset_id, UpdateAsset(owner_user_id="user-2"))
-            unassigned = await assets.create(tenant, create_request(f"asset-{uuid4().hex}", "A-OWN-003"))
+            unassigned = await assets.create(
+                tenant, create_request(f"asset-{uuid4().hex}", "A-OWN-003")
+            )
             await assets.update(tenant, unassigned.asset_id, UpdateAsset(owner_user_id=None))
 
             # 客户绑定不存在的资产 -> 应用层更早抛 AssetBindingError（而非 FK 错误）。

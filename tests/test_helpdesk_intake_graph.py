@@ -15,7 +15,14 @@ from src.my_agent.helpdesk import (
 
 
 class FixedClassifier:
-    def __init__(self, category: TicketCategory, *, needs_review: bool = False, subcategory: str = "general", confidence: float = 0.9):
+    def __init__(
+        self,
+        category: TicketCategory,
+        *,
+        needs_review: bool = False,
+        subcategory: str = "general",
+        confidence: float = 0.9,
+    ):
         self.result = ClassificationResult(
             category=category,
             subcategory=subcategory,
@@ -91,7 +98,8 @@ def test_missing_fields_interrupt_is_customer_scoped_then_resumes():
     assert pending.value["ticket_id"] == "ticket-1"
     assert pending.value["question"] == "请补充以下信息：affected_system、impact"
 
-    result = invoke(graph, 
+    result = invoke(
+        graph,
         Command(
             resume={
                 "action": "provide_information",
@@ -120,7 +128,8 @@ def test_clarification_limit_is_policy_driven_and_exhaustion_dispatches():
     run_config = config()
     invoke(graph, base_input(fields={"title": "Login", "description": "Broken"}), run_config)
 
-    result = invoke(graph, 
+    result = invoke(
+        graph,
         Command(
             resume={
                 "action": "provide_information",
@@ -142,7 +151,8 @@ def test_high_impact_and_sensitive_text_routes_urgent_high_risk():
     classifier = FixedClassifier(TicketCategory.IT)
     graph = build_helpdesk_intake_graph(classifier=classifier, checkpointer=MemorySaver())
 
-    result = invoke(graph, 
+    result = invoke(
+        graph,
         base_input(text="生产环境全部用户无法办公，需要开通权限"),
         config(),
     )
@@ -206,6 +216,7 @@ def test_invalid_clarification_resume_payload_is_rejected(resume, message):
 
 # ========== 第三阶段：ItPolicyProvider 动态策略 ==========
 
+
 class FakeItPolicyProvider:
     def __init__(self, policies: dict[str, dict]):
         self.policies = policies
@@ -217,6 +228,7 @@ class FakeItPolicyProvider:
         if item is None:
             return None
         from types import SimpleNamespace
+
         return SimpleNamespace(
             category=category,
             required_fields=item.get("required_fields", ()),

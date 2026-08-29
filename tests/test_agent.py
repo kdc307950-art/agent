@@ -22,22 +22,38 @@ class FakeChatModel:
 
 
 def test_should_continue_routes_to_tools_or_end():
-    tool_call = {"name": "calculate", "args": {"expression": "2 + 2"}, "id": "call-1", "type": "tool_call"}
-    assert _should_continue({"messages": [AIMessage(content="", tool_calls=[tool_call])]}) == "tools"
+    tool_call = {
+        "name": "calculate",
+        "args": {"expression": "2 + 2"},
+        "id": "call-1",
+        "type": "tool_call",
+    }
+    assert (
+        _should_continue({"messages": [AIMessage(content="", tool_calls=[tool_call])]}) == "tools"
+    )
     assert _should_continue({"messages": [AIMessage(content="finished")]}) == "end"
 
 
 def test_build_agent_compiles_with_injected_model():
-    graph = build_agent(model=FakeChatModel([AIMessage(content="done")]), checkpointer=MemorySaver())
+    graph = build_agent(
+        model=FakeChatModel([AIMessage(content="done")]), checkpointer=MemorySaver()
+    )
     assert graph is not None
 
 
 def test_agent_calls_tool_then_finishes():
-    tool_call = {"name": "calculate", "args": {"expression": "2 + 2"}, "id": "call-1", "type": "tool_call"}
-    model = FakeChatModel([
-        AIMessage(content="", tool_calls=[tool_call]),
-        AIMessage(content="计算完成"),
-    ])
+    tool_call = {
+        "name": "calculate",
+        "args": {"expression": "2 + 2"},
+        "id": "call-1",
+        "type": "tool_call",
+    }
+    model = FakeChatModel(
+        [
+            AIMessage(content="", tool_calls=[tool_call]),
+            AIMessage(content="计算完成"),
+        ]
+    )
     graph = build_agent(model=model, checkpointer=MemorySaver())
 
     async def run():

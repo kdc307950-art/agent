@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from src.my_agent.helpdesk import TicketCommand
 
 from .metrics import RuntimeMetrics
 from .tickets import TicketRepository
-from .worker_metrics import WorkerMetricsDB, safe_beat
+from .worker_metrics import WorkerMetricsDB, safe_beat, safe_incr
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class WorkflowRecoveryWorker:
 
     async def run_once(self) -> tuple[int, int, int]:
         operations = await self.repository.list_recoverable_workflow_operations(
-            older_than=datetime.now(timezone.utc) - timedelta(seconds=self.grace_seconds)
+            older_than=datetime.now(UTC) - timedelta(seconds=self.grace_seconds)
         )
         replayed = alerts = failed = 0
         for operation in operations:
@@ -62,7 +62,12 @@ class WorkflowRecoveryWorker:
                 replayed += 1
             except Exception as exc:
                 failed += 1
-                logger.exception("工作流恢复失败 tenant=%s ticket=%s operation=%s", operation["tenant_id"], operation["ticket_id"], operation["operation_id"])
+                logger.exception(
+                    "工作流恢复失败 tenant=%s ticket=%s operation=%s",
+                    operation["tenant_id"],
+                    operation["ticket_id"],
+                    operation["operation_id"],
+                )
                 await self.repository.mark_workflow_operation_failed(
                     tenant_id=operation["tenant_id"],
                     ticket_id=operation["ticket_id"],
@@ -92,19 +97,26 @@ class WorkflowRecoveryWorker:
             except Exception:
                 # 单轮失败（含 DB 扫描阶段不可用）不终止常驻进程：记录 + 计数 + 退避后继续下一轮。
                 consecutive_failures += 1
-                await safe_incr(self.worker_metrics, "worker_loop_errors_total", {"worker": "recovery"})
+                await safe_incr(
+                    self.worker_metrics, "worker_loop_errors_total", {"worker": "recovery"}
+                )
                 logger.exception(
                     "worker_round_failed",
-                    extra={"ctx": {"worker_type": "recovery", "consecutive_failures": consecutive_failures}},
+                    extra={
+                        "ctx": {
+                            "worker_type": "recovery",
+                            "consecutive_failures": consecutive_failures,
+                        }
+                    },
                 )
                 backoff = min(self.interval_seconds * (2 ** (consecutive_failures - 1)), 120.0)
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=backoff)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
                 continue
             await safe_beat(self.worker_metrics, "recovery", "workflow-recovery")
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=self.interval_seconds)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass

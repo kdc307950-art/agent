@@ -11,16 +11,18 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Annotated, Any
 
 from langgraph.graph import END, START, StateGraph, add_messages
-from typing_extensions import Annotated, TypedDict
+from typing_extensions import TypedDict
 
 from ..supervisor_agent import _build_model  # 复用现有模型构建（含 DEEPSEEK_API_KEY 校验）
-
-from .nodes import BuildContext, NODE_REGISTRY
-from .schema import SCHEMA_VERSION, END as _SPEC_END, START as _SPEC_START, EdgeSpec, NodeSpec, WorkflowSpec
+from .nodes import NODE_REGISTRY, BuildContext
+from .schema import END as _SPEC_END
+from .schema import START as _SPEC_START
+from .schema import WorkflowSpec
 
 logger = logging.getLogger("langgraph.workflow.compiler")
 
@@ -59,7 +61,7 @@ def build_state(spec: WorkflowSpec) -> type:
             fields[name] = field_spec.python_type
     if not fields:
         fields["messages"] = Annotated[list, add_messages]
-    return TypedDict(f"WorkflowState_{spec.name}", fields, total=False)
+    return TypedDict(f"WorkflowState_{spec.name}", fields, total=False)  # type: ignore[operator]  # 动态创建 TypedDict 是合法运行时用法
 
 
 # ========== 路由函数 ==========
@@ -84,7 +86,7 @@ def _resolve_endpoint(name: str) -> Any:
     return name
 
 
-def _resolve_route_mapping(mapping: dict[str, str]) -> dict[str, Any]:
+def _resolve_route_mapping(mapping: dict[str, str]) -> dict[str, str]:
     return {key: _resolve_endpoint(target) for key, target in mapping.items()}
 
 
@@ -133,7 +135,7 @@ def build_workflow_from_json(
     registry = node_registry or NODE_REGISTRY
 
     state_type = build_state(workflow)
-    graph = StateGraph(state_type)
+    graph: Any = StateGraph(state_type)
 
     # 1. 注册节点
     for node_spec in workflow.nodes:
@@ -151,11 +153,11 @@ def build_workflow_from_json(
     for edge_spec in workflow.edges:
         source = _resolve_endpoint(edge_spec.source)
         if edge_spec.type == "plain":
-            target = _resolve_endpoint(edge_spec.target)
+            target = _resolve_endpoint(edge_spec.target or "")
             graph.add_edge(source, target)
             logger.debug("普通边: %s -> %s", edge_spec.source, edge_spec.target)
         else:  # route
-            router = make_router(edge_spec.field)
+            router = make_router(edge_spec.field or "")
             mapping = _resolve_route_mapping(edge_spec.mapping)
             graph.add_conditional_edges(source, router, mapping)
             logger.debug(

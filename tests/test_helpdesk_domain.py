@@ -36,29 +36,122 @@ def command(
 @pytest.mark.parametrize(
     ("source", "action", "actor_type", "scope", "target"),
     [
-        (TicketStatus.NEW, TicketAction.START_INTAKE, ActorType.SYSTEM, "ticket:system", TicketStatus.INTAKING),
-        (TicketStatus.INTAKING, TicketAction.REQUEST_INFORMATION, ActorType.AGENT, "ticket:agent", TicketStatus.AWAITING_CUSTOMER),
-        (TicketStatus.AWAITING_CUSTOMER, TicketAction.PROVIDE_INFORMATION, ActorType.CUSTOMER, "ticket:customer", TicketStatus.INTAKING),
-        (TicketStatus.INTAKING, TicketAction.CLASSIFY, ActorType.SYSTEM, "ticket:system", TicketStatus.CLASSIFIED),
-        (TicketStatus.CLASSIFIED, TicketAction.PROPOSE_ANSWER, ActorType.SYSTEM, "ticket:system", TicketStatus.ANSWER_PROPOSED),
-        (TicketStatus.ANSWER_PROPOSED, TicketAction.REQUEST_CONFIRMATION, ActorType.SYSTEM, "ticket:system", TicketStatus.AWAITING_CUSTOMER_CONFIRMATION),
-        (TicketStatus.AWAITING_CUSTOMER_CONFIRMATION, TicketAction.CONFIRM_RESOLVED, ActorType.CUSTOMER, "ticket:customer", TicketStatus.RESOLVED),
-        (TicketStatus.AWAITING_CUSTOMER_CONFIRMATION, TicketAction.REPORT_UNRESOLVED, ActorType.CUSTOMER, "ticket:customer", TicketStatus.QUEUED),
-        (TicketStatus.QUEUED, TicketAction.ASSIGN, ActorType.AGENT, "ticket:agent", TicketStatus.ASSIGNED),
-        (TicketStatus.ASSIGNED, TicketAction.START_WORK, ActorType.AGENT, "ticket:agent", TicketStatus.IN_PROGRESS),
-        (TicketStatus.IN_PROGRESS, TicketAction.REQUEST_APPROVAL, ActorType.AGENT, "ticket:agent", TicketStatus.AWAITING_APPROVAL),
-        (TicketStatus.AWAITING_APPROVAL, TicketAction.APPROVE, ActorType.APPROVER, "ticket:approve", TicketStatus.IN_PROGRESS),
-        (TicketStatus.IN_PROGRESS, TicketAction.RESOLVE, ActorType.AGENT, "ticket:agent", TicketStatus.RESOLVED),
-        (TicketStatus.RESOLVED, TicketAction.CLOSE, ActorType.SYSTEM, "ticket:system", TicketStatus.CLOSED),
-        (TicketStatus.RESOLVED, TicketAction.REOPEN, ActorType.CUSTOMER, "ticket:customer", TicketStatus.IN_PROGRESS),
+        (
+            TicketStatus.NEW,
+            TicketAction.START_INTAKE,
+            ActorType.SYSTEM,
+            "ticket:system",
+            TicketStatus.INTAKING,
+        ),
+        (
+            TicketStatus.INTAKING,
+            TicketAction.REQUEST_INFORMATION,
+            ActorType.AGENT,
+            "ticket:agent",
+            TicketStatus.AWAITING_CUSTOMER,
+        ),
+        (
+            TicketStatus.AWAITING_CUSTOMER,
+            TicketAction.PROVIDE_INFORMATION,
+            ActorType.CUSTOMER,
+            "ticket:customer",
+            TicketStatus.INTAKING,
+        ),
+        (
+            TicketStatus.INTAKING,
+            TicketAction.CLASSIFY,
+            ActorType.SYSTEM,
+            "ticket:system",
+            TicketStatus.CLASSIFIED,
+        ),
+        (
+            TicketStatus.CLASSIFIED,
+            TicketAction.PROPOSE_ANSWER,
+            ActorType.SYSTEM,
+            "ticket:system",
+            TicketStatus.ANSWER_PROPOSED,
+        ),
+        (
+            TicketStatus.ANSWER_PROPOSED,
+            TicketAction.REQUEST_CONFIRMATION,
+            ActorType.SYSTEM,
+            "ticket:system",
+            TicketStatus.AWAITING_CUSTOMER_CONFIRMATION,
+        ),
+        (
+            TicketStatus.AWAITING_CUSTOMER_CONFIRMATION,
+            TicketAction.CONFIRM_RESOLVED,
+            ActorType.CUSTOMER,
+            "ticket:customer",
+            TicketStatus.RESOLVED,
+        ),
+        (
+            TicketStatus.AWAITING_CUSTOMER_CONFIRMATION,
+            TicketAction.REPORT_UNRESOLVED,
+            ActorType.CUSTOMER,
+            "ticket:customer",
+            TicketStatus.QUEUED,
+        ),
+        (
+            TicketStatus.QUEUED,
+            TicketAction.ASSIGN,
+            ActorType.AGENT,
+            "ticket:agent",
+            TicketStatus.ASSIGNED,
+        ),
+        (
+            TicketStatus.ASSIGNED,
+            TicketAction.START_WORK,
+            ActorType.AGENT,
+            "ticket:agent",
+            TicketStatus.IN_PROGRESS,
+        ),
+        (
+            TicketStatus.IN_PROGRESS,
+            TicketAction.REQUEST_APPROVAL,
+            ActorType.AGENT,
+            "ticket:agent",
+            TicketStatus.AWAITING_APPROVAL,
+        ),
+        (
+            TicketStatus.AWAITING_APPROVAL,
+            TicketAction.APPROVE,
+            ActorType.APPROVER,
+            "ticket:approve",
+            TicketStatus.IN_PROGRESS,
+        ),
+        (
+            TicketStatus.IN_PROGRESS,
+            TicketAction.RESOLVE,
+            ActorType.AGENT,
+            "ticket:agent",
+            TicketStatus.RESOLVED,
+        ),
+        (
+            TicketStatus.RESOLVED,
+            TicketAction.CLOSE,
+            ActorType.SYSTEM,
+            "ticket:system",
+            TicketStatus.CLOSED,
+        ),
+        (
+            TicketStatus.RESOLVED,
+            TicketAction.REOPEN,
+            ActorType.CUSTOMER,
+            "ticket:customer",
+            TicketStatus.IN_PROGRESS,
+        ),
     ],
 )
 def test_declared_ticket_transitions(source, action, actor_type, scope, target):
-    assert transition_ticket(
-        source,
-        command(action, actor_type),
-        scopes={scope},
-    ) == target
+    assert (
+        transition_ticket(
+            source,
+            command(action, actor_type),
+            scopes={scope},
+        )
+        == target
+    )
 
 
 def test_terminal_statuses_have_no_outgoing_transitions():
@@ -155,7 +248,9 @@ def test_resume_rejects_stale_cross_ticket_wrong_actor_and_wrong_action(changes,
     resume = TicketResumeCommand(**data)
 
     with pytest.raises(error):
-        validate_resume_command(customer_pending(), resume, scopes={"ticket:customer", "ticket:approve"})
+        validate_resume_command(
+            customer_pending(), resume, scopes={"ticket:customer", "ticket:approve"}
+        )
 
 
 def test_customer_cannot_approve_even_when_scope_is_present():

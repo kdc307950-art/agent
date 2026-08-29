@@ -16,18 +16,16 @@ import logging
 import os
 from typing import Annotated
 
-from dotenv import load_dotenv
+from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph, add_messages
-from langchain.agents import create_agent
 from langgraph.types import interrupt
+from pydantic import SecretStr
 from typing_extensions import TypedDict
 
 from .tools import calculate, get_weather
-
-load_dotenv()
 
 logger = logging.getLogger("langgraph.supervisor")
 
@@ -46,11 +44,11 @@ class SupervisorState(TypedDict):
 
 # ========== 2. 模型构建（沿用现有依赖注入风格）==========
 def _build_model(api_key=None, base_url=None, model_name=None):
-    resolved = (api_key or os.getenv("DEEPSEEK_API_KEY", "")).strip()
+    resolved = (api_key or os.getenv("DEEPSEEK_API_KEY") or "").strip()
     if not resolved:
         raise RuntimeError("缺少必需环境变量: DEEPSEEK_API_KEY")
     return ChatOpenAI(
-        api_key=resolved,
+        api_key=SecretStr(resolved),
         base_url=base_url or "https://api.deepseek.com",
         model=model_name or "deepseek-chat",
         temperature=0,

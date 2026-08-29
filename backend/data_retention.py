@@ -13,14 +13,13 @@ import argparse
 import asyncio
 import json
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Sequence
+from datetime import UTC, datetime, timedelta
 
 from psycopg_pool import AsyncConnectionPool
 
 from .schema import check_schema_ready
-
 
 DATA_RETENTION_LOCK_KEY = 891274632
 
@@ -54,7 +53,7 @@ class DataRetention:
         self.config = config
 
     @classmethod
-    async def connect(cls, conninfo: str, config: DataRetentionConfig) -> "DataRetention":
+    async def connect(cls, conninfo: str, config: DataRetentionConfig) -> DataRetention:
         pool = AsyncConnectionPool(
             conninfo,
             min_size=1,
@@ -74,10 +73,10 @@ class DataRetention:
         dry_run: bool = False,
         now: datetime | None = None,
     ) -> DataRetentionResult:
-        reference = now or datetime.now(timezone.utc)
+        reference = now or datetime.now(UTC)
         if reference.tzinfo is None:
-            reference = reference.replace(tzinfo=timezone.utc)
-        reference = reference.astimezone(timezone.utc)
+            reference = reference.replace(tzinfo=UTC)
+        reference = reference.astimezone(UTC)
         cutoff = reference - timedelta(days=self.config.checkpoint_days)
         result = DataRetentionResult(dry_run=dry_run, lock_acquired=False)
         async with self.pool.connection() as connection:
@@ -194,7 +193,7 @@ class DataRetention:
                     )
                     thread_ids = [str(row[0]) for row in await cursor.fetchall()]
                     if not thread_ids:
-                        return tuple(total)
+                        return (total[0], total[1], total[2])
                     await cursor.execute(
                         "DELETE FROM checkpoint_writes WHERE thread_id = ANY(%s)",
                         (thread_ids,),

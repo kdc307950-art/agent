@@ -10,24 +10,24 @@
 
 from __future__ import annotations
 
-import hmac
-import hashlib
 import base64
+import hashlib
+import hmac
 import json
+import logging
 import os
 import time
-import logging
 from dataclasses import dataclass
 
 import httpx
 import jwt
-from jwt import InvalidTokenError
-
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jwt import InvalidTokenError
 
-from .rate_limit import InMemoryRateLimiter
-
+from .rate_limit import (
+    InMemoryRateLimiter as InMemoryRateLimiter,  # noqa: F401  # re-export，供 backend.app 使用
+)
 
 bearer_scheme = HTTPBearer(auto_error=False)
 logger = logging.getLogger("langgraph.security")
@@ -138,7 +138,10 @@ class OIDCVerifier:
                 raise ValueError("OIDC token 的 iat 无效") from exc
             if issued_at > now + self.clock_skew_seconds:
                 raise ValueError("OIDC token 尚未签发")
-            if self.max_token_age_seconds and now - issued_at > self.max_token_age_seconds + self.clock_skew_seconds:
+            if (
+                self.max_token_age_seconds
+                and now - issued_at > self.max_token_age_seconds + self.clock_skew_seconds
+            ):
                 raise ValueError("OIDC token 超过允许年龄")
         elif self.max_token_age_seconds:
             raise ValueError("OIDC token 缺少 iat")
@@ -156,7 +159,11 @@ class OIDCVerifier:
         if not _valid_identifier(tenant_id) or not _valid_identifier(user_id):
             raise ValueError("OIDC token 缺少有效租户身份")
         raw_scopes = claims.get("scope", claims.get("scp", claims.get("roles", [])))
-        scopes = frozenset(raw_scopes.split() if isinstance(raw_scopes, str) else (str(item) for item in raw_scopes))
+        scopes = frozenset(
+            raw_scopes.split()
+            if isinstance(raw_scopes, str)
+            else (str(item) for item in raw_scopes)
+        )
         if not self.required_scopes.issubset(scopes):
             raise PermissionError("OIDC token 缺少所需 scope")
         return Principal(tenant_id=tenant_id, user_id=user_id, scopes=scopes)
@@ -253,7 +260,12 @@ def make_tenant_token(
     if not re.fullmatch(_IDENTIFIER, tenant_id) or not re.fullmatch(_IDENTIFIER, user_id):
         raise ValueError("租户或用户标识包含非法字符")
     issued_at = int(time.time() if now is None else now)
-    payload = {"tenant_id": tenant_id, "user_id": user_id, "scopes": list(scopes), "exp": issued_at + ttl_seconds}
+    payload = {
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "scopes": list(scopes),
+        "exp": issued_at + ttl_seconds,
+    }
     encoded = _b64url_encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode())
     body = f"{_TOKEN_VERSION}.{encoded}"
     signature = hmac.new(secret.encode(), body.encode(), hashlib.sha256).digest()
@@ -298,20 +310,25 @@ async def authenticate(
         if getattr(settings, "auth_mode", "dev") == "oidc":
             principal = await request.app.state.auth_verifier.verify(credentials.credentials)
         else:
-            secret = getattr(settings, "tenant_token_secret", "") or os.getenv("TENANT_TOKEN_SECRET", "").strip()
+            secret = (
+                getattr(settings, "tenant_token_secret", "")
+                or os.getenv("TENANT_TOKEN_SECRET", "").strip()
+            )
             if not secret:
                 raise RuntimeError("服务未配置租户令牌密钥")
             principal = _parse_tenant_token(credentials.credentials, secret)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="API 鉴权失败",
             headers={"WWW-Authenticate": "Bearer"},
-        )
+        ) from None
     request.state.authenticated = True
     request.state.principal = principal
     return principal

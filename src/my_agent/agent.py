@@ -20,17 +20,14 @@ import logging
 import os
 from typing import Any
 
-from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
+from pydantic import SecretStr
 
 from .state import AgentState
 from .tools import tools
-
-
-load_dotenv()
 
 logger = logging.getLogger("langgraph.agent")
 if os.getenv("LANGCHAIN_API_KEY"):
@@ -86,11 +83,11 @@ def build_agent(
 ):
     """Build the graph with injectable model and persistence dependencies."""
     if model is None:
-        resolved_api_key = (api_key or os.getenv("DEEPSEEK_API_KEY", "")).strip()
+        resolved_api_key = (api_key or os.getenv("DEEPSEEK_API_KEY") or "").strip()
         if not resolved_api_key:
             raise RuntimeError("缺少必需环境变量: DEEPSEEK_API_KEY")
         model = ChatOpenAI(
-            api_key=resolved_api_key,
+            api_key=SecretStr(resolved_api_key),
             base_url=base_url or "https://api.deepseek.com",
             model=model_name or "deepseek-chat",
             temperature=0,

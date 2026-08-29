@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -11,7 +11,6 @@ from psycopg_pool import AsyncConnectionPool
 from backend.audit import audit_context
 from backend.retention import AuditRetention, RetentionConfig
 from backend.run_context import RunContext
-
 
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
@@ -76,7 +75,7 @@ async def _delete_test_runs(run_ids: list[str]) -> None:
 
 
 def test_retention_dry_run_then_bounded_idempotent_cleanup_preserves_running() -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     completed_ids = [f"retention-completed-{uuid4().hex}" for _ in range(3)]
     running_id = f"retention-running-{uuid4().hex}"
     all_ids = [*completed_ids, running_id]
@@ -117,11 +116,13 @@ def test_retention_dry_run_then_bounded_idempotent_cleanup_preserves_running() -
 
 
 def test_retention_skips_when_advisory_lock_is_held() -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     config = RetentionConfig(retention_days=30, batch_size=10, max_runtime_seconds=20, enabled=True)
 
     async def run():
-        lock_pool = AsyncConnectionPool(DATABASE_URL, min_size=1, max_size=1, open=False, name="retention-lock-test")
+        lock_pool = AsyncConnectionPool(
+            DATABASE_URL, min_size=1, max_size=1, open=False, name="retention-lock-test"
+        )
         await lock_pool.open(wait=True)
         try:
             async with lock_pool.connection() as connection:

@@ -11,8 +11,8 @@ import argparse
 import asyncio
 import os
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from psycopg import AsyncConnection
 
@@ -72,12 +72,18 @@ async def verify_recovery(
                 "SELECT count(*) FROM checkpoints WHERE thread_id = %s",
                 (thread_id,),
             )
-            checkpoint_count = int((await cursor.fetchone())[0])
+            row = await cursor.fetchone()
+            if row is None:
+                raise RuntimeError("checkpoint 计数查询无结果")
+            checkpoint_count = int(row[0])
             await cursor.execute(
                 "SELECT count(*) FROM store WHERE prefix = %s AND key = %s",
                 (prefix, memory_key),
             )
-            memory_count = int((await cursor.fetchone())[0])
+            row = await cursor.fetchone()
+            if row is None:
+                raise RuntimeError("memory 计数查询无结果")
+            memory_count = int(row[0])
     return {
         "thread_id": thread_id,
         "checkpoint_count": checkpoint_count,

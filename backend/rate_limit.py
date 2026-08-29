@@ -15,8 +15,6 @@ from __future__ import annotations
 import hashlib
 from collections import defaultdict, deque
 from time import monotonic
-from typing import Deque
-
 
 # 令牌桶。整段在 Redis 里原子执行——「读令牌数 → 计算补充 → 写回」若拆成
 # 多次往返，并发请求会同时读到同一个旧值，各自认为还有令牌。
@@ -58,7 +56,7 @@ class InMemoryRateLimiter:
         self.capacity = capacity
         self.window_seconds = window_seconds
         # key -> 该 key 在窗口内的请求时刻队列。进程重启即清空。
-        self._requests: dict[str, Deque[float]] = defaultdict(deque)
+        self._requests: dict[str, deque[float]] = defaultdict(deque)
 
     async def check(self, principal_key: str, route: str) -> int | None:
         """允许则返回 None；超限则返回建议的 Retry-After 秒数。"""
@@ -81,7 +79,9 @@ class RedisRateLimiter:
     """基于 Redis 令牌桶的共享限流，多副本之间计数一致。key 前缀带版本号，
     改动桶语义时递增前缀即可让旧 key 自然过期，不必手工清库。"""
 
-    def __init__(self, client, *, capacity: int, refill_per_second: float, key_prefix: str = "rl:v1") -> None:
+    def __init__(
+        self, client, *, capacity: int, refill_per_second: float, key_prefix: str = "rl:v1"
+    ) -> None:
         if capacity < 1 or refill_per_second <= 0:
             raise ValueError("Redis 限流参数无效")
         self.client = client

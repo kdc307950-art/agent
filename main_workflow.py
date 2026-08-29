@@ -15,11 +15,14 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
+from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from src.my_agent.workflow import build_workflow_from_json
+
+load_dotenv()
 
 
 async def _handle_interrupts(agent, config) -> None:
@@ -72,8 +75,9 @@ def _sqlite_conn():
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="从 JSON 工作流编译并运行 LangGraph 图")
-    parser.add_argument("workflow", nargs="?", default="workflows/legacy-demo.json",
-                        help="工作流 JSON 路径")
+    parser.add_argument(
+        "workflow", nargs="?", default="workflows/legacy-demo.json", help="工作流 JSON 路径"
+    )
     parser.add_argument("--thread", default="workflow_demo_001", help="thread_id")
     args = parser.parse_args()
     asyncio.run(_run(args.workflow, args.thread))

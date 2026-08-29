@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Iterable
+from datetime import UTC, datetime
+from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from src.my_agent.helpdesk import ActorType, TicketAction, TicketCommand, TicketStatus, transition_ticket
+from src.my_agent.helpdesk import (
+    ActorType,
+    TicketAction,
+    TicketCommand,
+    TicketStatus,
+    transition_ticket,
+)
 
 from .models import CreateTicket, InboundEventResult, TicketRecord, TicketStatusEvent
 
@@ -68,7 +75,7 @@ class TicketRepository:
         *,
         min_size: int = 1,
         max_size: int = 4,
-    ) -> "TicketRepository":
+    ) -> TicketRepository:
         pool = AsyncConnectionPool(
             conninfo,
             min_size=min_size,
@@ -274,7 +281,14 @@ class TicketRepository:
                     ON CONFLICT (tenant_id, ticket_id, operation_id) DO NOTHING
                     RETURNING *
                     """,
-                    (tenant_id, ticket_id, operation_id, command_type, expected_version, checkpoint_thread_id),
+                    (
+                        tenant_id,
+                        ticket_id,
+                        operation_id,
+                        command_type,
+                        expected_version,
+                        checkpoint_thread_id,
+                    ),
                 )
                 row = await cursor.fetchone()
                 if row is not None:
@@ -365,7 +379,7 @@ class TicketRepository:
     ) -> list[dict[str, Any]]:
         if limit < 1 or limit > 1000:
             raise ValueError("limit 必须在 1 到 1000 之间")
-        reference = older_than or datetime.now(timezone.utc)
+        reference = older_than or datetime.now(UTC)
         async with self.pool.connection() as connection:
             async with connection.cursor(row_factory=dict_row) as cursor:
                 await cursor.execute(
@@ -487,9 +501,10 @@ class TicketRepository:
                             command.expected_version,
                         ),
                     )
-                    updated = await cursor.fetchone()
-                    if updated is None:
+                    row = await cursor.fetchone()
+                    if row is None:
                         raise TicketVersionConflict("工单版本已变化，请刷新后重试")
+                    updated = row
                     if command.action == TicketAction.ASSIGN:
                         member_id = command.payload.get("user_id")
                         if member_id is not None:
@@ -565,7 +580,11 @@ class TicketRepository:
                     )
                 if operation_id is not None:
                     result_hash = canonical_payload_hash(
-                        {"ticket_id": ticket_id, "version": int(updated["version"]), "status": updated["status"]}
+                        {
+                            "ticket_id": ticket_id,
+                            "version": int(updated["version"]),
+                            "status": updated["status"],
+                        }
                     )
                     await cursor.execute(
                         """
@@ -707,7 +726,9 @@ class TicketRepository:
                 )
                 return await cursor.fetchone()
 
-    async def list_pending_intakes(self, tenant_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    async def list_pending_intakes(
+        self, tenant_id: str, *, limit: int = 100
+    ) -> list[dict[str, Any]]:
         if limit < 1 or limit > 500:
             raise ValueError("limit 必须在 1 到 500 之间")
         async with self.pool.connection() as connection:
@@ -739,7 +760,7 @@ class TicketRepository:
                 return cursor.rowcount == 1
 
     async def expire_pending_intakes(self, *, now=None) -> int:
-        reference = now or datetime.now(timezone.utc)
+        reference = now or datetime.now(UTC)
         async with self.pool.connection() as connection:
             async with connection.cursor() as cursor:
                 await cursor.execute(
@@ -946,7 +967,14 @@ class TicketRepository:
                       AND status = 'processing' AND worker_id = %s
                       AND lease_expires_at >= now()
                     """,
-                    (target_status == "dead", retry_at, error_code, tenant_id, external_event_id, worker_id),
+                    (
+                        target_status == "dead",
+                        retry_at,
+                        error_code,
+                        tenant_id,
+                        external_event_id,
+                        worker_id,
+                    ),
                 )
                 return cursor.rowcount == 1
 

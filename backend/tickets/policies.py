@@ -101,6 +101,8 @@ class ItPolicyRepository:
                 except psycopg.errors.ForeignKeyViolation as exc:
                     raise ItPolicyNotFound("引用的 SLA 策略不存在") from exc
                 row = await cursor.fetchone()
+        if row is None:
+            raise RuntimeError("IT 策略写入后未返回行")
         return _row_to_policy(row)
 
     async def get(self, tenant_id: str, category: str) -> TenantItPolicy | None:

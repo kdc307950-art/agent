@@ -29,9 +29,7 @@ def load_workflow_spec(settings: Any) -> dict[str, Any]:
     """
     raw_path = getattr(settings, "agent_workflow_path", None)
     if not raw_path:
-        raise WorkflowSpecUnavailable(
-            "AGENT_GRAPH_MODE=workflow 但未配置 AGENT_WORKFLOW_PATH"
-        )
+        raise WorkflowSpecUnavailable("AGENT_GRAPH_MODE=workflow 但未配置 AGENT_WORKFLOW_PATH")
     path = Path(raw_path)
     if not path.is_absolute():
         # 相对路径按项目根目录解析，避免受进程工作目录影响

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol, Sequence
+from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -26,7 +27,7 @@ class AnswerGenerator(Protocol):
         self,
         question: str,
         contexts: Sequence[RetrievalHit],
-    ) -> "GeneratedAnswer": ...
+    ) -> GeneratedAnswer: ...
 
 
 class GeneratedCitation(BaseModel):
@@ -160,7 +161,10 @@ class KnowledgeAnswerService:
             reasons.append("invalid_citation")
         if category in self.gate_policy.sensitive_categories or risk_level == "high":
             reasons.append("sensitive_or_high_risk")
-        if self.gate_policy.require_both_retrievers and hybrid_count < self.gate_policy.minimum_hybrid_hits:
+        if (
+            self.gate_policy.require_both_retrievers
+            and hybrid_count < self.gate_policy.minimum_hybrid_hits
+        ):
             reasons.append("insufficient_cross_retriever_support")
 
         auto_reply = not reasons

@@ -23,8 +23,10 @@ class AssetRepository:
         self.pool = pool
 
     @classmethod
-    async def connect(cls, conninfo: str) -> "AssetRepository":
-        pool = AsyncConnectionPool(conninfo, min_size=1, max_size=4, open=False, name="helpdesk-assets")
+    async def connect(cls, conninfo: str) -> AssetRepository:
+        pool = AsyncConnectionPool(
+            conninfo, min_size=1, max_size=4, open=False, name="helpdesk-assets"
+        )
         await pool.open(wait=True)
         return cls(pool)
 

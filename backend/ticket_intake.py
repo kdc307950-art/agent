@@ -16,6 +16,7 @@ from langgraph.types import Command
 from src.my_agent.helpdesk import (
     ActorType,
     PendingTicketInterrupt,
+    ResumeAction,
     TicketAction,
     TicketCommand,
     TicketResumeCommand,
@@ -25,7 +26,13 @@ from src.my_agent.helpdesk import (
 
 
 def intake_config(tenant_id: str, ticket_id: str) -> dict[str, Any]:
-    return {"configurable": {"thread_id": f"helpdesk:{tenant_id}:{ticket_id}", "tenant_id": tenant_id, "checkpoint_ns": ""}}
+    return {
+        "configurable": {
+            "thread_id": f"helpdesk:{tenant_id}:{ticket_id}",
+            "tenant_id": tenant_id,
+            "checkpoint_ns": "",
+        }
+    }
 
 
 def serialize_commands(commands: list[TicketCommand]) -> list[dict[str, Any]]:
@@ -117,7 +124,9 @@ async def apply_operational_routing(
     for command in commands:
         if command.action == TicketAction.QUEUE:
             payload = dict(command.payload)
-            payload.update({"team_id": decision.team_id, "reason_codes": list(decision.reason_codes)})
+            payload.update(
+                {"team_id": decision.team_id, "reason_codes": list(decision.reason_codes)}
+            )
             command = command.model_copy(update={"payload": payload})
         updated.append(command)
     if decision.member_id is not None:
@@ -128,7 +137,11 @@ async def apply_operational_routing(
                 actor_type=ActorType.SYSTEM,
                 actor_id="routing-agent",
                 expected_version=updated[-1].expected_version + 1,
-                payload={"team_id": decision.team_id, "user_id": decision.member_id, "reason_codes": list(decision.reason_codes)},
+                payload={
+                    "team_id": decision.team_id,
+                    "user_id": decision.member_id,
+                    "reason_codes": list(decision.reason_codes),
+                },
             )
         )
     return updated
@@ -157,7 +170,9 @@ def serialize_intake_result(ticket, result: dict[str, Any], snapshot: object) ->
     }
 
 
-async def pending_intake_interrupt(runtime, tenant_id: str, ticket_id: str) -> dict[str, Any] | None:
+async def pending_intake_interrupt(
+    runtime, tenant_id: str, ticket_id: str
+) -> dict[str, Any] | None:
     snapshot = await runtime.intake_graph.aget_state(intake_config(tenant_id, ticket_id))
     return serialize_intake_result(None, {}, snapshot)["interrupt"]
 
@@ -191,9 +206,11 @@ def pending_from_snapshot(snapshot: object, interrupt_id: str) -> PendingTicketI
                     return PendingTicketInterrupt(
                         interrupt_id=interrupt_id,
                         ticket_id=str(value.get("ticket_id") or ""),
-                        expected_actor=ActorType(value.get("expected_actor")),
+                        expected_actor=ActorType(str(value.get("expected_actor") or "system")),
                         expected_actor_id=value.get("expected_actor_id"),
-                        allowed_actions=value.get("allowed_actions") or [],
+                        allowed_actions=frozenset(
+                            ResumeAction(item) for item in (value.get("allowed_actions") or [])
+                        ),
                     )
     raise ValueError("恢复标识已失效，请刷新后重试")
 
@@ -226,7 +243,11 @@ async def apply_intake_resume(
     if run["status"] == "committed":
         snapshot = await runtime.intake_graph.aget_state(config)
         ticket = await runtime.tickets.get(tenant_id, ticket_id)
-        return {"ticket": ticket, "result": {}, "interrupt": serialize_intake_result(None, {}, snapshot)["interrupt"]}
+        return {
+            "ticket": ticket,
+            "result": {},
+            "interrupt": serialize_intake_result(None, {}, snapshot)["interrupt"],
+        }
 
     snapshot = await runtime.intake_graph.aget_state(config)
     pending = pending_from_snapshot(snapshot, interrupt_id)
@@ -235,12 +256,19 @@ async def apply_intake_resume(
         result = dict(run["intent"].get("result") or {})
     else:
         validated = validate_resume_command(pending, resume_command, scopes=scopes)
-        result = await runtime.intake_graph.ainvoke(Command(resume=validated.resume_payload), config)
+        result = await runtime.intake_graph.ainvoke(
+            Command(resume=validated.resume_payload), config
+        )
         outcome = intake_outcome_commands(
-            ticket_id=ticket_id, actor_id="intake-agent", expected_version=expected_version + 1, result=result
+            ticket_id=ticket_id,
+            actor_id="intake-agent",
+            expected_version=expected_version + 1,
+            result=result,
         )
         commands = [validated.ticket_command, *outcome]
-        commands = await apply_operational_routing(runtime, commands, result, tenant_id=tenant_id, channel=channel)
+        commands = await apply_operational_routing(
+            runtime, commands, result, tenant_id=tenant_id, channel=channel
+        )
         await runtime.tickets.record_workflow_intent(
             tenant_id=tenant_id,
             ticket_id=ticket_id,

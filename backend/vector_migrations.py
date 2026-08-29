@@ -14,22 +14,22 @@ async def setup_vector_schema(*, dimension: int | None = None) -> None:
     dimension = dimension or int(os.getenv("KNOWLEDGE_EMBEDDING_DIMENSION", "1536"))
     if dimension < 8 or dimension > 4096:
         raise RuntimeError("KNOWLEDGE_EMBEDDING_DIMENSION 必须在 8 到 4096 之间")
-    async with await AsyncConnection.connect(database_url_from_env(), autocommit=True) as connection:
+    async with await AsyncConnection.connect(
+        database_url_from_env(), autocommit=True
+    ) as connection:
         await connection.execute("CREATE EXTENSION IF NOT EXISTS vector")
         # 中文检索兜底（与 schema v12 幂等一致）。
         await connection.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
         await connection.execute(
-            sql.SQL("ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS embedding vector({})").format(
-                sql.Literal(dimension)
-            )
+            sql.SQL(
+                "ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS embedding vector({})"
+            ).format(sql.Literal(dimension))
         )
-        await connection.execute(
-            """
+        await connection.execute("""
             CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding_hnsw
             ON knowledge_chunks USING hnsw (embedding vector_cosine_ops)
             WHERE embedding IS NOT NULL
-            """
-        )
+            """)
 
 
 if __name__ == "__main__":

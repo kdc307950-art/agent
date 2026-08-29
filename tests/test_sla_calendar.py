@@ -1,4 +1,4 @@
-from datetime import date, datetime, time, timezone
+from datetime import UTC, date, datetime, time
 
 import pytest
 
@@ -20,30 +20,30 @@ def calendar(**overrides):
 def test_business_minutes_cross_day_and_weekend_in_tenant_timezone():
     policy = calendar()
     # Friday 17:30 Asia/Shanghai, expressed as UTC.
-    started = datetime(2026, 3, 6, 9, 30, tzinfo=timezone.utc)
+    started = datetime(2026, 3, 6, 9, 30, tzinfo=UTC)
 
     due = policy.add_business_minutes(started, 120)
 
     # 30 minutes Friday + 90 minutes Monday = Monday 10:30 CST.
-    assert due == datetime(2026, 3, 9, 2, 30, tzinfo=timezone.utc)
+    assert due == datetime(2026, 3, 9, 2, 30, tzinfo=UTC)
 
 
 def test_holiday_is_skipped():
     policy = calendar(holidays=frozenset({date(2026, 3, 9)}))
-    started = datetime(2026, 3, 6, 9, 30, tzinfo=timezone.utc)
+    started = datetime(2026, 3, 6, 9, 30, tzinfo=UTC)
 
     due = policy.add_business_minutes(started, 120)
 
-    assert due == datetime(2026, 3, 10, 2, 30, tzinfo=timezone.utc)
+    assert due == datetime(2026, 3, 10, 2, 30, tzinfo=UTC)
 
 
 def test_before_work_and_after_work_move_to_next_valid_instant():
     policy = calendar()
-    before = datetime(2026, 3, 2, 0, 0, tzinfo=timezone.utc)  # Monday 08:00 CST
-    after = datetime(2026, 3, 2, 11, 0, tzinfo=timezone.utc)  # Monday 19:00 CST
+    before = datetime(2026, 3, 2, 0, 0, tzinfo=UTC)  # Monday 08:00 CST
+    after = datetime(2026, 3, 2, 11, 0, tzinfo=UTC)  # Monday 19:00 CST
 
-    assert policy.add_business_minutes(before, 30) == datetime(2026, 3, 2, 1, 30, tzinfo=timezone.utc)
-    assert policy.add_business_minutes(after, 30) == datetime(2026, 3, 3, 1, 30, tzinfo=timezone.utc)
+    assert policy.add_business_minutes(before, 30) == datetime(2026, 3, 2, 1, 30, tzinfo=UTC)
+    assert policy.add_business_minutes(after, 30) == datetime(2026, 3, 3, 1, 30, tzinfo=UTC)
 
 
 def test_calendar_rejects_naive_time_unknown_zone_and_invalid_hours():

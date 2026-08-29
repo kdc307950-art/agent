@@ -179,7 +179,7 @@ OIDC 生产模式要求 issuer、audience、JWKS、Redis 撤销、`jti` 和 toke
 
 工具调用经过统一治理层：按服务端租户身份检查 scope 和工具白名单，限制输入长度，执行单工具超时，临时错误仅对无副作用工具重试。工具审计只保存工具名、状态、耗时和错误类型等摘要，不保存完整 prompt、Authorization、API key 或原始工具结果。
 
-需要限制租户工具集合时设置 `TOOL_TENANT_ALLOWLIST=tenant-a=calculate,get_weather;tenant-b=calculate`；启用该配置后，未列出的租户默认不能调用任何工具。
+需要限制租户工具集合时设置 `TOOL_TENANT_ALLOWLIST=tenant-a=calculate,get_weather,search_knowledge;tenant-b=calculate,search_assets`；启用该配置后，未列出的租户默认不能调用任何工具。生产工具策略还包含 `search_assets`、`search_knowledge` 和副作用工具 `send_message`，分别要求客服 scope，并对后者关闭自动重试。
 
 ## 本地开发（不走容器）
 

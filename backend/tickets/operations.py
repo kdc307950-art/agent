@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from psycopg.rows import dict_row
@@ -39,7 +39,7 @@ class TicketOperationsRepository:
         *,
         min_size: int = 1,
         max_size: int = 4,
-    ) -> "TicketOperationsRepository":
+    ) -> TicketOperationsRepository:
         pool = AsyncConnectionPool(
             conninfo,
             min_size=min_size,
@@ -130,7 +130,9 @@ class TicketOperationsRepository:
                 )
                 return list(await cursor.fetchall())
 
-    async def renew_outbox_lease(self, tenant_id: str, event_id: str, *, worker_id: str, lease_seconds: int = 60) -> bool:
+    async def renew_outbox_lease(
+        self, tenant_id: str, event_id: str, *, worker_id: str, lease_seconds: int = 60
+    ) -> bool:
         async with self.pool.connection() as connection:
             async with connection.cursor() as cursor:
                 await cursor.execute(
@@ -256,7 +258,13 @@ class TicketOperationsRepository:
         if run_row and isinstance(run_row["intent"], dict):
             result = run_row["intent"].get("result") or {}
             citations = list(result.get("citations") or [])
-        return {"sla": sla, "survey": survey, "messages": messages, "assignments": assignments, "citations": citations}
+        return {
+            "sla": sla,
+            "survey": survey,
+            "messages": messages,
+            "assignments": assignments,
+            "citations": citations,
+        }
 
     async def ensure_sla_for_ticket(
         self,
@@ -267,7 +275,7 @@ class TicketOperationsRepository:
         category: str | None = None,
         now: datetime | None = None,
     ) -> bool:
-        reference = now or datetime.now(timezone.utc)
+        reference = now or datetime.now(UTC)
         async with self.pool.connection() as connection:
             async with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
                 policy = await self._resolve_sla_policy(cursor, tenant_id, category)
@@ -279,8 +287,12 @@ class TicketOperationsRepository:
                     work_start=policy["work_start"],
                     work_end=policy["work_end"],
                 )
-                first_due = calendar.add_business_minutes(reference, policy["first_response_minutes"])
-                resolution_due = calendar.add_business_minutes(reference, policy["resolution_minutes"])
+                first_due = calendar.add_business_minutes(
+                    reference, policy["first_response_minutes"]
+                )
+                resolution_due = calendar.add_business_minutes(
+                    reference, policy["resolution_minutes"]
+                )
                 await cursor.execute(
                     """
                     INSERT INTO ticket_sla (
@@ -289,11 +301,20 @@ class TicketOperationsRepository:
                     ) VALUES (%s, %s, %s, %s, %s, %s)
                     ON CONFLICT (tenant_id, ticket_id) DO NOTHING
                     """,
-                    (tenant_id, ticket_id, policy["policy_id"], policy["version"], first_due, resolution_due),
+                    (
+                        tenant_id,
+                        ticket_id,
+                        policy["policy_id"],
+                        policy["version"],
+                        first_due,
+                        resolution_due,
+                    ),
                 )
                 return cursor.rowcount == 1
 
-    async def _resolve_sla_policy(self, cursor, tenant_id: str, category: str | None) -> dict | None:
+    async def _resolve_sla_policy(
+        self, cursor, tenant_id: str, category: str | None
+    ) -> dict | None:
         """按分类链解析 SLA 策略：子分类策略 -> 父分类策略 -> 租户默认 SLA。
 
         不再取租户第一条 SLA：it.vpn 命中 sla-vpn，无子分类策略回退 it 策略，
@@ -400,8 +421,10 @@ class TicketOperationsRepository:
                 )
                 return cursor.rowcount == 1
 
-    async def mark_first_response(self, tenant_id: str, ticket_id: str, *, at: datetime | None = None) -> bool:
-        reference = at or datetime.now(timezone.utc)
+    async def mark_first_response(
+        self, tenant_id: str, ticket_id: str, *, at: datetime | None = None
+    ) -> bool:
+        reference = at or datetime.now(UTC)
         async with self.pool.connection() as connection:
             async with connection.cursor() as cursor:
                 await cursor.execute(
@@ -452,7 +475,7 @@ class TicketOperationsRepository:
     ) -> int:
         if limit < 1 or limit > 1000:
             raise ValueError("limit 必须在 1 到 1000 之间")
-        reference = now or datetime.now(timezone.utc)
+        reference = now or datetime.now(UTC)
         async with self.pool.connection() as connection:
             async with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
                 await cursor.execute(
@@ -589,7 +612,7 @@ class TicketOperationsRepository:
                 return cursor.rowcount == 1
 
     async def expire_surveys(self, *, now: datetime | None = None) -> int:
-        reference = now or datetime.now(timezone.utc)
+        reference = now or datetime.now(UTC)
         async with self.pool.connection() as connection:
             async with connection.cursor() as cursor:
                 await cursor.execute(

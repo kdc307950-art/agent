@@ -135,6 +135,8 @@ class WeComWebhookAdapter:
         except UnicodeDecodeError as exc:
             raise WebhookVerificationError("Webhook body 不是 UTF-8") from exc
         encrypted = _xml_text(outer, "Encrypt")
+        if not encrypted:
+            raise WebhookVerificationError("企业微信回调缺少 Encrypt 内容")
         expected = hashlib.sha1(
             "".join(sorted((self.token, timestamp, nonce, encrypted))).encode("utf-8")
         ).hexdigest()
@@ -148,7 +150,9 @@ class WeComWebhookAdapter:
         event = _xml_text(message, "Event", required=False)
         if msg_type == "event" or event:
             raise IgnoreWebhookEvent(event or msg_type or "unknown")
-        event_id = _xml_text(message, "MsgId", required=False) or _xml_text(message, "EventId", required=False)
+        event_id = _xml_text(message, "MsgId", required=False) or _xml_text(
+            message, "EventId", required=False
+        )
         if not event_id:
             event_id = hashlib.sha256(plaintext).hexdigest()
         requester = _xml_text(message, "FromUserName")
@@ -160,7 +164,7 @@ class WeComWebhookAdapter:
             channel="wecom",
             external_event_id=event_id,
             external_ticket_id=None,
-            requester_id=requester,
+            requester_id=requester or "",
             title=content[:120],
             content=content,
             payload={child.tag: child.text or "" for child in message},
@@ -192,7 +196,9 @@ class WeComWebhookAdapter:
 
 
 class DingTalkWebhookAdapter:
-    def __init__(self, *, tenant_id: str, app_secret: str, replay_window_seconds: int = 300) -> None:
+    def __init__(
+        self, *, tenant_id: str, app_secret: str, replay_window_seconds: int = 300
+    ) -> None:
         self.tenant_id = tenant_id
         self.secret = app_secret.encode("utf-8")
         self.replay_window_seconds = replay_window_seconds
@@ -210,8 +216,10 @@ class DingTalkWebhookAdapter:
             now=now,
             replay_window_seconds=self.replay_window_seconds,
         )
-        signing = f"{timestamp_value}\n{self.secret.decode('utf-8')}".encode("utf-8")
-        expected = base64.b64encode(hmac.new(self.secret, signing, hashlib.sha256).digest()).decode("ascii")
+        signing = f"{timestamp_value}\n{self.secret.decode('utf-8')}".encode()
+        expected = base64.b64encode(hmac.new(self.secret, signing, hashlib.sha256).digest()).decode(
+            "ascii"
+        )
         if not hmac.compare_digest(expected, unquote(signature)):
             raise WebhookVerificationError("钉钉签名无效")
         try:
@@ -223,7 +231,9 @@ class DingTalkWebhookAdapter:
         event_id = str(payload.get("msgId") or payload.get("eventId") or "").strip()
         requester = str(payload.get("senderStaffId") or payload.get("senderId") or "").strip()
         text_value = payload.get("text")
-        content = text_value.get("content") if isinstance(text_value, dict) else payload.get("content")
+        content = (
+            text_value.get("content") if isinstance(text_value, dict) else payload.get("content")
+        )
         content = str(content or payload.get("EventType") or "").strip()
         if not event_id or not requester or not content:
             raise WebhookVerificationError("钉钉 Webhook 缺少事件、用户或内容字段")
@@ -232,7 +242,7 @@ class DingTalkWebhookAdapter:
             channel="dingtalk",
             external_event_id=event_id,
             external_ticket_id=None,
-            requester_id=requester,
+            requester_id=requester or "",
             title=content[:120],
             content=content,
             payload=payload,

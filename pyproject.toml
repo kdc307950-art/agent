@@ -34,10 +34,47 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [dependency-groups]
-dev = ["pytest>=8.0.0"]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.6.0",
+    "black>=24.0.0",
+    "mypy>=1.11.0",
+    "pre-commit>=3.7.0",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 markers = [
     "live_e2e: tests that call a real model endpoint and may incur provider cost",
 ]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [".venv", "workflows"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501", "B008"]  # B008: FastAPI 惯用法 Depends()/Query() 作参数默认值，全项目一致
+
+[tool.ruff.lint.isort]
+known-first-party = ["backend", "src"]
+
+[tool.black]
+target-version = ["py311"]
+line-length = 100
+exclude = "(\\.venv/|workflows/|frontend/)"
+
+[tool.mypy]
+python_version = "3.11"
+explicit_package_bases = true
+check_untyped_defs = true
+disallow_untyped_defs = false
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+exclude = "(^|/)(tests|workflows)/"
+
+[[tool.mypy.overrides]]
+module = ["jieba.*"]
+ignore_missing_imports = true

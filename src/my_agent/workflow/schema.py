@@ -58,7 +58,9 @@ class StateFieldSpec(BaseModel):
     description: str = ""
 
     @property
-    def python_type(self) -> type:
+    def python_type(self) -> Any:
+        # 动态 TypedDict 构造（compiler.build_state）需要把字段值当类型用，
+        # 此处返回 Any 以避免 mypy 把运行时映射误判为类型。
         return _STATE_TYPE_MAP[self.type]
 
 
@@ -100,7 +102,7 @@ class WorkflowSpec(BaseModel):
     edges: list[EdgeSpec] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _validate_workflow(self) -> "WorkflowSpec":
+    def _validate_workflow(self) -> WorkflowSpec:
         if self.schema_version != SCHEMA_VERSION:
             raise ValueError(
                 f"不支持的 schema_version={self.schema_version}，当前支持 {SCHEMA_VERSION}"

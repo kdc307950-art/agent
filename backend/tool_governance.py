@@ -14,9 +14,10 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from time import monotonic
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any
 
 import httpx
 from langchain_core.messages import ToolMessage
@@ -24,7 +25,6 @@ from langchain_core.messages import ToolMessage
 from .audit import AuditRepository, NoopAuditRepository
 from .metrics import RuntimeMetrics
 from .run_context import RunContext
-
 
 logger = logging.getLogger("langgraph.tool_governance")
 
@@ -55,6 +55,32 @@ DEFAULT_TOOL_POLICIES: dict[str, ToolPolicy] = {
         max_input_chars=128,
         retryable=True,
         side_effect=False,
+    ),
+    # Production helpdesk tools use explicit scopes and conservative limits.
+    # Implementations can be added to the ToolNode without changing governance.
+    "search_assets": ToolPolicy(
+        name="search_assets",
+        required_scopes=frozenset({"ticket:agent"}),
+        timeout_seconds=3.0,
+        max_input_chars=512,
+        retryable=True,
+        side_effect=False,
+    ),
+    "search_knowledge": ToolPolicy(
+        name="search_knowledge",
+        required_scopes=frozenset({"ticket:agent"}),
+        timeout_seconds=5.0,
+        max_input_chars=1_024,
+        retryable=True,
+        side_effect=False,
+    ),
+    "send_message": ToolPolicy(
+        name="send_message",
+        required_scopes=frozenset({"ticket:agent"}),
+        timeout_seconds=5.0,
+        max_input_chars=4_096,
+        retryable=False,
+        side_effect=True,
     ),
 }
 
@@ -208,7 +234,9 @@ class ToolGovernance:
             payload={"input_chars": input_chars},
         )
         self.metrics.increment("tool_calls_total")
-        attempts = 1 + (self.max_retry_attempts if policy.retryable and not policy.side_effect else 0)
+        attempts = 1 + (
+            self.max_retry_attempts if policy.retryable and not policy.side_effect else 0
+        )
         started = monotonic()
         for attempt in range(1, attempts + 1):
             remaining = context.remaining_seconds()
@@ -258,7 +286,7 @@ class ToolGovernance:
                     payload={"attempt": attempt},
                 )
                 raise
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if attempt < attempts:
                     self.metrics.increment("tool_call_retries_total")
                     await self._event(
@@ -299,5 +327,10 @@ class ToolGovernance:
                     status="failed",
                     payload={"attempt": attempt, "error_type": type(exc).__name__},
                 )
-                logger.warning("工具调用失败 run_id=%s tool=%s error=%s", context.run_id, tool_name, type(exc).__name__)
+                logger.warning(
+                    "工具调用失败 run_id=%s tool=%s error=%s",
+                    context.run_id,
+                    tool_name,
+                    type(exc).__name__,
+                )
                 return _tool_message(request, "工具调用失败，请稍后重试")

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
-from langchain_core.runnables import RunnableConfig
 from typing_extensions import TypedDict
 
 from .domain import ActorType, ResumeAction
@@ -18,7 +18,6 @@ from .intake import (
     TicketClassifier,
     assess_and_dispatch,
     clarification_question,
-    missing_required_fields,
     normalize_fields,
 )
 
@@ -86,20 +85,36 @@ def build_helpdesk_intake_graph(
             "classification_confidence": result.confidence,
         }
 
-    async def apply_policy_node(state: HelpdeskIntakeState, config: RunnableConfig) -> dict[str, Any]:
+    async def apply_policy_node(
+        state: HelpdeskIntakeState, config: RunnableConfig
+    ) -> dict[str, Any]:
         tenant_id = str((config.get("configurable") or {}).get("tenant_id") or "")
         if not tenant_id or it_policy_provider is None:
-            return {"policy_category": None, "policy_required_fields": [], "policy_priority": None, "approval_required": False, "auto_answer_enabled": False}
+            return {
+                "policy_category": None,
+                "policy_required_fields": [],
+                "policy_priority": None,
+                "approval_required": False,
+                "auto_answer_enabled": False,
+            }
         category = state.get("category", "other")
         subcategory = state.get("subcategory") or "general"
-        candidates = [category] if subcategory == "general" else [f"{category}.{subcategory}", category]
+        candidates = (
+            [category] if subcategory == "general" else [f"{category}.{subcategory}", category]
+        )
         found = None
         for key in candidates:
             found = await it_policy_provider.get(tenant_id, key)
             if found is not None:
                 break
         if found is None:
-            return {"policy_category": None, "policy_required_fields": [], "policy_priority": None, "approval_required": False, "auto_answer_enabled": False}
+            return {
+                "policy_category": None,
+                "policy_required_fields": [],
+                "policy_priority": None,
+                "approval_required": False,
+                "auto_answer_enabled": False,
+            }
         return {
             "policy_category": found.category,
             "policy_required_fields": list(found.required_fields),
@@ -139,7 +154,10 @@ def build_helpdesk_intake_graph(
                 "question": clarification_question(state.get("missing_fields") or []),
             }
         )
-        if not isinstance(response, dict) or response.get("action") != ResumeAction.PROVIDE_INFORMATION.value:
+        if (
+            not isinstance(response, dict)
+            or response.get("action") != ResumeAction.PROVIDE_INFORMATION.value
+        ):
             raise ValueError("补充信息恢复命令无效")
         if response.get("actor_type") != ActorType.CUSTOMER.value:
             raise ValueError("补充信息必须由客户提交")
@@ -178,7 +196,9 @@ def build_helpdesk_intake_graph(
             "next": "finish",
         }
 
-    async def compose_answer_node(state: HelpdeskIntakeState, config: RunnableConfig) -> dict[str, Any]:
+    async def compose_answer_node(
+        state: HelpdeskIntakeState, config: RunnableConfig
+    ) -> dict[str, Any]:
         if rag_service is None:
             return {}
         from backend.knowledge import RetrievalPrincipal

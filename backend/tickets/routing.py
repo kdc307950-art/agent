@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
@@ -31,7 +31,7 @@ class RoutingRepository:
         risk_level: str,
         now: datetime | None = None,
     ) -> RoutingDecision:
-        reference = now or datetime.now(timezone.utc)
+        reference = now or datetime.now(UTC)
         async with self.pool.connection() as connection:
             async with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
                 await cursor.execute(
@@ -89,5 +89,11 @@ class RoutingRepository:
                 )
                 member = await cursor.fetchone()
                 if member is None:
-                    return RoutingDecision(rule["target_team_id"], None, tuple((*reasons, "manual_queue_no_capacity")))
-                return RoutingDecision(rule["target_team_id"], member["member_id"], tuple((*reasons, "least_loaded_on_duty")))
+                    return RoutingDecision(
+                        rule["target_team_id"], None, tuple((*reasons, "manual_queue_no_capacity"))
+                    )
+                return RoutingDecision(
+                    rule["target_team_id"],
+                    member["member_id"],
+                    tuple((*reasons, "least_loaded_on_duty")),
+                )

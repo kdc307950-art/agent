@@ -6,9 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from backend.security import Principal, rate_limit_dependency
 
-from .models import AssetRecord, AssetStatus, CreateAsset, UpdateAsset
+from .models import AssetStatus, CreateAsset, UpdateAsset
 from .repository import AssetAlreadyExists, AssetNotFound
-
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 
@@ -47,7 +46,15 @@ async def _require_asset_access(runtime, principal: Principal, asset_id: str):
     return asset
 
 
-async def _audit(runtime, *, tenant_id: str, user_id: str, action: str, resource_id: str, detail: dict | None = None) -> None:
+async def _audit(
+    runtime,
+    *,
+    tenant_id: str,
+    user_id: str,
+    action: str,
+    resource_id: str,
+    detail: dict | None = None,
+) -> None:
     audit = getattr(runtime, "audit", None)
     if audit is None:
         return
@@ -131,7 +138,14 @@ async def create_asset(
         created = await runtime.assets.create(principal.tenant_id, payload)
     except Exception as exc:
         raise _map_error(exc) from exc
-    await _audit(runtime, tenant_id=principal.tenant_id, user_id=principal.user_id, action="asset.create", resource_id=created.asset_id, detail={"asset_no": created.asset_no})
+    await _audit(
+        runtime,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        action="asset.create",
+        resource_id=created.asset_id,
+        detail={"asset_no": created.asset_no},
+    )
     return created
 
 
@@ -148,7 +162,13 @@ async def update_asset(
         updated = await runtime.assets.update(principal.tenant_id, asset_id, payload)
     except Exception as exc:
         raise _map_error(exc) from exc
-    await _audit(runtime, tenant_id=principal.tenant_id, user_id=principal.user_id, action="asset.update", resource_id=asset_id)
+    await _audit(
+        runtime,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        action="asset.update",
+        resource_id=asset_id,
+    )
     return updated
 
 
@@ -163,5 +183,11 @@ async def delete_asset(
     deleted = await runtime.assets.soft_delete(principal.tenant_id, asset_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="资产不存在")
-    await _audit(runtime, tenant_id=principal.tenant_id, user_id=principal.user_id, action="asset.delete", resource_id=asset_id)
+    await _audit(
+        runtime,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        action="asset.delete",
+        resource_id=asset_id,
+    )
     return {"asset_id": asset_id, "deleted": True}

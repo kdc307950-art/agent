@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -110,8 +111,24 @@ class KeywordTicketClassifier:
 
     _KEYWORDS: Mapping[TicketCategory, tuple[str, ...]] = {
         TicketCategory.IT: (
-            "登录", "密码", "网络", "断网", "电脑", "系统", "vpn", "sso", "故障",
-            "账号", "邮箱", "outlook", "邮件", "显示器", "软件", "打印机", "手机", "权限",
+            "登录",
+            "密码",
+            "网络",
+            "断网",
+            "电脑",
+            "系统",
+            "vpn",
+            "sso",
+            "故障",
+            "账号",
+            "邮箱",
+            "outlook",
+            "邮件",
+            "显示器",
+            "软件",
+            "打印机",
+            "手机",
+            "权限",
         ),
         TicketCategory.FINANCE: ("报销", "发票", "付款", "工资", "财务", "费用"),
         TicketCategory.ADMIN: ("门禁", "工位", "会议室", "采购", "行政", "用印"),
@@ -191,9 +208,7 @@ def missing_required_fields(
     policy: IntakePolicy,
 ) -> tuple[str, ...]:
     missing = [
-        name
-        for name in policy.required_fields(category)
-        if fields.get(name) in (None, "", [], {})
+        name for name in policy.required_fields(category) if fields.get(name) in (None, "", [], {})
     ]
     return tuple(sorted(missing))
 

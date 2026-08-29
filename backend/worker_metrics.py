@@ -9,9 +9,8 @@ Worker（inbound/outbox/sla/recovery）是独立进程，进程内指标 API 读
 
 from __future__ import annotations
 
-import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from psycopg.rows import dict_row
@@ -25,7 +24,12 @@ HISTOGRAM_BUCKETS = (0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0)
 WORKER_TYPES = ("inbound", "outbox", "sla", "recovery")
 
 
-async def safe_incr(metrics: "WorkerMetricsDB | None", metric: str, labels: dict[str, str] | None = None, amount: int | float = 1) -> None:
+async def safe_incr(
+    metrics: WorkerMetricsDB | None,
+    metric: str,
+    labels: dict[str, str] | None = None,
+    amount: int | float = 1,
+) -> None:
     """指标写入失败时只记录日志，不中断业务。"""
     if metrics is None:
         return
@@ -35,22 +39,30 @@ async def safe_incr(metrics: "WorkerMetricsDB | None", metric: str, labels: dict
         logger.exception("metric_write_failed", extra={"ctx": {"metric": metric, "labels": labels}})
 
 
-async def safe_observe(metrics: "WorkerMetricsDB | None", metric: str, value: float, labels: dict[str, str] | None = None) -> None:
+async def safe_observe(
+    metrics: WorkerMetricsDB | None, metric: str, value: float, labels: dict[str, str] | None = None
+) -> None:
     if metrics is None:
         return
     try:
         await metrics.observe(metric, value, labels)
     except Exception:
-        logger.exception("metric_write_failed", extra={"ctx": {"metric": metric, "labels": labels, "value": value}})
+        logger.exception(
+            "metric_write_failed",
+            extra={"ctx": {"metric": metric, "labels": labels, "value": value}},
+        )
 
 
-async def safe_beat(metrics: "WorkerMetricsDB | None", worker_type: str, worker_id: str) -> None:
+async def safe_beat(metrics: WorkerMetricsDB | None, worker_type: str, worker_id: str) -> None:
     if metrics is None:
         return
     try:
         await metrics.beat(worker_type, worker_id)
     except Exception:
-        logger.exception("heartbeat_write_failed", extra={"ctx": {"worker_type": worker_type, "worker_id": worker_id}})
+        logger.exception(
+            "heartbeat_write_failed",
+            extra={"ctx": {"worker_type": worker_type, "worker_id": worker_id}},
+        )
 
 
 def _labels_key(labels: dict[str, str] | None) -> dict[str, str]:
@@ -61,7 +73,9 @@ class WorkerMetricsDB:
     def __init__(self, pool) -> None:
         self.pool = pool
 
-    async def incr(self, metric: str, labels: dict[str, str] | None = None, amount: int | float = 1) -> None:
+    async def incr(
+        self, metric: str, labels: dict[str, str] | None = None, amount: int | float = 1
+    ) -> None:
         labels = _labels_key(labels)
         async with self.pool.connection() as connection:
             await connection.execute(
@@ -75,7 +89,9 @@ class WorkerMetricsDB:
                 (metric, Jsonb(labels), amount),
             )
 
-    async def observe(self, metric: str, value: float, labels: dict[str, str] | None = None) -> None:
+    async def observe(
+        self, metric: str, value: float, labels: dict[str, str] | None = None
+    ) -> None:
         """记录直方图观测：更新对应桶计数 + _count + _sum。"""
         labels = _labels_key(labels)
         async with self.pool.connection() as connection:
@@ -89,7 +105,10 @@ class WorkerMetricsDB:
                             ON CONFLICT (metric, labels) DO UPDATE SET
                                 value = worker_metrics.value + 1, updated_at = now()
                             """,
-                            (f"{metric}_bucket", Jsonb({**labels, "le": str(bucket)}),),
+                            (
+                                f"{metric}_bucket",
+                                Jsonb({**labels, "le": str(bucket)}),
+                            ),
                         )
                 await cursor.execute(
                     """
@@ -157,14 +176,12 @@ class WorkerMetricsDB:
     async def check_outbox_backlog(cls, pool) -> dict[str, int]:
         async with pool.connection() as connection:
             async with connection.cursor(row_factory=dict_row) as cursor:
-                await cursor.execute(
-                    """
+                await cursor.execute("""
                     SELECT
                         count(*) FILTER (WHERE status = 'pending' AND available_at <= now()) AS pending,
                         count(*) FILTER (WHERE status = 'dead') AS dead
                     FROM outbox_events
-                    """
-                )
+                    """)
                 return dict(await cursor.fetchone())
 
 
@@ -183,14 +200,20 @@ def prometheus_text(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines) + ("\n" if lines else "")
 
 
-def render_latency_quantile(rows: list[dict[str, Any]], metric: str) -> dict[str, float] | None:
+def render_latency_quantile(
+    rows: list[dict[str, Any]], metric: str
+) -> dict[str, float | None] | None:
     """从直方图桶估计 P95（线性插值）。"""
     count = sum(row["value"] for row in rows if row["metric"] == f"{metric}_count")
     if count <= 0:
         return None
     p95_index = 0.95 * count
     cumulative = 0.0
-    buckets = {float(row["labels"]["le"]): row["value"] for row in rows if row["metric"] == f"{metric}_bucket"}
+    buckets = {
+        float(row["labels"]["le"]): row["value"]
+        for row in rows
+        if row["metric"] == f"{metric}_bucket"
+    }
     for upper, bucket_count in sorted(buckets.items()):
         cumulative += bucket_count
         if cumulative >= p95_index:
@@ -199,4 +222,4 @@ def render_latency_quantile(rows: list[dict[str, Any]], metric: str) -> dict[str
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)

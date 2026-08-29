@@ -10,7 +10,6 @@ from backend.security import Principal, rate_limit_dependency
 from .models import KnowledgeChunkInput, KnowledgeDocumentInput
 from .repository import KnowledgeRepository
 
-
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
 
@@ -80,7 +79,13 @@ async def create_knowledge_document(
         payload.document,
         payload.chunks,
     )
-    await _audit(runtime, tenant_id=principal.tenant_id, user_id=principal.user_id, action="knowledge.document.create", resource_id=payload.document.document_id)
+    await _audit(
+        runtime,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        action="knowledge.document.create",
+        resource_id=payload.document.document_id,
+    )
     return {"document_id": payload.document.document_id, "version": payload.document.version}
 
 
@@ -98,7 +103,13 @@ async def publish_knowledge_document(
         await repository.publish_document_version(principal.tenant_id, document_id, payload.version)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    await _audit(runtime, tenant_id=principal.tenant_id, user_id=principal.user_id, action="knowledge.document.publish", resource_id=document_id)
+    await _audit(
+        runtime,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        action="knowledge.document.publish",
+        resource_id=document_id,
+    )
     return {"document_id": document_id, "version": payload.version, "status": "published"}
 
 
@@ -114,5 +125,11 @@ async def retire_knowledge_document(
     retired = await repository.retire_document(principal.tenant_id, document_id)
     if not retired:
         raise HTTPException(status_code=404, detail="没有已发布的知识文档可停用")
-    await _audit(runtime, tenant_id=principal.tenant_id, user_id=principal.user_id, action="knowledge.document.retire", resource_id=document_id)
+    await _audit(
+        runtime,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        action="knowledge.document.retire",
+        resource_id=document_id,
+    )
     return {"document_id": document_id, "status": "retired"}

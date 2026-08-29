@@ -1,9 +1,10 @@
 import asyncio
-from dataclasses import replace
 import importlib
 from contextlib import asynccontextmanager
+from dataclasses import replace
 
 from fastapi.testclient import TestClient
+
 from backend.security import make_tenant_token, scopes_for_dev_role
 
 
@@ -13,10 +14,21 @@ def test_dev_scope_profiles_support_helpdesk_roles():
     assert scopes_for_dev_role("helpdesk-channel") == ("ticket:channel",)
     assert "ticket:approve" in scopes_for_dev_role("helpdesk-approver")
     agent_scopes = scopes_for_dev_role("helpdesk-agent")
-    assert "asset:read" in agent_scopes and "it-policy:read" in agent_scopes and "knowledge:read" in agent_scopes
+    assert (
+        "asset:read" in agent_scopes
+        and "it-policy:read" in agent_scopes
+        and "knowledge:read" in agent_scopes
+    )
     assert "asset:write" not in agent_scopes
     admin_scopes = scopes_for_dev_role("helpdesk-it-admin")
-    assert {"asset:read", "asset:write", "it-policy:read", "it-policy:write", "knowledge:read", "knowledge:write"} <= set(admin_scopes)
+    assert {
+        "asset:read",
+        "asset:write",
+        "it-policy:read",
+        "it-policy:write",
+        "knowledge:read",
+        "knowledge:write",
+    } <= set(admin_scopes)
     try:
         scopes_for_dev_role("unknown")
     except ValueError as exc:
@@ -81,7 +93,9 @@ def test_chat_rejects_wrong_bearer_token(monkeypatch):
 
 def test_chat_rejects_invalid_input(monkeypatch):
     module = load_app(monkeypatch)
-    headers = {"Authorization": "Bearer " + make_tenant_token("tenant-a", "user-1", "test-tenant-secret")}
+    headers = {
+        "Authorization": "Bearer " + make_tenant_token("tenant-a", "user-1", "test-tenant-secret")
+    }
     with TestClient(module.app) as client:
         response = client.post(
             "/chat/stream",
@@ -109,7 +123,9 @@ def test_cors_rejects_unknown_origin(monkeypatch):
 
 def test_chat_rate_limit_returns_429(monkeypatch):
     module = load_app(monkeypatch, rate_limit="1")
-    headers = {"Authorization": "Bearer " + make_tenant_token("tenant-a", "user-1", "test-tenant-secret")}
+    headers = {
+        "Authorization": "Bearer " + make_tenant_token("tenant-a", "user-1", "test-tenant-secret")
+    }
     with TestClient(module.app) as client:
         module.app.state.agent = None
         first = client.post("/chat/stream", headers=headers, json={"message": "hello"})
@@ -130,7 +146,9 @@ def test_chat_timeout_returns_structured_sse_error(monkeypatch):
             if False:
                 yield {}
 
-    headers = {"Authorization": "Bearer " + make_tenant_token("tenant-a", "user-1", "test-tenant-secret")}
+    headers = {
+        "Authorization": "Bearer " + make_tenant_token("tenant-a", "user-1", "test-tenant-secret")
+    }
     with TestClient(module.app) as client:
         module.app.state.agent = SlowGraph()
         module.app.state.settings = replace(
@@ -157,12 +175,20 @@ def test_same_client_thread_is_derived_per_tenant(monkeypatch):
             if False:
                 yield {}
 
-    headers_a = {"Authorization": "Bearer " + make_tenant_token("tenant-a", "user-1", "test-tenant-secret")}
-    headers_b = {"Authorization": "Bearer " + make_tenant_token("tenant-b", "user-1", "test-tenant-secret")}
+    headers_a = {
+        "Authorization": "Bearer " + make_tenant_token("tenant-a", "user-1", "test-tenant-secret")
+    }
+    headers_b = {
+        "Authorization": "Bearer " + make_tenant_token("tenant-b", "user-1", "test-tenant-secret")
+    }
     with TestClient(module.app) as client:
         module.app.state.agent = CapturingGraph()
-        client.post("/chat/stream", headers=headers_a, json={"message": "hello", "thread_id": "same"})
-        client.post("/chat/stream", headers=headers_b, json={"message": "hello", "thread_id": "same"})
+        client.post(
+            "/chat/stream", headers=headers_a, json={"message": "hello", "thread_id": "same"}
+        )
+        client.post(
+            "/chat/stream", headers=headers_b, json={"message": "hello", "thread_id": "same"}
+        )
 
     assert captured == ["tenant-a:user-1:same", "tenant-b:user-1:same"]
 

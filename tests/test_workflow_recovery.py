@@ -46,7 +46,9 @@ class Repository:
             raise ValueError("broken command")
         self.replayed.append((tenant_id, commands, scopes, operation_id))
 
-    async def mark_workflow_operation_failed(self, *, tenant_id, ticket_id, operation_id, error_code):
+    async def mark_workflow_operation_failed(
+        self, *, tenant_id, ticket_id, operation_id, error_code
+    ):
         self.failed.append((tenant_id, ticket_id, operation_id, error_code))
 
     async def expire_pending_intakes(self, *, now=None):

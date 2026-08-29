@@ -1,6 +1,6 @@
 import asyncio
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -8,14 +8,13 @@ import pytest
 from backend.migrations import setup_postgres
 from backend.tickets import RoutingRepository, TicketRepository
 
-
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
 
 
 def test_routing_selects_on_duty_skilled_least_loaded_member(monkeypatch):
     tenant = f"tenant-{uuid4().hex}"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     async def run():
         monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
@@ -34,7 +33,13 @@ def test_routing_selects_on_duty_skilled_least_loaded_member(monkeypatch):
                     )
                     await connection.execute(
                         "INSERT INTO support_schedules (tenant_id, schedule_id, member_id, starts_at, ends_at) VALUES (%s, %s, %s, %s, %s)",
-                        (tenant, f"schedule-{member}", member, now - timedelta(hours=1), now + timedelta(hours=1)),
+                        (
+                            tenant,
+                            f"schedule-{member}",
+                            member,
+                            now - timedelta(hours=1),
+                            now + timedelta(hours=1),
+                        ),
                     )
                 await connection.execute(
                     "INSERT INTO routing_rules (tenant_id, rule_id, category, required_skill, target_team_id) VALUES (%s, 'it-sso', 'it', 'sso', 'team-it')",

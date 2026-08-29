@@ -8,13 +8,10 @@ from backend.knowledge import (
     KnowledgeChunkInput,
     KnowledgeDocumentInput,
     KnowledgeRepository,
-    PgVectorRetriever,
     RetrievalPrincipal,
 )
-from backend.vector_migrations import setup_vector_schema
 from backend.migrations import setup_postgres
 from backend.tickets import TicketRepository
-
 
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
@@ -31,30 +28,54 @@ def test_knowledge_visibility_public_internal_restricted_matrix(monkeypatch):
         try:
             docs = {
                 "pub": KnowledgeDocumentInput(
-                    document_id="pub", version=1, title="Public", status="published", visibility="public"
+                    document_id="pub",
+                    version=1,
+                    title="Public",
+                    status="published",
+                    visibility="public",
                 ),
                 "int": KnowledgeDocumentInput(
-                    document_id="int", version=1, title="Internal", status="published", visibility="internal"
+                    document_id="int",
+                    version=1,
+                    title="Internal",
+                    status="published",
+                    visibility="internal",
                 ),
                 "res-it": KnowledgeDocumentInput(
-                    document_id="res-it", version=1, title="Restricted IT", status="published",
-                    visibility="restricted", allowed_departments=("it",),
+                    document_id="res-it",
+                    version=1,
+                    title="Restricted IT",
+                    status="published",
+                    visibility="restricted",
+                    allowed_departments=("it",),
                 ),
                 "res-fin": KnowledgeDocumentInput(
-                    document_id="res-fin", version=1, title="Restricted Finance", status="published",
-                    visibility="restricted", allowed_departments=("finance",),
+                    document_id="res-fin",
+                    version=1,
+                    title="Restricted Finance",
+                    status="published",
+                    visibility="restricted",
+                    allowed_departments=("finance",),
                 ),
             }
             for doc in docs.values():
                 await repository.put_document(
-                    tenant, doc, [KnowledgeChunkInput(chunk_id="c1", ordinal=0, content="Public Internal Restricted")]
+                    tenant,
+                    doc,
+                    [
+                        KnowledgeChunkInput(
+                            chunk_id="c1", ordinal=0, content="Public Internal Restricted"
+                        )
+                    ],
                 )
 
             customer = await repository.lexical_search(
                 RetrievalPrincipal(tenant_id=tenant), "Public Internal Restricted", limit=10
             )
             agent_no_dept = await repository.lexical_search(
-                RetrievalPrincipal(tenant_id=tenant, internal=True), "Public Internal Restricted", limit=10
+                RetrievalPrincipal(tenant_id=tenant, internal=True),
+                "Public Internal Restricted",
+                limit=10,
             )
             agent_it = await repository.lexical_search(
                 RetrievalPrincipal(tenant_id=tenant, departments={"it"}, internal=True),
@@ -163,12 +184,20 @@ def test_knowledge_lexical_search_recovers_chinese_queries(monkeypatch):
         try:
             docs = [
                 KnowledgeDocumentInput(
-                    document_id="vpn-001", version=1, title="VPN 配置指南",
-                    status="published", visibility="public", category="it.vpn",
+                    document_id="vpn-001",
+                    version=1,
+                    title="VPN 配置指南",
+                    status="published",
+                    visibility="public",
+                    category="it.vpn",
                 ),
                 KnowledgeDocumentInput(
-                    document_id="password-001", version=1, title="账号密码重置指南",
-                    status="published", visibility="public", category="it.account",
+                    document_id="password-001",
+                    version=1,
+                    title="账号密码重置指南",
+                    status="published",
+                    visibility="public",
+                    category="it.account",
                 ),
             ]
             chunks = {
@@ -177,7 +206,13 @@ def test_knowledge_lexical_search_recovers_chinese_queries(monkeypatch):
             }
             for doc in docs:
                 await repository.put_document(
-                    tenant, doc, [KnowledgeChunkInput(chunk_id="c1", ordinal=0, content=chunks[doc.document_id])]
+                    tenant,
+                    doc,
+                    [
+                        KnowledgeChunkInput(
+                            chunk_id="c1", ordinal=0, content=chunks[doc.document_id]
+                        )
+                    ],
                 )
             principal = RetrievalPrincipal(tenant_id=tenant, departments=frozenset(), internal=True)
             cases = [
@@ -191,7 +226,9 @@ def test_knowledge_lexical_search_recovers_chinese_queries(monkeypatch):
                 results[query] = [hit.document_id for hit in hits] if hits else []
             # 无对应文档的中文问题不应误召回其他分类文档。
             printer_hits = await repository.lexical_search(principal, "打印机显示离线", limit=5)
-            results["打印机显示离线"] = [hit.document_id for hit in printer_hits] if printer_hits else []
+            results["打印机显示离线"] = (
+                [hit.document_id for hit in printer_hits] if printer_hits else []
+            )
             return results
         finally:
             await tickets.close()

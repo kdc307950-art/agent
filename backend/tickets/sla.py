@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
@@ -40,9 +40,9 @@ class BusinessCalendar:
                 start = datetime.combine(day, self.work_start, self.tz)
                 end = datetime.combine(day, self.work_end, self.tz)
                 if local < start:
-                    return start.astimezone(timezone.utc)
+                    return start.astimezone(UTC)
                 if local < end:
-                    return local.astimezone(timezone.utc)
+                    return local.astimezone(UTC)
             day += timedelta(days=1)
             local = datetime.combine(day, time.min, self.tz)
         raise RuntimeError("无法在一年内找到下一个工作时间")
@@ -57,7 +57,7 @@ class BusinessCalendar:
             end = datetime.combine(local.date(), self.work_end, self.tz)
             available = max(0, int((end - local).total_seconds() // 60))
             if remaining <= available:
-                return (local + timedelta(minutes=remaining)).astimezone(timezone.utc)
+                return (local + timedelta(minutes=remaining)).astimezone(UTC)
             remaining -= available
             current = self.next_business_instant(end + timedelta(microseconds=1))
         return current

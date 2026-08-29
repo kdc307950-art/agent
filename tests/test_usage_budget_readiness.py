@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+
 import pytest
 
 from backend import backup_restore
@@ -18,7 +19,9 @@ class FakeMessage:
 def test_usage_normalizes_provider_metadata_and_costs() -> None:
     message = FakeMessage(
         usage_metadata={"input_tokens": 12, "output_tokens": 8},
-        response_metadata={"token_usage": {"prompt_tokens": 10, "completion_tokens": 9, "total_tokens": 21}},
+        response_metadata={
+            "token_usage": {"prompt_tokens": 10, "completion_tokens": 9, "total_tokens": 21}
+        },
     )
 
     usage = extract_model_usage(message)
@@ -121,7 +124,9 @@ def test_readiness_requires_redis_and_oidc_when_configured(monkeypatch) -> None:
         },
     )()
 
-    result = asyncio.run(probe_dependencies(FakeRequest(FakeApp(settings, verifier=FakeVerifier(ready=True)))))
+    result = asyncio.run(
+        probe_dependencies(FakeRequest(FakeApp(settings, verifier=FakeVerifier(ready=True))))
+    )
 
     assert result.ok
     assert result.checks == {"agent": "ok", "postgres": "ok", "redis": "ok", "oidc": "ok"}
@@ -159,7 +164,14 @@ def test_backup_and_restore_build_safe_client_commands(monkeypatch) -> None:
     backup_restore.restore_backup(archive, "postgresql://restore-user@db/agent")
 
     assert commands == [
-        ["pg_dump", "--format=custom", "--no-owner", "--file", str(archive), "postgresql://backup-user@db/agent"],
+        [
+            "pg_dump",
+            "--format=custom",
+            "--no-owner",
+            "--file",
+            str(archive),
+            "postgresql://backup-user@db/agent",
+        ],
         [
             "pg_restore",
             "--no-owner",

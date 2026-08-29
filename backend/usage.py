@@ -7,13 +7,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
 class ModelUsage:
     """模型 API 调用的 token 计数。slots=True 降低内存占用（百万量级 run 时管用）。"""
+
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
@@ -45,12 +47,18 @@ def extract_model_usage(message: Any) -> ModelUsage:
                 candidates.append(nested)
     input_tokens = output_tokens = total_tokens = 0
     for data in candidates:
-        input_tokens = max(input_tokens, _int(data.get("input_tokens")), _int(data.get("prompt_tokens")))
-        output_tokens = max(output_tokens, _int(data.get("output_tokens")), _int(data.get("completion_tokens")))
+        input_tokens = max(
+            input_tokens, _int(data.get("input_tokens")), _int(data.get("prompt_tokens"))
+        )
+        output_tokens = max(
+            output_tokens, _int(data.get("output_tokens")), _int(data.get("completion_tokens"))
+        )
         total_tokens = max(total_tokens, _int(data.get("total_tokens")))
     if total_tokens == 0:
         total_tokens = input_tokens + output_tokens
-    return ModelUsage(input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=total_tokens)
+    return ModelUsage(
+        input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=total_tokens
+    )
 
 
 def usage_cost_usd(usage: ModelUsage, *, input_per_1k: float, output_per_1k: float) -> float:

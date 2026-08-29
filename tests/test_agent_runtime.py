@@ -177,5 +177,7 @@ def test_checkpoint_migration_can_scope_legacy_thread_ids():
             raise AssertionError("unexpected writes")
 
     target = Target()
-    asyncio.run(migrate_checkpoint_tuples(Source(), target, lambda value: f"tenant-a:user-1:{value}"))
+    asyncio.run(
+        migrate_checkpoint_tuples(Source(), target, lambda value: f"tenant-a:user-1:{value}")
+    )
     assert target.config["configurable"]["thread_id"] == "tenant-a:user-1:legacy"

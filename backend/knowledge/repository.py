@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
