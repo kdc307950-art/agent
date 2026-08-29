@@ -18,7 +18,7 @@
 
 ## 必须展示的证据（按优先级）
 
-1. **Docker 全量回归输出**：`334 passed, 3 deselected`（含测试命令与日期，可复现）。
+1. **Docker 全量回归输出**：`341 passed, 3 deselected`（含测试命令与日期，可复现）。
 2. **52 条评测报告**：lexical-only Top1 98.1%（51/52）、Recall@5 100%、MRR@5 0.990，
    `it.account` 83.3% 及成因说明；hybrid holdout 集已冻结（`eval_holdout_cases.py`），
    CLI 阈值参数已实现但**尚未接入 CI**、**未配置真实 embedding，未执行**。
