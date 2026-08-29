@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   BookOpen,
@@ -52,8 +53,23 @@ export default function Sidebar({
     onClose()
   }
 
+  // 移动端：Escape 关闭侧栏
+  useEffect(() => {
+    if (!mobileOpen) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [mobileOpen, onClose])
+
   return (
-    <aside className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`}>
+    <aside
+      className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`}
+      aria-hidden={!mobileOpen ? 'true' : undefined}
+      // 桌面端侧栏常驻可聚焦；移动端未展开时禁止 Tab 聚焦（inert）
+      {...(!mobileOpen ? { inert: '' as unknown as boolean } : {})}
+    >
       <div className="brand">
         <span className="brand-mark">H</span>
         <span>Helpdesk</span>

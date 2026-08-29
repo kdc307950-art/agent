@@ -43,3 +43,26 @@ export function sseFetch(path: string, body: unknown, signal?: AbortSignal): Pro
     signal,
   })
 }
+
+/** 统一 HTTP 状态码 → 用户可读文案（收敛方案阶段七）。
+ *
+ * 401/403/409/429/5xx 有明确语义；其余回退到服务端 detail。
+ * 生产环境 401 应触发登录/刷新会话（由接入 OIDC/BFF 时接入），
+ * 本前端当前为 dev-token 模式，只做清晰的错误呈现。
+ */
+const HTTP_STATUS_MESSAGES: Record<number, string> = {
+  401: '登录已过期，请重新登录',
+  403: '没有权限执行此操作',
+  409: '数据已变更，请刷新后重试',
+  429: '请求过于频繁，请稍后再试',
+}
+
+export function describeApiError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status >= 500) return `服务暂时不可用（${err.status}），请稍后重试`
+    const known = HTTP_STATUS_MESSAGES[err.status]
+    return known ?? err.message
+  }
+  if (err instanceof Error) return err.message
+  return String(err)
+}

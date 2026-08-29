@@ -228,11 +228,17 @@ export default function CreateTicketDialog({
       className="modal-backdrop"
       onMouseDown={(e) => e.target === e.currentTarget && handleClose()}
     >
-      <form className="modal" onSubmit={submit}>
+      <form
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-ticket-title"
+        onSubmit={submit}
+      >
         <header>
           <div>
             <span className="eyebrow">新建工单</span>
-            <h2>{title}</h2>
+            <h2 id="create-ticket-title">{title}</h2>
           </div>
           <button
             type="button"

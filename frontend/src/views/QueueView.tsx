@@ -171,6 +171,51 @@ export default function QueueView({ onOpenSidebar }: { onOpenSidebar?: () => voi
     [ticketId],
   )
 
+  const loadDetail = useCallback((targetId: string) => {
+    detailAbortRef.current?.abort()
+    const controller = new AbortController()
+    detailAbortRef.current = controller
+    const requestId = ++detailRequestId.current
+
+    setSelected(null)
+    setOverview(null)
+    setPendingClarification(null)
+    setDetailError('')
+    setDetailLoading(true)
+
+    // allSettled：overview/pending 失败不阻塞工单主体显示；ticket 失败才整体失败。
+    Promise.allSettled([
+      getTicket(targetId, controller.signal),
+      getTicketOverview(targetId, controller.signal),
+      getPendingInterrupt(targetId, controller.signal),
+    ]).then(([ticketResult, overviewResult, pendingResult]) => {
+      if (controller.signal.aborted || requestId !== detailRequestId.current) return
+      const errs: string[] = []
+      if (ticketResult.status === 'fulfilled') {
+        setSelected(ticketResult.value)
+      } else {
+        errs.push(formatError(ticketResult.reason))
+      }
+      if (overviewResult.status === 'fulfilled') {
+        setOverview(overviewResult.value)
+      } else {
+        errs.push(formatError(overviewResult.reason))
+      }
+      if (pendingResult.status === 'fulfilled') {
+        setPendingClarification(pendingResult.value.interrupt ?? null)
+      } else {
+        errs.push(formatError(pendingResult.reason))
+      }
+      if (errs.length > 0) {
+        setDetailError(errs.join('；'))
+      }
+    }).finally(() => {
+      if (requestId === detailRequestId.current) {
+        setDetailLoading(false)
+      }
+    })
+  }, [])
+
   useEffect(() => {
     detailAbortRef.current?.abort()
     detailAbortRef.current = null
@@ -184,41 +229,12 @@ export default function QueueView({ onOpenSidebar }: { onOpenSidebar?: () => voi
       return
     }
 
-    setSelected(null)
-    setOverview(null)
-    setPendingClarification(null)
-    setDetailError('')
-    setDetailLoading(true)
-
-    const controller = new AbortController()
-    detailAbortRef.current = controller
-    const requestId = ++detailRequestId.current
-
-    Promise.all([
-      getTicket(ticketId, controller.signal),
-      getTicketOverview(ticketId, controller.signal),
-      getPendingInterrupt(ticketId, controller.signal),
-    ])
-      .then(([ticket, detail, pending]) => {
-        if (controller.signal.aborted || requestId !== detailRequestId.current) return
-        setSelected(ticket)
-        setOverview(detail)
-        setPendingClarification(pending.interrupt ?? null)
-      })
-      .catch((err) => {
-        if (controller.signal.aborted || requestId !== detailRequestId.current) return
-        setDetailError(formatError(err))
-      })
-      .finally(() => {
-        if (requestId === detailRequestId.current) {
-          setDetailLoading(false)
-        }
-      })
+    loadDetail(ticketId)
 
     return () => {
-      controller.abort()
+      detailAbortRef.current?.abort()
     }
-  }, [ticketId])
+  }, [ticketId, loadDetail])
 
   const guardSelected = (targetId?: string) => {
     if (!selected) return false
@@ -416,12 +432,7 @@ export default function QueueView({ onOpenSidebar }: { onOpenSidebar?: () => voi
         onResume={resumeClarification}
         onBack={closeDetail}
         onRetry={() => {
-          if (ticketId) {
-            setDetailError('')
-            detailRequestId.current += 1
-            // 通过微调依赖触发 useEffect 重新执行
-            navigate(ticketsPath(view, ticketId), { replace: true })
-          }
+          if (ticketId) loadDetail(ticketId)
         }}
       />
 
