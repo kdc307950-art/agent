@@ -46,11 +46,12 @@ query ──▶ lexical_search（必开，纯 SQL）
 门禁参数（CI 用）：`--fail-under-top1 0.95 --fail-under-recall5 0.98`
 （seed 集）；语义改写用例集不在 lexical-only 下设置 80% 门禁。
 
-## Hybrid 评测门禁设计（待接入独立 holdout 集）
+## Hybrid 评测（CI 确认通过，2026-08-30）
 
 真实 embedding 接入后执行，与 lexical-only 基线**分开记录、分开门禁**。
-独立 holdout 集已创建（`backend/knowledge/eval_holdout_cases.py`，冻结版本
-`2026-08-30-v1`）但**尚未评测**；以下为已冻结的门禁设计。
+独立 holdout 集（`backend/knowledge/eval_holdout_cases.py`，冻结版本
+`2026-08-30-v1`）已在受保护 CI（`workflow_dispatch`，run `33265164264`）
+成功运行并全部门禁达标。
 
 **数据集分离**
 - `seed_eval`（`backend/knowledge/eval_cases.py`，52 条）：开发期回归用，
@@ -90,12 +91,12 @@ python -m backend.run_knowledge_eval --dataset hybrid_holdout --embed `
   `docs/HYBRID_EVAL_RUNBOOK.md`（含 embedding 服务契约、Secrets 配置、
   本地验证、CI 触发、失败处理顺序、通过/未通过后的文档动作）。
 
-## 实测 hybrid 数字（2026-08-30，真实 embedding，本地实测）
+## 实测 hybrid 数字（2026-08-30，真实 embedding，CI 确认）
 
 服务：DashScope MAAS 专属实例（OpenAI 兼容端点）→ 仓库契约代理
 `backend/embedding_proxy.py`；模型 `qwen3.7-text-embedding`，维度 1024；
 知识库 seed_demo 9 篇文档 / 18 分块全部向量化；数据集 `hybrid_holdout@2026-08-30-v1`
-（19 = 14 召回 + 4 无答案 + 1 ACL）。
+（19 = 14 召回 + 4 无答案 + 1 ACL）。本地与 CI（run `33265164264`）两次运行结果一致。
 
 | 指标 | 值 | 门禁 |
 |---|---|---|
@@ -108,9 +109,8 @@ python -m backend.run_knowledge_eval --dataset hybrid_holdout --embed `
 
 - 与 lexical-only 基线（seed 52 条：98.1% / 100% / 0.990）**分开记录、分开门禁**，
   两者不可混用。
-- **状态**：本地实测通过；**受保护 CI 尚未成功运行**（需 GitHub Secrets 注入
-  endpoint/model/dimension 后手动触发 `Hybrid Eval（手动）` 验证）。本地结果
-  不得单独作为对外达标依据；CI 成功运行一次后再按 runbook 第 7 节固化。
+- **状态**：受保护 CI 已成功运行并达标（run `33265164264`，2026-08-30，2m15s），
+  JSON 报告 artifact `hybrid-eval-report-33265164264`。本地结果与 CI 一致。
 - 拒答阈值 0.45 的校准依据：seed 52 条有答案用例 top-1 相似度全部 ≥ 0.505；
   holdout 4 条无答案用例为 0.298 / 0.302 / 0.304 / 0.443，全部低于 0.45。
 

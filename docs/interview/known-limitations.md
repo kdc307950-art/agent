@@ -69,10 +69,12 @@
     `/admin/copilot/runs/{run_id}/replay`（重放保留原审计）已实现并测试；
     生产级操作审批流（谁可重放、限流、审计联动）未设计。
 
-17. **Hybrid 评测：本地实测通过，CI 未运行**：独立 `hybrid_holdout` 评测集
+17. **Hybrid 评测：CI 确认通过**：独立 `hybrid_holdout` 评测集
     （`eval_holdout_cases.py`，冻结版本 `2026-08-30-v1`，19 = 14 召回 + 4 无答案
     + 1 ACL）已用真实 embedding（`qwen3.7-text-embedding`，dim=1024，
-    经仓库契约代理 `backend/embedding_proxy.py` 接入）完成本地实测：
+    经仓库契约代理 `backend/embedding_proxy.py` 接入）在受保护 CI
+    （`workflow_dispatch`）成功运行并全部门禁达标（run `33265164264`，
+    2026-08-30，2m15s）：
 
     | 指标 | 结果 | 门禁 |
     |---|---|---|
@@ -83,10 +85,12 @@
     | 无答案误召回 | 0/4（min-similarity 0.45 拒答阈值） | = 0 ✓ |
     | ACL 泄露 | 0/1 | = 0 ✓ |
 
-    **但受保护 CI（`workflow_dispatch`）尚未成功运行**——需 GitHub Secrets
-    注入 endpoint/model/dimension 后手动触发验证；**本地结果不得单独作为
-    对外达标依据**。seed_eval 的 lexical-only 基线（98.1% Top1）保持不变。
+    seed_eval 的 lexical-only 基线（98.1% Top1）保持不变。**但仍不据此推断
+    生产效果**：这是演示库 + 冻结 holdout 上的结果，不等同真实企业知识库
+    泛化；生产默认仍走 lexical-only，待小范围启用后的 P95/成本/降级率等
+    实际运行数据再评估 hybrid 上线（见 runbook 第 8 节）。
 
-> **对外统一表述**：Copilot 已完成身份快照持久化与统一检索接线；当前生产
-> 配置下使用 lexical-only。Hybrid 检索路径、降级标记和门禁机制已实现，但
-> 真实 embedding 的独立 holdout 评测及受保护 CI 验证尚未完成。
+> **对外统一表述**：Copilot 已完成身份快照持久化与统一检索接线；Hybrid
+> 检索路径、降级标记、拒答阈值与门禁机制已实现，独立 holdout 集已在受保护
+> CI 上全部门禁达标（演示库规模）。当前生产配置仍使用 lexical-only，真实
+> 生产知识库规模下的 hybrid 效果与可靠性、成本尚未验证。

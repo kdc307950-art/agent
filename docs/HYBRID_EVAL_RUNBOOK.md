@@ -258,11 +258,12 @@ git diff --check
 
 在这些指标有实际运行数据之前，**生产默认保持 lexical-only 是正确决策**。
 
-## 9. 真实评测记录（2026-08-30，本地实测，非 CI）
+## 9. 真实评测记录（2026-08-30，CI 确认）
 
 服务：DashScope MAAS 专属实例（OpenAI 兼容端点）→ 仓库契约代理
 （`backend/embedding_proxy.py`）；模型 `qwen3.7-text-embedding`，维度 1024。
 知识库：seed_demo 9 篇文档 / 18 个分块，全部向量化。
+本地与受保护 CI 两次运行结果一致；CI run `33265164264`（2m15s）。
 
 ```text
 数据集: hybrid_holdout@2026-08-30-v1（19 = 14 召回 + 4 无答案 + 1 ACL）
@@ -275,9 +276,9 @@ MRR@5           = 0.929              >= 0.75 ✓
 ACL 泄露         = 0/1                ✓
 ```
 
-报告：`artifacts/hybrid-eval-real.json`（本次本地运行产物，未随仓库提交）。
+报告：CI artifact `hybrid-eval-report-33265164264`（JSON，下载于
+`https://github.com/kdc307950-art/agent/actions/runs/33265164264/artifacts/9718444946`）。
 
-**状态**：本地真实评测通过；受保护 CI（`workflow_dispatch`）尚未成功运行——
-需要 GitHub Secrets 注入 endpoint/model/dimension 后手动触发验证。按第 7 节
-「评测通过」路径更新文档（known-limitations 第 17 条 / knowledge-evaluation /
-evidence）前，须在 CI 成功运行一次；本地结果不得单独作为对外达标依据。
+**状态**：受保护 CI（`workflow_dispatch`）已成功运行并全部门禁达标
+（2026-08-30）。第 7 节「评测通过」路径的文档更新已随本记录完成。
+生产默认仍走 lexical-only，待第 8 节小范围启用后的实际运行数据再评估 hybrid 上线。

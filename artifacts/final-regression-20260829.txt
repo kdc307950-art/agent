@@ -88,13 +88,14 @@ Node   : v24.19.0；npm 11.17.0
 ----------------------------------------------------------------------
 五、未验证边界（诚实标注）
 ----------------------------------------------------------------------
-- 真实 embedding 已接入并完成**本地实测**（2026-08-30，qwen3.7-text-embedding
-  dim=1024 经仓库契约代理）：holdout 19 条 hybrid 全部达标
-  （Top1 85.7% / Recall@5 96.4% / MRR@5 0.929 / 无答案误召回 0 / ACL 泄露 0，
-  min-similarity 0.45）；报告 artifacts/hybrid-eval-real.json（本地产物，未提交）。
+- Hybrid holdout 已接入真实 embedding（2026-08-30，qwen3.7-text-embedding
+  dim=1024 经仓库契约代理）并在受保护 CI（workflow_dispatch，run 33265164264，
+  2m15s）成功运行、全部门禁达标：
+  Top1 85.7% / Recall@5 96.4% / MRR@5 0.929 / 无答案误召回 0 / ACL 泄露 0
+  （min-similarity 0.45）；JSON 报告 artifact hybrid-eval-report-33265164264。
   生产配置下 Copilot 仍走 lexical-only（未启用 hybrid）
-- **受保护 CI 尚未成功运行**：需 GitHub Secrets 注入后手动触发
-  workflow_dispatch；本地实测不得单独作为对外达标依据
+- 上述指标为**演示库 + 冻结 holdout** 结果，不等同真实企业知识库泛化；
+  hybrid 上线前仍需小范围启用的 P95/成本/降级率等实际运行数据
 - 多 Worker 并发领取的生产级验证未做（单机测试覆盖 SKIP LOCKED 语义）
 - 生产长期运行、高并发、灾备未验证
 - 未正式生产上线
