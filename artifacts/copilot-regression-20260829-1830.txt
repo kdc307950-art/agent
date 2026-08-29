@@ -1,0 +1,95 @@
+========================================================================
+Resolution Copilot 功能回归记录
+========================================================================
+
+功能：客服解决方案 Copilot Agent（Agent 2）—— 解决阶段的分析与拟答。
+与既有 Intake/Triage Agent（Agent 1）职责分离，通过结构化工单上下文
+传递状态，不新增 Supervisor，路由仍由确定性状态机决定。
+
+实现日期   : 2026-08-29
+基线 commit: 见 git log（本功能单独提交）
+
+----------------------------------------------------------------------
+一、实现范围（对照 PRD 五阶段）
+----------------------------------------------------------------------
+阶段 1  只读工具与数据契约
+  - src/my_agent/helpdesk/tools.py 新增 get_ticket_history / get_ticket_messages
+    （租户隔离由 RunContext 强制，scope=ticket:agent，只返回必要字段）
+  - backend/tool_governance.py 注册两个新工具策略 + 工具集合 profile：
+    INTAKE_AGENT_TOOLS / RESOLUTION_COPILOT_TOOLS / HUMAN_ACTION_TOOLS
+  - RESOLUTION_COPILOT_TOOLS 只含只读工具，send_message 等副作用工具不在集合内
+
+阶段 2  Copilot Agent 服务（backend/copilot/）
+  - models.py : CopilotRequest / CopilotResult / CopilotCitation / CopilotDraft
+                / CopilotRunRecord（全部 extra="forbid"，禁止自由字段）
+  - agent.py  : ResolutionCopilot 有界工具循环
+                最大轮次 3、每轮工具 2、总工具调用 6、上下文 12 条、
+                单工具超时 3s、总超时 12s（CopilotLimits 可注入测试更小值）
+  - service.py: CopilotService 编排（准备上下文 -> 检索引用白名单 -> 生成 -> 门禁）
+
+阶段 3  后端 API 与持久化
+  - schema.py v16 迁移：copilot_runs + copilot_drafts 表（含 operation_id
+    唯一约束、draft 状态机 CHECK、外键级联）
+  - repository.py：start_run/finish_run/save_draft/get_latest_draft/
+                   approve_draft/reject_draft/expire_drafts
+  - api.py：POST /tickets/{ticket_id}/copilot（operation_id 幂等）、
+            GET  /tickets/{ticket_id}/copilot/latest、
+            POST /tickets/{ticket_id}/copilot/{draft_id}/approve
+  - 答案门禁（service.apply_gate）：无引用转人工、finance 恒人工、
+    置信度 <0.80 转人工、引用白名单（知识库租户隔离检索命中）、
+    工具异常禁止确定性结论；auto_reply 恒 False
+
+阶段 4  前端（frontend/）
+  - types.ts 新增 CopilotCitation / CopilotDraft / CopilotGenerateResult
+  - api/copilot.ts：generateCopilot / getCopilotLatest / approveCopilotDraft
+  - components/CopilotPanel.tsx：生成建议、处理步骤、草稿、引用、置信度、
+    风险提示、"采用草稿"（仅填充回复框，不自动发送）、"复制"、"标记已核对"
+  - TicketDetail 集成（仅 assigned/in_progress 状态显示）+ QueueView
+    持有 adoptedReply 状态（切换工单自动清空，防止旧草稿串到新工单）
+
+阶段 5  测试与可观测性
+  - 单元测试 12 个（tests/test_copilot_unit.py）
+  - API 测试 7 个（tests/test_copilot_api.py）
+  - Postgres 集成测试 4 个（tests/test_copilot_postgres.py）
+  - 工具测试扩展 4 个（tests/test_helpdesk_tools.py）
+  - Playwright 1 用例 x2 项目（e2e/copilot.spec.ts）
+  - 指标：copilot_runs_total / copilot_failures_total / copilot_latency_seconds /
+    copilot_human_revision_total / copilot_no_citation_total / copilot_draft_approval_total
+
+----------------------------------------------------------------------
+二、回归门禁结果
+----------------------------------------------------------------------
+ruff            : All checks passed
+mypy            : 87 个文件无问题
+后端 pytest     : 299 passed, 3 deselected（live_e2e 不纳入常规回归）
+前端 oxlint     : 0 warnings / 0 errors
+前端 tsc -b     : 通过
+前端 vitest     : 20 passed
+前端 Playwright : 12 passed（含新 copilot 用例，chromium + mobile-chromium）
+前端 build      : 成功（JS 295.24 kB / gzip 92.04 kB）
+测试容器        : compose.test.yml down -v 清理成功
+
+----------------------------------------------------------------------
+三、安全边界（本次实现核心）
+----------------------------------------------------------------------
+- Agent 2 只绑定 RESOLUTION_COPILOT_TOOLS（search_knowledge / search_assets /
+  get_ticket_history / get_ticket_messages），全部只读
+- 治理层 allowed_tools 子集校验：即使模型在 prompt 中请求 send_message，
+  工具未注册/不在集合内一律拒绝（denied 记录在 tool_trace）
+- 答案门禁独立于模型自述：引用必须落在知识库租户隔离检索白名单
+- 草稿审批（approve）只做状态迁移，不创建客户消息（集成测试验证
+  outbox_events 无新事件）
+- 模型失败/超时/工具异常：不改变工单状态与版本（集成测试验证）
+- operation_id 幂等：同 (tenant, ticket, operation) 不重复生成
+- auto_reply 恒为 False：Agent 2 只生成草稿
+
+----------------------------------------------------------------------
+四、已知限制
+----------------------------------------------------------------------
+- 生产认证未接入（dev token 模式）；Copilot 需 ticket:agent scope
+- Playwright 使用 mock API（page.route）
+- Copilot 依赖真实 DEEPSEEK_API_KEY 才有实际生成能力（runtime 装配时
+  无 key 则 copilot=None，API 返回 503）
+- live_e2e 未纳入常规回归
+- 未证明高并发、灾备与长期生产稳定性
+========================================================================
