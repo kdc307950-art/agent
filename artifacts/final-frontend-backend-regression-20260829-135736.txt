@@ -1,0 +1,114 @@
+========================================================================
+最终回归记录（前端 + 后端）· 冻结维护前的最后一次完整门禁
+========================================================================
+
+生成时间   : 2026-08-29 13:57:36
+分支       : feat/multi-agent-supervisor
+Commit SHA : 03edb92abc46955b9a0006e4e4161d789ba94ed2
+            (本次回归前基线；inert 修复与证据文件另立提交)
+
+----------------------------------------------------------------------
+一、工具链版本
+----------------------------------------------------------------------
+Docker     : 29.6.2 (engine 29.6.2, client 29.6.2)
+Python     : 3.12.9 (py launcher / C:\Python312)
+Node       : v24.19.0
+npm        : 11.17.0
+uv         : 0.12.3
+
+----------------------------------------------------------------------
+二、前端门禁（frontend/）
+----------------------------------------------------------------------
+1) lint        : npm run lint            -> oxlint，0 warnings / 0 errors（35 文件，92 规则）
+2) typecheck   : npm run typecheck       -> tsc -b 通过
+3) unit test   : npm run test            -> vitest run，4 个测试文件 20 个用例全部通过
+     - src/api/client.test.ts               8 passed
+     - src/api/chat.test.ts                 6 passed
+     - src/components/CreateTicketDialog.test.tsx  1 passed
+     - src/views/QueueView.test.tsx         5 passed
+4) e2e test    : npm run test:e2e         -> playwright test，10 passed（chromium + mobile-chromium）
+     - 首次全量并发运行时 ticket-workflow mobile 用例出现 1 次偶发失败
+       （10 workers 并发下 .detail .status-assigned 未及时出现）；
+       单独重跑与全量重跑均 10/10 通过，判定为并发时序抖动，非代码缺陷。
+5) build       : npm run build           -> tsc -b && vite build 成功
+     - dist/index.html 0.45 kB（gzip 0.29 kB）
+     - CSS 12.11 kB（gzip 3.37 kB），JS 289.70 kB（gzip 90.49 kB）
+
+本次冻结前修复：
+- Sidebar.tsx 的 inert 由 `'' as unknown as boolean` hack 改为 React 19
+  原生布尔属性 `inert={!mobileOpen}`，消除控制台警告。
+- Sidebar.tsx 高亮逻辑：/tickets/:ticketId 详情页保持"工单队列"高亮
+  （path.startsWith('/tickets/') 时归入 queue），其余按 view 参数区分。
+
+----------------------------------------------------------------------
+三、后端门禁（backend/）
+----------------------------------------------------------------------
+1) ruff        : uv run ruff check backend -> All checks passed
+2) mypy        : uv run mypy backend       -> Success: no issues found in 66 source files
+3) migrations  : uv run python -m backend.migrations           -> 通过
+                 uv run python -m backend.vector_migrations     -> 通过
+4) pytest      : uv run pytest -q -m "not live_e2e"
+                 -> 272 passed, 3 deselected in 23.32s
+   （测试容器：postgres pgvector/pg17 @127.0.0.1:55436，redis:7 @127.0.0.1:56379）
+
+----------------------------------------------------------------------
+四、live_e2e 在线验证（2026-08-29 补充执行）
+----------------------------------------------------------------------
+3 个用例（tests/e2e/test_live_deepseek.py，标记 live_e2e）已在真实
+DeepSeek 端点（https://api.deepseek.com, deepseek-chat）下执行通过：
+
+    uv run pytest tests/e2e/test_live_deepseek.py -q -rs
+    -> 3 passed in 6.52s
+
+运行前提：Docker 测试容器（postgres/redis）就绪、backend.migrations
+已执行、Agent 服务（uvicorn backend.app:app, AUTH_MODE=dev）以真实
+DEEPSEEK_API_KEY 启动、LIVE_AGENT_TOKEN 由 backend.issue_dev_token
+（demo live-user --role chat）签发、RUN_LIVE_E2E=true。
+说明：本机 8000 端口被另一项目（企业知识库助手 API）占用，本项目
+Agent 服务改在 8001 端口验证，LIVE_AGENT_BASE_URL 相应指向 8001。
+
+三个用例验证内容：
+- test_live_text_stream_has_end_event
+  请求"2+2 等于多少"，HTTP 200，收到 text 事件，末事件为 end，
+  无 agent_failed。
+- test_live_tool_call_is_governed_and_streamed
+  要求使用计算工具计算 2+2，流中出现 tool 事件（calling/done），
+  末事件为 end。
+- test_live_thread_can_continue_after_first_run
+  第一轮记忆 BLUE-17，第二轮同 thread_id 追问，返回内容包含 BLUE-17。
+
+手工 SSE 观察（同端点）：
+- 文本流：tool calling -> tool done -> text("2 + 2 = **4**") -> end
+- 工具流：tool calling -> tool done -> text("2+2 = **4**") -> end
+  两种场景链路完整，均为 HTTP 200。
+
+真实模型调用产生少量供应商费用；测试令牌为本地 dev 令牌，未入库、
+未外泄。测试完成后 docker compose down -v 清理，容器与网络无残留。
+
+----------------------------------------------------------------------
+五、测试容器清理
+----------------------------------------------------------------------
+首次常规回归：docker compose -f infra/compose.test.yml down -v 成功。
+live_e2e 在线验证后再次 down -v 清理成功：
+- langgraph-test-postgres-1、langgraph-test-redis-1 已停止并移除
+- 测试网络 langgraph-test_default 已移除
+- 测试数据卷随 -v 清理，未残留本地状态
+
+----------------------------------------------------------------------
+六、git 状态
+----------------------------------------------------------------------
+git diff --check          : 无空白错误
+git status --short        : 仅本次冻结修复与证据文件相关变更
+tsconfig.tsbuildinfo 等生成文件已由 frontend/.gitignore 忽略，未入库。
+
+========================================================================
+已知限制（冻结定位，不属本次回归范围）
+========================================================================
+- 生产认证尚未接入（前端为演示用 mock 会话；后端 live_e2e 使用 dev
+  令牌 AUTH_MODE=dev 验证，非生产认证链路）。
+- Playwright E2E 使用 mock API（page.route 拦截 /api）。
+- live_e2e 已于 2026-08-29 在真实 DeepSeek 端点执行通过（见第四节），
+  但仍依赖真实模型供应商，不纳入每次常规回归。
+- 未证明高并发、灾备与长期生产稳定性。
+- embedding 生产供应商需要单独配置。
+========================================================================
