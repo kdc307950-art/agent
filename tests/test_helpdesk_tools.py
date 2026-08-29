@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -240,6 +241,7 @@ def test_search_assets_keyword_filter_and_empty():
 
 
 def test_search_knowledge_is_tenant_scoped():
+    """跨租户知识不可见；返回统一契约 {content, evidence}。"""
     async def run():
         runtime = _make_runtime(
             tenant_id="tenant-b",
@@ -253,8 +255,42 @@ def test_search_knowledge_is_tenant_scoped():
         return await search_knowledge.coroutine(query="配置", config=_config(runtime))
 
     result = asyncio.run(run())
-    assert "Wi-Fi 配置" in result
-    assert "VPN 配置" not in result  # 跨租户知识不可见
+    payload = json.loads(result)
+    assert "Wi-Fi 配置" in payload["content"]
+    assert "VPN 配置" not in payload["content"]  # 跨租户知识不可见
+    # evidence 只含当前租户命中，且三元组完整（引用白名单来源）
+    assert len(payload["evidence"]) == 1
+    ev = payload["evidence"][0]
+    assert ev["document_id"] == "wifi-001"
+    assert ev["document_version"] == 1
+    assert ev["chunk_id"] == "c1"
+
+
+def test_search_knowledge_returns_structured_evidence_for_citations():
+    """真实工具输出必须可被 tool_adapter 解析为引用证据（阶段一验收）。"""
+    from backend.copilot.tool_adapter import _parse_evidence
+
+    async def run():
+        runtime = _make_runtime(
+            tenant_id="tenant-a",
+            knowledge=FakeKnowledge([_hit("tenant-a", "vpn-guide", "VPN 配置指南")]),
+        )
+        return await search_knowledge.coroutine(query="vpn", config=_config(runtime))
+
+    raw = asyncio.run(run())
+    evidence = _parse_evidence("search_knowledge", raw)
+    assert len(evidence) == 1
+    assert evidence[0].citation_key == ("vpn-guide", 1, "c1")
+
+
+def test_search_knowledge_returns_error_json_with_empty_evidence():
+    async def run():
+        runtime = _make_runtime()
+        return await search_knowledge.coroutine(query="", config=_config(runtime))
+
+    payload = json.loads(asyncio.run(run()))
+    assert "错误" in payload["content"]
+    assert payload["evidence"] == []
 
 
 def test_tools_fail_safely_without_runtime_context():

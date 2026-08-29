@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from psycopg.rows import dict_row
@@ -22,6 +23,7 @@ from psycopg_pool import AsyncConnectionPool
 from .models import (
     KnowledgeChunkInput,
     KnowledgeDocumentInput,
+    KnowledgeEvidence,
     RetrievalHit,
     RetrievalPrincipal,
 )
@@ -332,3 +334,92 @@ class KnowledgeRepository:
                 rows = await cursor.fetchall()
         # 构造不可变的检索命中；fused_score 由融合阶段（RRF）再填充
         return [RetrievalHit(source="lexical", fused_score=0.0, **row) for row in rows]
+
+    async def verify_citations(
+        self,
+        principal: RetrievalPrincipal,
+        citations: Sequence[tuple[str, int, str]],
+    ) -> list[KnowledgeEvidence]:
+        """权威校验引用三元组（阶段二第二层门禁）：租户/已发布/有效期/ACL/chunk 存在/版本。
+
+        参数：
+            principal: 检索主体（tenant + visibility + departments ACL）
+            citations: [(document_id, document_version, chunk_id), ...]
+        返回：
+            通过校验的 KnowledgeEvidence 列表；未发布/过期/跨租户/ACL 拒绝/
+            chunk 不存在/版本不符的引用被丢弃。
+        设计：
+            与 lexical_search 相同的过滤链（租户 -> published -> 有效期 ->
+            可见性分级 -> 部门白名单），再加 chunk 存在性与版本一致性；
+            是"引用保存前再次确认"的权威来源，不信任工具输出或模型自述。
+        """
+        if not citations:
+            return []
+        seen: set[tuple[str, int, str]] = set()
+        params_docs: list[str] = []
+        params_versions: list[int] = []
+        params_chunks: list[str] = []
+        for document_id, version, chunk_id in citations:
+            key = (document_id, version, chunk_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            params_docs.append(document_id)
+            params_versions.append(version)
+            params_chunks.append(chunk_id)
+        if not params_docs:
+            return []
+        async with self.pool.connection() as connection:
+            async with connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    SELECT c.tenant_id, c.document_id, c.document_version,
+                           c.chunk_id, d.title, c.content
+                    FROM knowledge_chunks AS c
+                    JOIN knowledge_documents AS d
+                      ON d.tenant_id = c.tenant_id
+                     AND d.document_id = c.document_id
+                     AND d.version = c.document_version
+                    WHERE c.tenant_id = %s
+                      AND d.status = 'published'
+                      AND (d.valid_from IS NULL OR d.valid_from <= now())
+                      AND (d.valid_until IS NULL OR d.valid_until > now())
+                      AND (
+                          d.visibility = 'public'
+                          OR (d.visibility = 'internal' AND %s::boolean)
+                          OR (
+                              d.visibility = 'restricted' AND %s::boolean
+                              AND cardinality(d.allowed_departments) > 0
+                              AND d.allowed_departments && %s::TEXT[]
+                          )
+                      )
+                      AND (
+                          cardinality(d.allowed_departments) = 0
+                          OR d.allowed_departments && %s::TEXT[]
+                      )
+                      AND (c.document_id, c.document_version, c.chunk_id) IN (
+                          SELECT * FROM unnest(%s::TEXT[], %s::INT[], %s::TEXT[])
+                      )
+                    """,
+                    (
+                        principal.tenant_id,
+                        principal.internal,
+                        principal.internal,
+                        list(principal.departments),
+                        list(principal.departments),
+                        params_docs,
+                        params_versions,
+                        params_chunks,
+                    ),
+                )
+                rows = await cursor.fetchall()
+        return [
+            KnowledgeEvidence(
+                document_id=row["document_id"],
+                document_version=row["document_version"],
+                chunk_id=row["chunk_id"],
+                title=row["title"],
+                content=str(row["content"] or "")[:2_000],
+            )
+            for row in rows
+        ]

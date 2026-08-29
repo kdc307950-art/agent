@@ -227,6 +227,23 @@ class ResolutionCopilot:
 
                 # 经治理层执行：profile/scope/租户/超时/重试/审计/指标
                 tool_obj = self.tools[tool_name]
+                # 直接调 coroutine 并把 runtime 注入 config：LangChain ainvoke
+                # 会把 config 当 Run 配置剥离，不会传给工具声明的 config 参数；
+                # coroutine 原样透传。测试桩无 coroutine 时退化为 ainvoke。
+                tool_runner = getattr(tool_obj, "coroutine", None) or tool_obj.ainvoke
+                use_coroutine = hasattr(tool_obj, "coroutine")
+
+                async def run_tool(
+                    tool_args: dict[str, Any],
+                    _runner=tool_runner,
+                    _use_coroutine=use_coroutine,
+                    _runtime=runtime,
+                ) -> Any:
+                    cfg = _runtime_config(_runtime)
+                    if _use_coroutine:
+                        return await _runner(**tool_args, config=cfg)
+                    return await _runner(tool_args, config=cfg)
+
                 try:
                     async with asyncio.timeout(
                         self.limits.single_tool_timeout_seconds
@@ -239,9 +256,7 @@ class ResolutionCopilot:
                             runtime=runtime,
                             run_context=run_context,
                             call_id=call_id,
-                            execute=lambda tool_args, _tool=tool_obj: _tool.ainvoke(
-                                tool_args, config=_runtime_config(runtime)
-                            ),
+                            execute=run_tool,
                         )
                 except TimeoutError:
                     tool_trace.append(
@@ -262,6 +277,13 @@ class ResolutionCopilot:
                     continue
 
                 elapsed_ms = round((monotonic() - tool_call_started) * 1000, 1)
+                # 工具调用指标（阶段十：copilot_tool_calls_total{tool,status}）
+                metrics = getattr(runtime, "metrics", None)
+                if metrics is not None:
+                    metrics.increment(
+                        "copilot_tool_calls_total",
+                        attributes={"tool": tool_name, "status": invocation.status},
+                    )
                 if invocation.ok:
                     evidence.extend(invocation.evidence)
                     tool_trace.append(

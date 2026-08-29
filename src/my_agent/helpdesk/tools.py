@@ -18,6 +18,7 @@ LangGraph 注入 config；``config["configurable"]["runtime"]`` 为 AgentRuntime
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -89,27 +90,47 @@ async def search_knowledge(
     limit: int = 5,
     config: RunnableConfig | None = None,
 ) -> str:
-    """搜索当前租户的知识库（lexical 检索，含部门 ACL）。
+    """搜索当前租户的知识库（lexical 检索，含部门 ACL），返回统一结构化证据。
 
-    返回命中的文档标题与摘要片段；无命中返回空结果。
+    输出为 JSON：{"content": 展示文本, "evidence": [{document_id, document_version,
+    chunk_id, title, content}...]}。Agent 看到 content（可读），系统保留
+    evidence（引用白名单唯一来源），不再从展示文本反向解析引用。
+    租户隔离由检索 SQL 强制（published + 有效期 + ACL），跨租户/未发布文档不可见。
     """
     if not query or len(query) > 1_024:
-        return "错误：查询不能为空且不能超过 1024 字符"
+        return json.dumps(
+            {"content": "错误：查询不能为空且不能超过 1024 字符", "evidence": []},
+            ensure_ascii=False,
+        )
     if limit < 1 or limit > 20:
-        return "错误：limit 必须在 1 到 20 之间"
+        return json.dumps(
+            {"content": "错误：limit 必须在 1 到 20 之间", "evidence": []},
+            ensure_ascii=False,
+        )
     runtime = _runtime(config)
     context = _context(config)
     principal = RetrievalPrincipal(
         tenant_id=context.tenant_id, departments=frozenset(), internal=True
     )
     hits = await runtime.knowledge.lexical_search(principal, query, limit=limit)
-    if not hits:
-        return "知识库未找到相关内容"
-    lines = [
-        f"- [{h.document_id}] {h.title}: {h.content[:80]}{'…' if len(h.content) > 80 else ''}"
+    evidence = [
+        {
+            "document_id": h.document_id,
+            "document_version": h.document_version,
+            "chunk_id": h.chunk_id,
+            "title": h.title,
+            "content": h.content[:500],
+        }
         for h in hits
     ]
-    return "知识库命中：\n" + "\n".join(lines)
+    if not hits:
+        content = "知识库未找到相关内容"
+    else:
+        content = "知识库命中：\n" + "\n".join(
+            f"- [{h.document_id}] {h.title}: {h.content[:80]}{'…' if len(h.content) > 80 else ''}"
+            for h in hits
+        )
+    return json.dumps({"content": content, "evidence": evidence}, ensure_ascii=False)
 
 
 @tool

@@ -136,3 +136,31 @@ class Citation(BaseModel):
     chunk_id: str
     title: str
     source_uri: str | None = None
+
+
+class KnowledgeEvidence(BaseModel):
+    """知识工具输出的统一结构化证据（阶段一：工具输出契约）。
+
+    真实 search_knowledge 不再返回纯展示文本，而是返回
+    {"content": 展示文本, "evidence": [KnowledgeEvidence...]} 的 JSON；
+    Agent 看到 content（可读），系统保留 evidence（引用白名单唯一来源），
+    避免从展示文本反向解析引用。
+
+    字段说明：
+        document_id / document_version / chunk_id: 引用三元组
+        title: 文档标题
+        content: 命中分块正文（供门禁上下文与审计）
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    document_id: str = Field(min_length=1, max_length=128)
+    document_version: int = Field(ge=1)
+    chunk_id: str = Field(min_length=1, max_length=128)
+    title: str = Field(default="", max_length=512)
+    content: str = Field(default="", max_length=8_000)
+
+    @property
+    def citation_key(self) -> tuple[str, int, str]:
+        """稳定唯一键：文档 + 版本 + 分块（引用白名单匹配用）。"""
+        return (self.document_id, self.document_version, self.chunk_id)

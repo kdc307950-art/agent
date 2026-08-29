@@ -1,9 +1,9 @@
-"""Copilot 专用只读工具 —— 返回结构化 JSON 证据供引用门禁使用。
+"""Copilot 专用只读工具 —— 统一知识证据契约（{content, evidence}）。
 
-与 src/my_agent/helpdesk/tools.py 的区别：
-    - 本模块的 search_knowledge 返回 JSON 数组（document_id/version/chunk_id/
-      title/content），模型可读、系统可解析为 ToolEvidence
-    - 全部只读，无副作用工具；租户隔离由 Runtime 仓库层强制
+与 src/my_agent/helpdesk/tools.py 保持一致：search_knowledge 返回
+JSON {"content": 展示文本, "evidence": [KnowledgeEvidence...]}；
+Agent 看到 content（可读），系统经 tool_adapter 保留 evidence 供引用门禁。
+全部只读，无副作用工具；租户隔离由 Runtime 仓库层强制。
 
 安全边界：
     - 工具只接收结构化参数；租户/用户统一从 RunContext 获取
@@ -32,34 +32,9 @@ def _context(config: RunnableConfig | None):
     return runtime.context
 
 
-@tool
-async def search_knowledge(
-    query: str,
-    *,
-    limit: int = 5,
-    config: RunnableConfig | None = None,
-) -> str:
-    """搜索当前租户的知识库（lexical 检索，含部门 ACL），返回结构化 JSON 证据。
-
-    每命中输出一条：
-    {"document_id", "document_version", "chunk_id", "title", "content"}。
-    引用门禁只接受出现在这些命中里的 (document_id, version, chunk_id)。
-    """
-    if not query or len(query) > 1_024:
-        return json.dumps(
-            [{"error": "查询不能为空且不能超过 1024 字符"}], ensure_ascii=False
-        )
-    if limit < 1 or limit > 20:
-        return json.dumps(
-            [{"error": "limit 必须在 1 到 20 之间"}], ensure_ascii=False
-        )
-    runtime = _runtime(config)
-    context = _context(config)
-    principal = RetrievalPrincipal(
-        tenant_id=context.tenant_id, departments=frozenset(), internal=True
-    )
-    hits = await runtime.knowledge.lexical_search(principal, query, limit=limit)
-    payload = [
+def _knowledge_result(query: str, hits, limit: int) -> str:
+    """把检索命中组装为统一契约 {content, evidence} 的 JSON 字符串。"""
+    evidence = [
         {
             "document_id": h.document_id,
             "document_version": h.document_version,
@@ -69,7 +44,45 @@ async def search_knowledge(
         }
         for h in hits
     ]
-    return json.dumps(payload, ensure_ascii=False)
+    if not hits:
+        content = "知识库未找到相关内容"
+    else:
+        content = "知识库命中：\n" + "\n".join(
+            f"- [{h.document_id}] {h.title}: {h.content[:80]}{'…' if len(h.content) > 80 else ''}"
+            for h in hits
+        )
+    return json.dumps({"content": content, "evidence": evidence}, ensure_ascii=False)
+
+
+@tool
+async def search_knowledge(
+    query: str,
+    *,
+    limit: int = 5,
+    config: RunnableConfig | None = None,
+) -> str:
+    """搜索当前租户的知识库（lexical 检索，含部门 ACL），返回统一结构化证据。
+
+    输出为 JSON：{"content": 展示文本, "evidence": [{document_id, document_version,
+    chunk_id, title, content}...]}。引用门禁只接受 evidence 中的三元组。
+    """
+    if not query or len(query) > 1_024:
+        return json.dumps(
+            {"content": "错误：查询不能为空且不能超过 1024 字符", "evidence": []},
+            ensure_ascii=False,
+        )
+    if limit < 1 or limit > 20:
+        return json.dumps(
+            {"content": "错误：limit 必须在 1 到 20 之间", "evidence": []},
+            ensure_ascii=False,
+        )
+    runtime = _runtime(config)
+    context = _context(config)
+    principal = RetrievalPrincipal(
+        tenant_id=context.tenant_id, departments=frozenset(), internal=True
+    )
+    hits = await runtime.knowledge.lexical_search(principal, query, limit=limit)
+    return _knowledge_result(query, hits, limit)
 
 
 @tool

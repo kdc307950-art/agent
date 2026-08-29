@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -23,6 +25,7 @@ from backend.copilot.models import CopilotRequest
 from backend.copilot.service import CopilotService
 from backend.run_context import RunContext
 from backend.tool_governance import ToolGovernance
+from src.my_agent.helpdesk import TicketStatus
 
 
 def _request(**overrides) -> CopilotRequest:
@@ -470,3 +473,336 @@ def test_gate_returns_no_deterministic_conclusion_on_error():
     assert result.draft_answer is None
     assert result.needs_human_review is True
     assert result.reason_codes == ["model_failed"]
+
+
+# ========== 阶段一/二：真实工具证据链路 + 两层门禁（service 层） ==========
+
+
+class _RealKnowledge:
+    """模拟真实 lexical_search：返回命中；verify_citations 做权威校验。
+
+    hits_by_query 支持"补充查询命中不同 chunk"场景：
+    查询词 -> 命中列表；None 表示默认全量 hits。
+    """
+
+    def __init__(
+        self,
+        hits,
+        verified: set[tuple[str, int, str]] | None = None,
+        hits_by_query: dict[str, list[Any]] | None = None,
+    ):
+        self.hits = hits
+        self.hits_by_query = hits_by_query or {}
+        # 默认：命中即可验证（与真实 SQL 一致）；测试可注入更严的 verified 集合
+        self.verified = verified if verified is not None else {h.key for h in hits}
+
+    async def lexical_search(self, principal, query, limit=10):
+        if query in self.hits_by_query:
+            return [h for h in self.hits_by_query[query] if h.tenant_id == principal.tenant_id][:limit]
+        return [h for h in self.hits if h.tenant_id == principal.tenant_id][:limit]
+
+    async def verify_citations(self, principal, citations):
+        from backend.knowledge.models import KnowledgeEvidence
+
+        # 模拟真实 SQL：按 key 查 chunk（真实存在的 chunk 即通过权威校验）。
+        # 默认以 self.hits 为准；verified 集合可注入"补充查询命中但未在主 hits"的
+        # 额外合法 chunk（对应真实库中 chunk 确实存在）。
+        all_hits = {h.key: h for h in self.hits}
+        for key, hit in self.hits_by_query.items():
+            for h in hit:
+                all_hits.setdefault(h.key, h)
+        result = []
+        for h in all_hits.values():
+            if h.tenant_id == principal.tenant_id and h.key in set(citations) and h.key in self.verified:
+                result.append(
+                    KnowledgeEvidence(
+                        document_id=h.document_id,
+                        document_version=h.document_version,
+                        chunk_id=h.chunk_id,
+                        title=h.title,
+                        content=h.content,
+                    )
+                )
+        return result
+
+
+def _hit(doc_id: str, chunk: str = "c1") -> Any:
+    from backend.knowledge.models import RetrievalHit
+
+    return RetrievalHit(
+        tenant_id="tenant-a",
+        document_id=doc_id,
+        document_version=1,
+        chunk_id=chunk,
+        title=f"{doc_id} 标题",
+        content=f"{doc_id} 正文",
+        source_uri=None,
+        source="lexical",
+        source_rank=1,
+    )
+
+
+def _service_runtime(knowledge):
+    audit = _FakeAudit()
+    context = RunContext(
+        run_id="run-copilot",
+        request_id="req-1",
+        tenant_id="tenant-a",
+        user_id="user-1",
+        thread_id="copilot:tenant-a:t-1",
+        scopes=frozenset({"ticket:agent"}),
+        deadline=asyncio.get_running_loop().time() + 60,
+        allowed_tools=frozenset(
+            {"search_knowledge", "search_assets", "get_ticket_history", "get_ticket_messages"}
+        ),
+    )
+    return SimpleNamespace(
+        context=context,
+        tickets=_FakeTickets(_request_as_ticket()),
+        ticket_operations=_FakeOps(),
+        knowledge=knowledge,
+        tool_governance=ToolGovernance(audit),
+    )
+
+
+def _request_as_ticket():
+    from backend.tickets.models import TicketRecord
+
+    now = datetime.now(UTC)
+    return TicketRecord(
+        tenant_id="tenant-a",
+        ticket_id="t-1",
+        requester_id="user-1",
+        channel="web",
+        external_ticket_id=None,
+        title="VPN 无法连接",
+        description="客户端无法连接 VPN",
+        status=TicketStatus.ASSIGNED,
+        priority="normal",
+        category="it.vpn",
+        asset_id=None,
+        assigned_team_id=None,
+        assigned_user_id=None,
+        version=1,
+        metadata={},
+        created_at=now,
+        updated_at=now,
+        resolved_at=None,
+        closed_at=None,
+    )
+
+
+class _EvidenceModel:
+    """模型第一轮查知识（真实工具证据），第二轮输出引用该证据的 JSON。"""
+
+    def __init__(self, cited: dict | None = None):
+        self.cited = cited or {
+            "draft_answer": "请重新导入 VPN 配置",
+            "troubleshooting_steps": ["重新导入 VPN"],
+            "citations": [{"document_id": "vpn-guide", "document_version": 1, "chunk_id": "c1"}],
+            "confidence": 0.95,
+            "needs_human_review": False,
+        }
+        self.round = 0
+
+    async def ainvoke(self, messages, config=None):
+        from langchain_core.messages import AIMessage
+
+        self.round += 1
+        if self.round == 1:
+            return AIMessage(
+                content="需要查知识",
+                tool_calls=[
+                    {
+                        "name": "search_knowledge",
+                        "args": {"query": "vpn 重新导入"},
+                        "id": "call-1",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        return AIMessage(content=json.dumps(self.cited, ensure_ascii=False))
+
+
+class _TwoRoundEvidenceModel:
+    """模型两轮查知识（主查询 + 补充查询），引用补充查询命中的 chunk。"""
+
+    def __init__(self, cited: dict):
+        self.cited = cited
+        self.round = 0
+
+    async def ainvoke(self, messages, config=None):
+        from langchain_core.messages import AIMessage
+
+        self.round += 1
+        if self.round == 1:
+            return AIMessage(
+                content="先做主查询",
+                tool_calls=[
+                    {
+                        "name": "search_knowledge",
+                        "args": {"query": "vpn 排查"},
+                        "id": "call-1",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        if self.round == 2:
+            return AIMessage(
+                content="需要补充查询",
+                tool_calls=[
+                    {
+                        "name": "search_knowledge",
+                        "args": {"query": "vpn-03 具体配置"},
+                        "id": "call-2",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        return AIMessage(content=json.dumps(self.cited, ensure_ascii=False))
+
+
+def test_service_runs_real_tool_evidence_through_two_layer_gate():
+    """真实工具证据链路：证据 -> 白名单 -> 权威校验 -> 引用通过（阶段一验收）。"""
+    from backend.copilot.agent import ResolutionCopilot
+    from backend.copilot.service import CopilotService
+    from backend.copilot.tools import search_knowledge
+
+    async def run():
+        knowledge = _RealKnowledge([_hit("vpn-guide")])
+        runtime = _service_runtime(knowledge)
+        # 用真实 Copilot 工具（返回 {content, evidence} 统一契约）
+        copilot = ResolutionCopilot(
+            model=_EvidenceModel(),
+            tools={"search_knowledge": search_knowledge},
+        )
+        service = CopilotService(copilot)
+        outcome = await service.run_with_tenant(
+            runtime=runtime,
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            run_context=runtime.context,
+        )
+        return outcome["result"]
+
+    result = asyncio.run(run())
+    assert result.citations
+    assert result.citations[0].document_id == "vpn-guide"
+    assert result.needs_human_review is False
+    assert result.auto_reply is False
+
+
+def test_service_supplementary_query_hit_passes_gate():
+    """Agent 用补充查询命中不同 chunk：引用仍通过（不再误判无效）。"""
+    from backend.copilot.agent import ResolutionCopilot
+    from backend.copilot.service import CopilotService
+    from backend.copilot.tools import search_knowledge
+
+    cited = {
+        "draft_answer": "参考 vpn-03 处理",
+        "troubleshooting_steps": [],
+        "citations": [{"document_id": "vpn-guide", "document_version": 1, "chunk_id": "vpn-03"}],
+        "confidence": 0.9,
+        "needs_human_review": False,
+    }
+
+    async def run():
+        # 主查询命中 vpn-01，补充查询命中 vpn-03；两者都是实际工具证据，
+        # 权威校验确认 vpn-03 真实存在 -> 引用通过
+        knowledge = _RealKnowledge(
+            [_hit("vpn-guide", "vpn-01")],
+            verified={("vpn-guide", 1, "vpn-03"), ("vpn-guide", 1, "vpn-01")},
+            hits_by_query={
+                "vpn 排查": [_hit("vpn-guide", "vpn-01")],
+                "vpn-03 具体配置": [_hit("vpn-guide", "vpn-03")],
+            },
+        )
+        runtime = _service_runtime(knowledge)
+        copilot = ResolutionCopilot(
+            model=_TwoRoundEvidenceModel(cited),
+            tools={"search_knowledge": search_knowledge},
+        )
+        service = CopilotService(copilot)
+        outcome = await service.run_with_tenant(
+            runtime=runtime,
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            run_context=runtime.context,
+        )
+        return outcome["result"]
+
+    result = asyncio.run(run())
+    assert [c.chunk_id for c in result.citations] == ["vpn-03"]
+    assert result.needs_human_review is False
+
+
+def test_service_forged_chunk_is_rejected_by_authority_gate():
+    """模型伪造不存在的 chunk：权威校验拒绝（第二层门禁）。"""
+    from backend.copilot.agent import ResolutionCopilot
+    from backend.copilot.service import CopilotService
+    from backend.copilot.tools import search_knowledge
+
+    cited = {
+        "draft_answer": "伪造引用",
+        "citations": [{"document_id": "vpn-guide", "document_version": 1, "chunk_id": "fake-999"}],
+        "confidence": 0.99,
+        "needs_human_review": False,
+    }
+
+    async def run():
+        # 工具命中 c1，但模型引用 fake-999；权威校验只放行真实存在的 chunk
+        knowledge = _RealKnowledge([_hit("vpn-guide", "c1")])
+        runtime = _service_runtime(knowledge)
+        copilot = ResolutionCopilot(
+            model=_EvidenceModel(cited),
+            tools={"search_knowledge": search_knowledge},
+        )
+        service = CopilotService(copilot)
+        outcome = await service.run_with_tenant(
+            runtime=runtime,
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            run_context=runtime.context,
+        )
+        return outcome["result"]
+
+    result = asyncio.run(run())
+    assert result.citations == []
+    assert result.needs_human_review is True
+    assert "authority_citation_rejected" in result.reason_codes or "missing_citations" in result.reason_codes
+
+
+def test_service_no_knowledge_hit_still_produces_draft_with_human_review():
+    """无任何知识命中：生成草稿但强制人工复核（无引用）。"""
+    from backend.copilot.agent import ResolutionCopilot
+    from backend.copilot.service import CopilotService
+    from backend.copilot.tools import search_knowledge
+
+    cited = {
+        "draft_answer": "暂无知识依据，建议人工排查",
+        "troubleshooting_steps": ["人工排查"],
+        "citations": [],
+        "confidence": 0.5,
+        "needs_human_review": True,
+    }
+
+    async def run():
+        knowledge = _RealKnowledge([])  # 无命中
+        runtime = _service_runtime(knowledge)
+        copilot = ResolutionCopilot(
+            model=_EvidenceModel(cited),
+            tools={"search_knowledge": search_knowledge},
+        )
+        service = CopilotService(copilot)
+        outcome = await service.run_with_tenant(
+            runtime=runtime,
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            run_context=runtime.context,
+        )
+        return outcome["result"]
+
+    result = asyncio.run(run())
+    assert result.draft_answer == "暂无知识依据，建议人工排查"  # 草稿仍生成
+    assert result.citations == []
+    assert result.needs_human_review is True

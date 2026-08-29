@@ -89,21 +89,23 @@ class CopilotService:
         ticket_id: str,
         run_context=None,
     ) -> dict[str, Any]:
-        """带租户上下文执行完整流程：准备上下文 -> 生成 -> 按实际工具证据门禁。
+        """带租户上下文执行完整流程：准备上下文 -> 生成 -> 两层引用门禁。
 
         返回 {"request", "raw", "result"}；result 为已过门禁的 CopilotResult。
 
-        引用白名单来自 Agent 实际工具结果（search_knowledge 命中的
-        ToolEvidence），不额外做独立 lexical 查询——避免"补充查询命中合法
-        文档却被误判无效"的问题；权威校验（租户/发布/有效期/ACL）由
-        knowledge.lexical_search 的检索 SQL 在工具执行时完成。
+        引用门禁两层（阶段二）：
+            第一层：模型输出的引用必须存在于本轮实际工具证据
+                    （search_knowledge 的 ToolEvidence），不额外做独立
+                    lexical 查询——避免"补充查询命中合法文档却被误判无效"
+            第二层：权威数据校验（verify_citations）：租户/已发布/有效期/
+                    部门 ACL/chunk 存在/版本一致，在保存前再次确认
         """
         request = await self.prepare_context(
             runtime=runtime, tenant_id=tenant_id, ticket_id=ticket_id
         )
         raw = await self.generate(request, runtime=runtime, run_context=run_context)
 
-        # 从实际工具证据收集引用白名单（search_knowledge 命中）
+        # 第一层：从实际工具证据收集引用白名单（search_knowledge 命中）
         allowed: set[tuple[str, int, str]] = set()
         for item in raw.get("tool_evidence") or []:
             if (
@@ -120,6 +122,31 @@ class CopilotService:
                 )
 
         gated = self.apply_gate(raw, request=request, allowed_citations=allowed)
+
+        # 第二层：权威数据校验（引用保存前再次确认）
+        if gated.citations and hasattr(runtime, "knowledge"):
+            from ..knowledge.models import RetrievalPrincipal
+
+            principal = RetrievalPrincipal(
+                tenant_id=tenant_id, departments=frozenset(), internal=True
+            )
+            verified = await runtime.knowledge.verify_citations(
+                principal,
+                [c.citation_key for c in gated.citations],
+            )
+            verified_keys = {e.citation_key for e in verified}
+            kept = [c for c in gated.citations if c.citation_key in verified_keys]
+            dropped = len(gated.citations) - len(kept)
+            if dropped:
+                reasons = list(gated.reason_codes)
+                reasons.append("authority_citation_rejected")
+                gated = gated.model_copy(
+                    update={
+                        "citations": kept,
+                        "needs_human_review": True,
+                        "reason_codes": list(dict.fromkeys(reasons)),
+                    }
+                )
         return {"request": request, "raw": raw, "result": gated}
 
     def apply_gate(

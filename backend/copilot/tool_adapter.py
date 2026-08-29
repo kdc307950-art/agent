@@ -74,11 +74,11 @@ class ToolInvocationResult:
 
 
 def _parse_evidence(tool_name: str, content: str) -> list[ToolEvidence]:
-    """从工具输出中解析结构化证据。
+    """从工具输出中解析结构化证据（阶段一：统一契约 {content, evidence}）。
 
-    Copilot 专用 search_knowledge 返回 JSON 数组
-    [{"document_id", "document_version", "chunk_id", "title", "content"}]；
-    解析失败时退化为纯文本证据（无引用键，不会进入引用白名单）。
+    search_knowledge 返回 JSON {"content": 展示文本, "evidence": [...]}；
+    evidence 项含 {document_id, document_version, chunk_id, title, content}。
+    兼容旧格式（纯数组）；解析失败退化为纯文本证据（无引用键）。
     """
     if tool_name != "search_knowledge":
         return []
@@ -86,10 +86,17 @@ def _parse_evidence(tool_name: str, content: str) -> list[ToolEvidence]:
         payload = json.loads(content)
     except json.JSONDecodeError:
         return []
-    if not isinstance(payload, list):
+    # 新契约：{"content": ..., "evidence": [...]}
+    if isinstance(payload, dict):
+        items = payload.get("evidence")
+        if not isinstance(items, list):
+            return []
+    elif isinstance(payload, list):
+        items = payload  # 旧格式兼容：纯数组
+    else:
         return []
     evidence: list[ToolEvidence] = []
-    for item in payload:
+    for item in items:
         if not isinstance(item, dict):
             continue
         evidence.append(
@@ -103,6 +110,24 @@ def _parse_evidence(tool_name: str, content: str) -> list[ToolEvidence]:
             )
         )
     return evidence
+
+
+def _extract_display_content(tool_name: str, raw: str) -> str:
+    """从工具输出提取模型可见的展示文本（阶段一）。
+
+    search_knowledge 的新契约为 {"content": 展示文本, "evidence": [...]}：
+    Agent 看到 content（可读），不暴露证据 JSON 噪音。
+    其他工具或旧格式直接返回原文。
+    """
+    if tool_name != "search_knowledge":
+        return raw
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+    if isinstance(payload, dict) and isinstance(payload.get("content"), str):
+        return payload["content"]
+    return raw
 
 
 async def governed_invoke(
@@ -176,6 +201,7 @@ async def governed_invoke(
     text = str(result)
     return ToolInvocationResult(
         ok=True,
-        content=text,
+        # Agent 看到展示文本（content），evidence 单独保留给引用门禁
+        content=_extract_display_content(tool_name, text),
         evidence=_parse_evidence(tool_name, text),
     )
