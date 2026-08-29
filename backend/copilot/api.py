@@ -172,6 +172,8 @@ async def generate_copilot(
                     "请使用新的 operation_id 重试"
                 ),
             )
+        # expired（僵尸运行租约过期）：允许同一 operation 重新运行，
+        # 由下方 start_run 的 ON CONFLICT 分支把 expired 重置为 running
 
     run_id = uuid4().hex
     created = await runtime.copilot_repository.start_run(

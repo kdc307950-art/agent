@@ -116,3 +116,33 @@ class InboundEventResult(BaseModel):
     ticket_id: str | None
     status: str = "received"
     attempts: int = 0
+
+
+class IntakeHandoff(BaseModel):
+    """Agent 1（Intake/Triage）→ Agent 2（Resolution Copilot）的结构化 Handoff 契约。
+
+    两个 Agent 不通过自然语言传递状态，而通过本结构化工单上下文协作：
+    Agent 1 受理完成后，工单记录 + workflow_runs 落库即构成该 Handoff；
+    CopilotRequest 由后端从工单/消息/资产只读组装，租户与身份从 RunContext
+    注入，不读取模型请求体。
+
+    字段说明：
+        tenant_id / workflow_run_id: 账本归属与受理工作流运行（审计串联）
+        expected_version: 乐观锁版本，Agent 2 生成前校验工单未变
+        fields: 受理阶段收集的客户字段（如 device / network / error_message）
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tenant_id: str = Field(min_length=1, max_length=64)
+    ticket_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+    workflow_run_id: str = Field(min_length=1, max_length=128)
+    requester_id: str = Field(min_length=1, max_length=128)
+    category: str = Field(min_length=1, max_length=128)
+    subcategory: str | None = Field(default=None, max_length=128)
+    priority: str = Field(default="normal", pattern=r"^(low|normal|high|urgent)$")
+    status: str = Field(min_length=1, max_length=32)
+    fields: dict[str, Any] = Field(default_factory=dict)
+    asset_id: str | None = Field(default=None, max_length=64)
+    dispatch_team_id: str | None = Field(default=None, max_length=128)
+    expected_version: int = Field(ge=0)

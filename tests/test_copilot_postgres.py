@@ -254,7 +254,7 @@ def test_copilot_approval_does_not_create_customer_message(monkeypatch):
 
 
 def test_copilot_lease_expired_run_is_recovered(monkeypatch):
-    """超租约的 running 僵尸运行被 recover 标记 failed，之后可被新 operation 重试。"""
+    """超租约的 running 僵尸运行被 recover 标记 expired，可被同一 operation 重跑。"""
     tenant = f"tenant-{uuid4().hex}"
     ticket_id = f"ticket-{uuid4().hex[:8]}"
     operation_id = f"op-{uuid4().hex}"
@@ -282,17 +282,28 @@ def test_copilot_lease_expired_run_is_recovered(monkeypatch):
                     "UPDATE copilot_runs SET lease_expires_at = now() - interval '10 seconds'"
                 )
 
-            # recover：running 超租约 -> failed(copilot_lease_expired)
-            # 全量并发时可能同时恢复其他测试的残留 running，因此只校验 >=1
+            # recover：running 超租约 -> expired（阶段五状态机）
             recovered = await repo.recover_expired_runs(lease_seconds=1)
             assert recovered >= 1
 
             existing = await repo.get_run_by_operation(tenant, ticket_id, operation_id)
             assert existing is not None
-            assert existing["status"] == "failed"
+            assert existing["status"] == "expired"
             assert existing["error_code"] == "copilot_lease_expired"
-            # 僵尸运行不再是 running，客户端可用新 operation_id 重试
-            assert existing["status"] != "running"
+
+            # expired 允许同一 operation_id 重新运行：start_run 重置为 running
+            rerun_id = uuid4().hex
+            rerun = await repo.start_run(
+                run_id=rerun_id,
+                tenant_id=tenant,
+                ticket_id=ticket_id,
+                operation_id=operation_id,
+                lease_seconds=60,
+            )
+            assert rerun is True
+            after = await repo.get_run_by_operation(tenant, ticket_id, operation_id)
+            assert after["status"] == "running"
+            assert after["run_id"] == rerun_id
         finally:
             await tickets.close()
 

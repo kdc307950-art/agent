@@ -40,6 +40,8 @@ class CopilotRepository:
         """登记一次 Copilot 运行；同 (tenant, ticket, operation) 重复返回 False（幂等）。
 
         lease_expires_at 用于识别僵尸运行（进程崩溃后 running 超租约）。
+        状态机（阶段五）：expired 运行允许重新运行——同一 operation_id 的
+        expired 记录被重置为 running（新 run_id），等价于"允许新的 operation 重试"。
         """
         async with self.pool.connection() as connection:
             async with connection.transaction(), connection.cursor() as cursor:
@@ -49,9 +51,20 @@ class CopilotRepository:
                         run_id, tenant_id, ticket_id, agent_name, status, operation_id,
                         lease_expires_at, heartbeat_at, attempts
                     ) VALUES (%s, %s, %s, %s, 'running', %s, now() + (%s * interval '1 second'), now(), 0)
-                    ON CONFLICT (tenant_id, ticket_id, operation_id) DO NOTHING
+                    ON CONFLICT (tenant_id, ticket_id, operation_id) DO UPDATE SET
+                        run_id = EXCLUDED.run_id,
+                        agent_name = EXCLUDED.agent_name,
+                        status = 'running',
+                        error_code = NULL,
+                        tool_calls = 0,
+                        latency_ms = NULL,
+                        lease_expires_at = now() + (%s * interval '1 second'),
+                        heartbeat_at = now(),
+                        attempts = copilot_runs.attempts + 1,
+                        completed_at = NULL
+                    WHERE copilot_runs.status = 'expired'
                     """,
-                    (run_id, tenant_id, ticket_id, agent_name, operation_id, lease_seconds),
+                    (run_id, tenant_id, ticket_id, agent_name, operation_id, lease_seconds, lease_seconds),
                 )
                 return cursor.rowcount == 1
 
@@ -100,9 +113,10 @@ class CopilotRepository:
         max_attempts: int = 2,
         now=None,
     ) -> int:
-        """把超租约的 running 僵尸运行标记为 failed(copilot_lease_expired)。
+        """把超租约的 running 僵尸运行标记为 expired（阶段五状态机）。
 
-        返回被恢复的运行数；恢复后同一 operation_id 可被新的 operation 重试。
+        返回被恢复的运行数；expired 运行允许同一 operation_id 重新运行
+        （start_run 的 ON CONFLICT 分支重置为 running）。
         """
         reference = now or datetime.now(UTC)
         async with self.pool.connection() as connection:
@@ -110,7 +124,7 @@ class CopilotRepository:
                 await cursor.execute(
                     """
                     UPDATE copilot_runs
-                    SET status = 'failed',
+                    SET status = 'expired',
                         error_code = 'copilot_lease_expired',
                         completed_at = now()
                     WHERE status = 'running'

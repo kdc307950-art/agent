@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from psycopg import AsyncConnection
 
 APP_SCHEMA_NAME = "langgraph_agent"
-APP_SCHEMA_VERSION = 17
+APP_SCHEMA_VERSION = 18
 MIGRATION_LOCK_KEY = 891274631
 
 # These are the tables created by the pinned LangGraph PostgreSQL adapters and
@@ -988,6 +988,25 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 WHERE status = 'running'
                 """)
             current = 17
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 18:
+            # v18: Copilot 运行状态机对齐 —— expired 状态。
+            # 超租约的 running 僵尸运行由 recover_expired_runs 标记 expired
+            # （而非 failed），同一 operation_id 可在 start_run 时重置为
+            # running 重新执行（见 copilot/repository.start_run）。
+            await cursor.execute(
+                "ALTER TABLE copilot_runs DROP CONSTRAINT IF EXISTS copilot_runs_status_check"
+            )
+            await cursor.execute("""
+                ALTER TABLE copilot_runs
+                ADD CONSTRAINT copilot_runs_status_check
+                CHECK (status IN ('running', 'completed', 'failed', 'expired'))
+                """)
+            current = 18
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
                 (current, APP_SCHEMA_NAME),

@@ -9,7 +9,13 @@
     - policies.py   ：租户 IT 策略（必填字段、自动回答/审批开关、SLA 引用）
 """
 
-from .models import CreateTicket, InboundEventResult, TicketRecord, TicketStatusEvent
+from .models import (
+    CreateTicket,
+    InboundEventResult,
+    IntakeHandoff,
+    TicketRecord,
+    TicketStatusEvent,
+)
 from .operations import OperationsConflict, TicketOperationsRepository, sla_policy_candidates
 from .policies import ItPolicyNotFound, ItPolicyRepository, TenantItPolicy, UpsertItPolicy
 from .repository import (
@@ -32,6 +38,7 @@ __all__ = [
     "CreateTicket",
     "InboundEventConflict",
     "InboundEventResult",
+    "IntakeHandoff",
     "ItPolicyNotFound",
     "ItPolicyRepository",
     "OperationsConflict",

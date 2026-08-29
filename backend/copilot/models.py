@@ -47,6 +47,11 @@ class CopilotCitation(BaseModel):
     chunk_id: str = Field(min_length=1, max_length=128)
     title: str = Field(default="", max_length=512)
 
+    @property
+    def citation_key(self) -> tuple[str, int, str]:
+        """稳定唯一键：文档 + 版本 + 分块（权威校验与白名单匹配用）。"""
+        return (self.document_id, self.document_version, self.chunk_id)
+
 
 class CopilotResult(BaseModel):
     """Copilot 生成结果（结构化，禁止自由字段）。
