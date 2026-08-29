@@ -23,6 +23,9 @@ from src.my_agent.workflow import build_workflow_from_json
 
 from .assets import AssetRepository
 from .audit import AuditRepository, audit_context
+from .copilot.agent import ResolutionCopilot
+from .copilot.repository import CopilotRepository
+from .copilot.service import CopilotService
 from .knowledge import (
     AgenticRAGPolicy,
     AgenticRAGService,
@@ -66,6 +69,8 @@ class AgentRuntime:
     agentic_rag: AgenticRAGService | None
     tool_governance: ToolGovernance
     metrics: RuntimeMetrics
+    copilot: CopilotService | None = None
+    copilot_repository: CopilotRepository | None = None
     graph_mode: str = "single"
 
 
@@ -182,6 +187,29 @@ async def runtime_context(
             tool_governance=tool_governance,
             rag_service=agentic_rag,
         )
+        # Resolution Copilot：有界只读工具循环（解决阶段分析与拟答）。
+        # 仅当配置了真实模型 key 时才启用；否则 copilot 为 None（API 返回 503）。
+        copilot_repository = CopilotRepository(audit.pool)
+        copilot_service: CopilotService | None = None
+        if settings.deepseek_api_key:
+            from langchain_openai import ChatOpenAI
+            from pydantic import SecretStr
+
+            from src.my_agent.helpdesk.tools import RESOLUTION_COPILOT_TOOLS
+
+            copilot_tools = {tool.name: tool for tool in RESOLUTION_COPILOT_TOOLS}
+            copilot_model = ChatOpenAI(
+                api_key=SecretStr(settings.deepseek_api_key),
+                base_url=settings.llm_base_url,
+                model=settings.llm_model,
+                temperature=0,
+            )
+            copilot_service = CopilotService(
+                ResolutionCopilot(
+                    model=copilot_model,
+                    tools=copilot_tools,
+                )
+            )
         yield AgentRuntime(
             graph=graph,
             intake_graph=build_helpdesk_intake_graph(
@@ -202,5 +230,7 @@ async def runtime_context(
             agentic_rag=agentic_rag,
             tool_governance=tool_governance,
             metrics=runtime_metrics,
+            copilot=copilot_service,
+            copilot_repository=copilot_repository,
             graph_mode=settings.agent_graph_mode,
         )

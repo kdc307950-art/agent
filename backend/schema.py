@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from psycopg import AsyncConnection
 
 APP_SCHEMA_NAME = "langgraph_agent"
-APP_SCHEMA_VERSION = 15
+APP_SCHEMA_VERSION = 16
 MIGRATION_LOCK_KEY = 891274631
 
 # These are the tables created by the pinned LangGraph PostgreSQL adapters and
@@ -48,6 +48,8 @@ REQUIRED_RELATIONS: tuple[str, ...] = (
     "it_assets",
     "tenant_it_policies",
     "admin_audit_events",
+    "copilot_runs",
+    "copilot_drafts",
 )
 
 
@@ -890,6 +892,77 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 )
                 """)
             current = 15
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 16:
+            # v16: Resolution Copilot —— 解决阶段分析与拟答。
+            # copilot_runs：每次 Agent 执行（含工具调用数、耗时、错误码），
+            #   供可观测性与失败率统计；operation_id 唯一约束实现幂等。
+            # copilot_drafts：生成结果 + 审批状态机（generated/reviewing/
+            #   approved/rejected/expired）。不把结果写进工单主表，才能审计
+            #   多次生成、审批与重试。
+            await cursor.execute("""
+                CREATE TABLE copilot_runs (
+                    run_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    ticket_id TEXT NOT NULL,
+                    agent_name TEXT NOT NULL DEFAULT 'resolution_copilot',
+                    status TEXT NOT NULL DEFAULT 'running',
+                    operation_id TEXT NOT NULL,
+                    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    completed_at TIMESTAMPTZ,
+                    tool_calls INTEGER NOT NULL DEFAULT 0 CHECK (tool_calls >= 0),
+                    error_code TEXT,
+                    latency_ms INTEGER CHECK (latency_ms >= 0),
+                    CONSTRAINT copilot_runs_ticket_fk
+                        FOREIGN KEY (tenant_id, ticket_id)
+                        REFERENCES tickets (tenant_id, ticket_id)
+                        ON DELETE CASCADE,
+                    CONSTRAINT copilot_runs_status_check
+                        CHECK (status IN ('running', 'completed', 'failed', 'rejected')),
+                    CONSTRAINT copilot_runs_operation_unique
+                        UNIQUE (tenant_id, ticket_id, operation_id)
+                )
+                """)
+            await cursor.execute("""
+                CREATE INDEX idx_copilot_runs_tenant_started
+                ON copilot_runs (tenant_id, started_at DESC)
+                """)
+            await cursor.execute("""
+                CREATE TABLE copilot_drafts (
+                    draft_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    ticket_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    draft_answer TEXT,
+                    steps JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    citations JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    confidence DOUBLE PRECISION NOT NULL DEFAULT 0 CHECK (
+                        confidence >= 0 AND confidence <= 1
+                    ),
+                    needs_human_review BOOLEAN NOT NULL DEFAULT TRUE,
+                    status TEXT NOT NULL DEFAULT 'generated',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    approved_by TEXT,
+                    approved_at TIMESTAMPTZ,
+                    CONSTRAINT copilot_drafts_run_fk
+                        FOREIGN KEY (run_id) REFERENCES copilot_runs (run_id) ON DELETE CASCADE,
+                    CONSTRAINT copilot_drafts_ticket_fk
+                        FOREIGN KEY (tenant_id, ticket_id)
+                        REFERENCES tickets (tenant_id, ticket_id)
+                        ON DELETE CASCADE,
+                    CONSTRAINT copilot_drafts_status_check
+                        CHECK (status IN ('generated', 'reviewing', 'approved', 'rejected', 'expired'))
+                )
+                """)
+            await cursor.execute("""
+                CREATE INDEX idx_copilot_drafts_tenant_ticket_created
+                ON copilot_drafts (tenant_id, ticket_id, created_at DESC)
+                """)
+            current = 16
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
                 (current, APP_SCHEMA_NAME),

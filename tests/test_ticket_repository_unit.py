@@ -6,8 +6,8 @@ from backend.tickets import CreateTicket, canonical_payload_hash
 from src.my_agent.helpdesk import ActorType
 
 
-def test_schema_v15_requires_workflow_routing_and_it_service_relations():
-    assert APP_SCHEMA_VERSION == 15
+def test_schema_v16_requires_workflow_routing_and_it_service_relations():
+    assert APP_SCHEMA_VERSION == 16
     assert {
         "tickets",
         "ticket_status_events",
@@ -28,6 +28,9 @@ def test_schema_v15_requires_workflow_routing_and_it_service_relations():
         "it_assets",
         "tenant_it_policies",
         "admin_audit_events",
+        # v16: Resolution Copilot 持久化
+        "copilot_runs",
+        "copilot_drafts",
     }.issubset(REQUIRED_RELATIONS)
 
 

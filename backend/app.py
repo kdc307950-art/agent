@@ -36,6 +36,7 @@ from .assets.api import router as asset_router
 from .audit import NoopAuditRepository
 from .budget import TenantBudget, TenantBudgetExceeded
 from .config import load_environment
+from .copilot.api import copilot_router
 from .knowledge.api import router as knowledge_router
 from .metrics import RuntimeMetrics
 from .rate_limit import RedisRateLimiter
@@ -319,6 +320,7 @@ app.include_router(channel_router)
 app.include_router(admin_router)
 app.include_router(asset_router)
 app.include_router(knowledge_router)
+app.include_router(copilot_router)
 app.add_middleware(AuditMiddleware)
 app.add_middleware(
     CORSMiddleware,
