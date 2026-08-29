@@ -21,3 +21,6 @@ artifacts/
 # GraphFlow å·¥ä½œå°ç¼“å­˜ä¸äº§ç‰©(æœ¬åœ°ç”Ÿæˆç›®å½•,ä¸æäº¤)
 .graphflow-cache/
 graphflow-out/
+
+# Í¨ÓÃ node_modules£¨·ÀÖ¹¸ù¼¶Îó·Å£©
+node_modules/
