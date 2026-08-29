@@ -47,7 +47,7 @@ on:
         description: 向量相似度拒答阈值（无答案用例低于该值视为正确拒绝）
         required: false
         default: "0.45"
-        default: "0.75"
+       
 
 permissions:
   contents: read
