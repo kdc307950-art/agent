@@ -72,11 +72,19 @@ class _FakeRepo:
             return False
         self.runs[key] = {
             "run_id": run_id,
-            "status": "running",
+            "tenant_id": tenant_id,
+            "ticket_id": ticket_id,
+            "status": "queued",
             "error_code": None,
             "tool_calls": 0,
         }
         return True
+
+    async def get_run(self, tenant_id, run_id):
+        for record in self.runs.values():
+            if record["run_id"] == run_id and record.get("tenant_id") == tenant_id:
+                return record
+        return None
 
     async def finish_run(self, *, run_id, tenant_id, status, tool_calls, latency_ms, error_code=None):
         for key, record in self.runs.items():
@@ -86,6 +94,10 @@ class _FakeRepo:
                 record["tool_calls"] = tool_calls
 
     async def recover_expired_runs(self, *, lease_seconds=60, max_attempts=2, now=None):
+        self.recover_calls += 1
+        return 0
+
+    async def recover_orphaned_runs(self, *, lease_seconds=60, max_recover=20, now=None):
         self.recover_calls += 1
         return 0
 
@@ -228,6 +240,7 @@ def test_copilot_returns_404_for_missing_ticket():
 
 
 def test_copilot_generation_success_and_latest():
+    """POST 只入队（202 queued）；Worker 完成后 GET 状态返回草稿。"""
     ticket = _FakeTicket("t-1")
     client = _make_app(ticket)
     op_id = f"op-{uuid4().hex}"
@@ -236,11 +249,41 @@ def test_copilot_generation_success_and_latest():
         json={"operation_id": op_id, "expected_version": 1},
         headers=_headers(),
     )
-    assert resp.status_code == 200
+    # 异步 Worker 化：POST 立即返回 202 + queued，不执行模型
+    assert resp.status_code == 202
     body = resp.json()
-    assert body["idempotent_replay"] is False
-    assert body["draft"]["draft_answer"] == "请先检查网络连接"
-    assert body["draft"]["confidence"] == 0.91
+    assert body["status"] == "queued"
+    run_id = body["run_id"]
+
+    # 模拟 Worker 完成：保存草稿 + 标记 completed
+    import asyncio
+
+    repo = client.app.state.runtime.copilot_repository
+    service = client.app.state.runtime.copilot
+    async def worker_complete():
+        await repo.save_draft(
+            draft_id=f"draft-{uuid4().hex}",
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            run_id=run_id,
+            draft_answer="请先检查网络连接",
+            steps=["检查网络", "重新导入 VPN"],
+            citations=[],
+            confidence=0.91,
+            needs_human_review=False,
+        )
+        await repo.finish_run(
+            run_id=run_id, tenant_id="tenant-a", status="completed",
+            tool_calls=2, latency_ms=100,
+        )
+    asyncio.run(worker_complete())
+
+    # GET 状态：completed + 对应草稿（按 run_id 关联）
+    status = client.get(f"/tickets/t-1/copilot/{run_id}", headers=_headers())
+    assert status.status_code == 200
+    sbody = status.json()
+    assert sbody["status"] == "completed"
+    assert sbody["draft"]["draft_answer"] == "请先检查网络连接"
 
     # GET latest 返回同一草稿
     latest = client.get("/tickets/t-1/copilot/latest", headers=_headers())
@@ -249,7 +292,7 @@ def test_copilot_generation_success_and_latest():
 
 
 def test_copilot_operation_id_idempotent_replay():
-    """相同 operation_id 第二次调用不重复生成：返回已有草稿 + idempotent_replay=True。"""
+    """相同 operation_id 重复 POST：queued 时返回 202 同 run；completed 后返回草稿。"""
     ticket = _FakeTicket("t-1")
     client = _make_app(ticket)
     op_id = f"op-{uuid4().hex}"
@@ -258,42 +301,82 @@ def test_copilot_operation_id_idempotent_replay():
         json={"operation_id": op_id, "expected_version": 1},
         headers=_headers(),
     )
+    # 仍 queued：第二次调用返回 202 + 同一 run_id（不重复入队）
     second = client.post(
         "/tickets/t-1/copilot",
         json={"operation_id": op_id, "expected_version": 1},
         headers=_headers(),
     )
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert second.json()["idempotent_replay"] is True
-    assert second.json()["draft"]["draft_answer"] == "请先检查网络连接"
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert second.json()["run_id"] == first.json()["run_id"]
 
+    # 模拟 Worker 完成后再调用：completed -> 返回对应草稿
+    import asyncio
 
-def test_copilot_model_failure_returns_502_and_keeps_ticket():
-    """模型失败返回 502；工单状态/版本不变（由仓储层测试验证，这里验证可重试错误）。"""
-    ticket = _FakeTicket("t-1")
-    service = _FakeCopilotService()
-    service.fail = True
-    client = _make_app(ticket, service)
-    resp = client.post(
+    repo = client.app.state.runtime.copilot_repository
+    run_id = first.json()["run_id"]
+    async def worker_complete():
+        await repo.save_draft(
+            draft_id=f"draft-{uuid4().hex}",
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            run_id=run_id,
+            draft_answer="请先检查网络连接",
+            steps=[],
+            citations=[],
+            confidence=0.91,
+            needs_human_review=False,
+        )
+        await repo.finish_run(
+            run_id=run_id, tenant_id="tenant-a", status="completed",
+            tool_calls=1, latency_ms=50,
+        )
+    asyncio.run(worker_complete())
+    third = client.post(
         "/tickets/t-1/copilot",
-        json={"operation_id": f"op-{uuid4().hex}", "expected_version": 1},
+        json={"operation_id": op_id, "expected_version": 1},
         headers=_headers(),
     )
-    assert resp.status_code == 502
-    assert "稍后重试" in resp.json()["detail"]
+    assert third.status_code == 200
+    assert third.json()["idempotent_replay"] is True
+    assert third.json()["draft"]["draft_answer"] == "请先检查网络连接"
 
 
 def test_copilot_approve_draft():
+    """审批草稿：Worker 完成后按 run_id 查 draft 再审批。"""
     ticket = _FakeTicket("t-1")
     client = _make_app(ticket)
     op_id = f"op-{uuid4().hex}"
+    import asyncio
+
     gen = client.post(
         "/tickets/t-1/copilot",
         json={"operation_id": op_id, "expected_version": 1},
         headers=_headers(),
     )
-    draft_id = gen.json()["draft"]["draft_id"]
+    run_id = gen.json()["run_id"]
+    repo = client.app.state.runtime.copilot_repository
+    async def worker_complete():
+        await repo.save_draft(
+            draft_id="draft-approve-1",
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            run_id=run_id,
+            draft_answer="草稿",
+            steps=[],
+            citations=[],
+            confidence=0.9,
+            needs_human_review=False,
+        )
+        await repo.finish_run(
+            run_id=run_id, tenant_id="tenant-a", status="completed",
+            tool_calls=1, latency_ms=50,
+        )
+    asyncio.run(worker_complete())
+
+    status = client.get(f"/tickets/t-1/copilot/{run_id}", headers=_headers())
+    draft_id = status.json()["draft_id"]
     approve = client.post(
         f"/tickets/t-1/copilot/{draft_id}/approve",
         json={"note": "已核对"},
@@ -360,13 +443,13 @@ def test_copilot_unavailable_returns_503():
 
 
 def test_copilot_running_returns_202():
-    """operation_id 对应的 run 仍为 running：返回 202，不重复调用模型。"""
+    """operation_id 对应的 run 仍为 queued/processing：返回 202，不重复调用模型。"""
     ticket = _FakeTicket("t-1")
     client = _make_app(ticket)
     repo = client.app.state.runtime.copilot_repository
     op_id = f"op-{uuid4().hex}"
     run_id = f"run-{uuid4().hex}"
-    # 预置一条 running 运行（模拟第一次请求仍在执行）
+    # 预置一条 queued 运行（模拟第一次请求已入队，Worker 尚未处理）
     import asyncio
 
     async def seed():
@@ -385,7 +468,7 @@ def test_copilot_running_returns_202():
     )
     assert resp.status_code == 202
     body = resp.json()
-    assert body["status"] == "running"
+    assert body["status"] == "queued"
     assert body["run_id"] == run_id
 
 

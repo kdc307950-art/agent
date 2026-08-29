@@ -254,7 +254,7 @@ def test_copilot_approval_does_not_create_customer_message(monkeypatch):
 
 
 def test_copilot_lease_expired_run_is_recovered(monkeypatch):
-    """超租约的 running 僵尸运行被 recover 标记 expired，可被同一 operation 重跑。"""
+    """超租约的 processing 僵尸运行被 recover 回队，可被重新领取（崩溃恢复）。"""
     tenant = f"tenant-{uuid4().hex}"
     ticket_id = f"ticket-{uuid4().hex[:8]}"
     operation_id = f"op-{uuid4().hex}"
@@ -265,6 +265,9 @@ def test_copilot_lease_expired_run_is_recovered(monkeypatch):
         tickets = await TicketRepository.connect(DATABASE_URL)
         repo = CopilotRepository(tickets.pool)
         try:
+            # 测试隔离：清空运行表（测试库无生产数据），避免并发测试残留干扰 claim
+            async with tickets.pool.connection() as connection:
+                await connection.execute("DELETE FROM copilot_runs")
             await _seed_ticket_async(tickets, tenant, ticket_id)
             run_id = uuid4().hex
             created = await repo.start_run(
@@ -275,35 +278,84 @@ def test_copilot_lease_expired_run_is_recovered(monkeypatch):
                 lease_seconds=1,  # 极短租约
             )
             assert created is True
+            assert (await repo.get_run_by_operation(tenant, ticket_id, operation_id))["status"] == "queued"
 
-            # 把租约改成过去时间（模拟进程崩溃后未续租）
+            # 模拟 Worker 领取（processing + worker_id + 租约）
+            claimed = await repo.claim_copilot_runs(worker_id="worker-1", lease_seconds=1, limit=5)
+            assert len(claimed) == 1
+            assert claimed[0]["status"] == "processing"
+            assert claimed[0]["worker_id"] == "worker-1"
+
+            # 把租约改成过去时间（模拟 Worker 崩溃后未续租）
             async with tickets.pool.connection() as connection:
                 await connection.execute(
                     "UPDATE copilot_runs SET lease_expires_at = now() - interval '10 seconds'"
                 )
 
-            # recover：running 超租约 -> expired（阶段五状态机）
-            recovered = await repo.recover_expired_runs(lease_seconds=1)
+            # recover：processing 超租约 -> queued（回队可被重新领取）
+            recovered = await repo.recover_orphaned_runs(lease_seconds=1)
             assert recovered >= 1
 
             existing = await repo.get_run_by_operation(tenant, ticket_id, operation_id)
             assert existing is not None
-            assert existing["status"] == "expired"
-            assert existing["error_code"] == "copilot_lease_expired"
+            assert existing["status"] == "queued"
+            assert existing["error_code"] == "copilot_lease_recovered"
 
-            # expired 允许同一 operation_id 重新运行：start_run 重置为 running
-            rerun_id = uuid4().hex
-            rerun = await repo.start_run(
-                run_id=rerun_id,
-                tenant_id=tenant,
-                ticket_id=ticket_id,
-                operation_id=operation_id,
-                lease_seconds=60,
+            # 回队后可被重新领取（崩溃后任务可恢复）
+            re_claimed = await repo.claim_copilot_runs(worker_id="worker-2", lease_seconds=60, limit=5)
+            assert len(re_claimed) == 1
+            assert re_claimed[0]["worker_id"] == "worker-2"
+        finally:
+            await tickets.close()
+
+    asyncio.run(run())
+
+
+def test_copilot_worker_complete_and_fail_dead(monkeypatch):
+    """Worker 完成 -> completed；瞬时错误退避；超重试 -> dead。"""
+    tenant = f"tenant-{uuid4().hex}"
+    ticket_id = f"ticket-{uuid4().hex[:8]}"
+
+    async def run():
+        monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
+        await setup_postgres()
+        tickets = await TicketRepository.connect(DATABASE_URL)
+        repo = CopilotRepository(tickets.pool)
+        try:
+            async with tickets.pool.connection() as connection:
+                await connection.execute("DELETE FROM copilot_runs")
+            await _seed_ticket_async(tickets, tenant, ticket_id)
+
+            # 完成路径
+            run_id = uuid4().hex
+            await repo.start_run(
+                run_id=run_id, tenant_id=tenant, ticket_id=ticket_id,
+                operation_id=f"op-{uuid4().hex}", lease_seconds=60,
             )
-            assert rerun is True
-            after = await repo.get_run_by_operation(tenant, ticket_id, operation_id)
-            assert after["status"] == "running"
-            assert after["run_id"] == rerun_id
+            claimed = await repo.claim_copilot_runs(worker_id="w-ok", lease_seconds=60, limit=20)
+            ok_run = next((r for r in claimed if r["run_id"] == run_id), None)
+            assert ok_run is not None, "claim 应领取到本 run"
+            completed = await repo.complete_copilot_run(
+                tenant_id=tenant, run_id=run_id, worker_id="w-ok",
+                tool_calls=2, latency_ms=120,
+            )
+            assert completed is True
+            assert (await repo.get_run(tenant, run_id))["status"] == "completed"
+
+            # 瞬时错误：退避重试（failed + next_attempt_at）
+            run2 = uuid4().hex
+            await repo.start_run(
+                run_id=run2, tenant_id=tenant, ticket_id=ticket_id,
+                operation_id=f"op-{uuid4().hex}", lease_seconds=60,
+            )
+            await repo.claim_copilot_runs(worker_id="w-fail", lease_seconds=60, limit=5)
+            retried = await repo.fail_copilot_run(
+                tenant_id=tenant, run_id=run2, worker_id="w-fail",
+                error_code="model_failed", retry_at=None, max_attempts=3,
+            )
+            # retry_at=None -> dead
+            assert retried is True
+            assert (await repo.get_run(tenant, run2))["status"] == "dead"
         finally:
             await tickets.close()
 

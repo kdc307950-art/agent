@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from psycopg import AsyncConnection
 
 APP_SCHEMA_NAME = "langgraph_agent"
-APP_SCHEMA_VERSION = 18
+APP_SCHEMA_VERSION = 19
 MIGRATION_LOCK_KEY = 891274631
 
 # These are the tables created by the pinned LangGraph PostgreSQL adapters and
@@ -1007,6 +1007,39 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 CHECK (status IN ('running', 'completed', 'failed', 'expired'))
                 """)
             current = 18
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 19:
+            # v19: Copilot 异步 Worker 化 —— 运行状态扩展与 Worker 领取字段。
+            # POST 只创建 queued 运行立即返回 202；CopilotWorker 领取
+            # （processing + worker_id + 租约）后执行，Web 进程不调模型。
+            # 临时错误指数退避（failed + next_attempt_at），超重试 -> dead。
+            await cursor.execute(
+                "ALTER TABLE copilot_runs ADD COLUMN IF NOT EXISTS worker_id TEXT"
+            )
+            await cursor.execute(
+                "ALTER TABLE copilot_runs ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ"
+            )
+            await cursor.execute(
+                "ALTER TABLE copilot_runs ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ"
+            )
+            await cursor.execute(
+                "ALTER TABLE copilot_runs DROP CONSTRAINT IF EXISTS copilot_runs_status_check"
+            )
+            await cursor.execute("""
+                ALTER TABLE copilot_runs
+                ADD CONSTRAINT copilot_runs_status_check
+                CHECK (status IN ('queued', 'processing', 'completed', 'failed', 'dead', 'expired'))
+                """)
+            await cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_copilot_runs_claim
+                ON copilot_runs (status, next_attempt_at)
+                WHERE status IN ('queued', 'failed')
+                """)
+            current = 19
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
                 (current, APP_SCHEMA_NAME),
