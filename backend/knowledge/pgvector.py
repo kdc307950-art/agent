@@ -31,7 +31,16 @@ class EmbeddingProvider(Protocol):
 
 
 class HttpEmbeddingProvider:
-    """通过 HTTP 调用外部嵌入服务（OpenAI 兼容 /texts 风格端点）。"""
+    """通过 HTTP 调用外部嵌入服务（OpenAI 兼容 /texts 风格端点）。
+
+    阶段三约束：
+        - 文档嵌入走批量 texts 请求，单批最多 EMBED_BATCH_SIZE（32）条
+        - 复用同一个 httpx.AsyncClient（连接复用，避免每批新建握手）
+        - 任一向量异常（HTTP 错误/维度不符/有限值异常）直接失败，不静默丢弃
+    """
+
+    # 单批最多嵌入条数（阶段三：批量约束 ≤32）
+    EMBED_BATCH_SIZE = 32
 
     def __init__(self, endpoint: str, *, dimension: int, timeout_seconds: float = 15.0) -> None:
         """构造嵌入客户端。
@@ -55,21 +64,42 @@ class HttpEmbeddingProvider:
         返回：dimension 维的浮点向量
         异常：HTTP 错误、响应缺向量、维度不符时抛异常
         """
+        vectors = await self.embed_documents([text])
+        return vectors[0]
+
+    async def embed_documents(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
+        """批量嵌入文档文本（阶段三：≤32 条/批、复用 client、严格校验）。
+
+        参数：texts: 待嵌入文本序列
+        返回：与输入等长的向量序列
+        异常：任一文本嵌入失败（HTTP/维度/数量不符）时抛异常 ——
+              批量导入要求"任一向量异常直接失败"，不静默降级
+        """
+        if not texts:
+            return []
+        results: list[Sequence[float]] = []
+        # 复用单一 client：连接复用 + 统一超时；分批循环保证单批 ≤32
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.endpoint,
-                json={"texts": [text]},
-                headers={"Content-Type": "application/json"},
-            )
-            response.raise_for_status()
-        payload = response.json()
-        # 兼容两种响应格式：{"embeddings": [...]} 或 OpenAI 风格 {"data": [...]}
-        embeddings = payload.get("embeddings") or payload.get("data") or []
-        vector = embeddings[0] if embeddings else []
-        # 维度校验在写入 / 查询前拦截，防止维度错配的脏向量进入 pgvector
-        if len(vector) != self.dimension:
-            raise ValueError("embedding 维度与配置不一致")
-        return [float(value) for value in vector]
+            for start in range(0, len(texts), self.EMBED_BATCH_SIZE):
+                batch = list(texts[start : start + self.EMBED_BATCH_SIZE])
+                response = await client.post(
+                    self.endpoint,
+                    json={"texts": batch},
+                    headers={"Content-Type": "application/json"},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                embeddings = payload.get("embeddings") or payload.get("data") or []
+                if len(embeddings) != len(batch):
+                    raise RuntimeError(
+                        f"embedding 返回数量 {len(embeddings)} 与请求数量 {len(batch)} 不一致"
+                    )
+                for vector in embeddings:
+                    # 维度校验在写入 / 查询前拦截，防止维度错配的脏向量进入 pgvector
+                    if len(vector) != self.dimension:
+                        raise ValueError("embedding 维度与配置不一致")
+                    results.append([float(value) for value in vector])
+        return results
 
 
 class PgVectorRetriever:

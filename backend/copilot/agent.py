@@ -299,6 +299,8 @@ class ResolutionCopilot:
                             "status": invocation.status,
                             "elapsed_ms": elapsed_ms,
                             "reason": invocation.denied_reason,
+                            # 结构化错误码（阶段四）：不靠错误文本判断状态
+                            "error_code": invocation.error_code,
                         }
                     )
                     messages.append(

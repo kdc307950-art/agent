@@ -64,13 +64,20 @@ class ToolEvidence:
 
 @dataclass(frozen=True, slots=True)
 class ToolInvocationResult:
-    """一次治理工具调用的统一结果。"""
+    """一次治理工具调用的统一结果。
+
+    error_code：结构化错误码（阶段四：不靠错误文本判断状态）：
+        - denied_scope / denied_tenant / denied_unregistered / denied_input
+        - timeout / failed / no_governance
+    与 ToolGovernance 的拒绝原因一一对应，供审计/指标/前端精确分类。
+    """
 
     ok: bool
     content: str
     evidence: list[ToolEvidence] = field(default_factory=list)
     status: str = "completed"  # completed / denied / timeout / failed
     denied_reason: str | None = None
+    error_code: str | None = None
 
 
 def _parse_evidence(tool_name: str, content: str) -> list[ToolEvidence]:
@@ -184,18 +191,15 @@ async def governed_invoke(
     # 治理层返回 ToolMessage(status=error) 表示拒绝/超时/失败
     if isinstance(result, ToolMessage) and result.status == "error":
         content = str(result.content or "")
-        denied = (
-            "权限不足" in content
-            or "未启用" in content
-            or "未注册" in content
-            or "不允许" in content
-            or "超时" in content
-        )
+        # 结构化错误码（阶段四）：映射 ToolGovernance 的固定文案，
+        # 不依赖错误文本做状态判断（文案稳定，映射一次后走 error_code）
+        error_code, status = _classify_governance_error(content)
         return ToolInvocationResult(
             ok=False,
             content=content,
-            status="denied" if denied else "failed",
-            denied_reason=content,
+            status=status,
+            denied_reason=content if status == "denied" else None,
+            error_code=error_code,
         )
 
     text = str(result)
@@ -205,3 +209,30 @@ async def governed_invoke(
         content=_extract_display_content(tool_name, text),
         evidence=_parse_evidence(tool_name, text),
     )
+
+
+def _classify_governance_error(content: str) -> tuple[str, str]:
+    """把 ToolGovernance 的固定拒绝/失败文案映射为结构化 error_code。
+
+    映射表与 backend/tool_governance.py 的返回文案一一对应：
+        "工具未注册或不可用"    -> denied_unregistered（denied）
+        "工具调用权限不足"      -> denied_scope（denied）
+        "当前租户未启用该工具"  -> denied_tenant（denied）
+        "工具输入超过允许长度"  -> denied_input（denied）
+        "工具调用超时"          -> timeout（timeout）
+        "工具调用失败"          -> failed（failed）
+    未知文案一律视为 failed（不猜测为 denied，避免掩盖真实故障）。
+    """
+    if "未注册" in content:
+        return "denied_unregistered", "denied"
+    if "权限不足" in content:
+        return "denied_scope", "denied"
+    if "未启用" in content:
+        return "denied_tenant", "denied"
+    if "输入超过允许长度" in content:
+        return "denied_input", "denied"
+    if "超时" in content:
+        return "timeout", "timeout"
+    if "失败" in content:
+        return "failed", "failed"
+    return "failed", "failed"

@@ -331,6 +331,40 @@ def test_copilot_forged_send_message_is_denied_by_governance():
     assert result["tool_trace"][0]["status"] == "denied"
 
 
+# ========== 阶段四：结构化 error_code（不靠错误文本判断状态） ==========
+
+
+def test_governance_error_maps_to_structured_error_code():
+    """治理拒绝/失败文案映射为结构化 error_code。"""
+    from backend.copilot.tool_adapter import _classify_governance_error
+
+    assert _classify_governance_error("工具未注册或不可用") == ("denied_unregistered", "denied")
+    assert _classify_governance_error("工具调用权限不足") == ("denied_scope", "denied")
+    assert _classify_governance_error("当前租户未启用该工具") == ("denied_tenant", "denied")
+    assert _classify_governance_error("工具输入超过允许长度") == ("denied_input", "denied")
+    assert _classify_governance_error("工具调用超时") == ("timeout", "timeout")
+    assert _classify_governance_error("工具调用失败，请稍后重试") == ("failed", "failed")
+    # 未知文案不猜测为 denied
+    assert _classify_governance_error("未知错误") == ("failed", "failed")
+
+
+def test_copilot_tool_trace_includes_structured_error_code():
+    """工具被治理拒绝时 tool_trace 带结构化 error_code（而非仅文本）。"""
+    async def run():
+        tool = _Tool("search_knowledge")
+        runtime = _runtime(scopes=frozenset({"chat:write"}))  # 无 ticket:agent
+        copilot = _copilot(
+            {"search_knowledge": tool},
+            _ToolCallModel(["search_knowledge"]),
+        )
+        return await _run(copilot, _request(), runtime)
+
+    result = asyncio.run(run())
+    trace = result["tool_trace"][0]
+    assert trace["status"] == "denied"
+    assert trace.get("error_code") == "denied_scope"
+
+
 class _FakeKnowledge:
     def __init__(self, hits):
         self.hits = hits
