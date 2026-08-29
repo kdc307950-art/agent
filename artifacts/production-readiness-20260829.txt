@@ -1,0 +1,99 @@
+========================================================================
+生产形态收尾回归记录 —— 部门身份透传 / Copilot 异步 Worker / 统一检索
+========================================================================
+
+修复日期   : 2026-08-29（收尾到生产形态）
+基线       : 第三轮收敛方案（bd80b1f）
+本次目标   : 补齐生产形态关键架构缺口：部门身份透传、Copilot 异步
+             Worker 化、统一知识检索入口、治理完善、指标与文档
+
+----------------------------------------------------------------------
+一、实现内容（对照收尾方案 9 阶段）
+----------------------------------------------------------------------
+阶段一  权限模型收敛（部门身份透传）
+  - RunContext 增加 role / departments / internal（默认值向后兼容）
+  - backend/knowledge/identity.py：retrieval_principal(context) 统一封装，
+    替换 4 处手工构造（copilot tools / helpdesk tools / copilot service /
+    intake graph 注释说明 SYSTEM 场景）
+  - copilot/api.py：_lookup_agent_departments 从 support_members JOIN
+    support_teams 服务端查询坐席部门（不信任请求体）
+  - ACL 集成测试（test_identity_acl_postgres.py）：跨租户/restricted 部门
+    隔离/IT 与财务互不可见/过期文档不能作引用/伪造部门不改变权限
+
+阶段二  Copilot 真正异步 Worker 化（生产化前最重要架构缺口）
+  - copilot_runs 状态扩展 queued/processing/completed/failed/dead/expired
+    + worker 字段（worker_id/next_attempt_at/claimed_at，schema v19）
+  - POST /tickets/{id}/copilot：只校验 + 创建 queued 运行，立即返回 202
+    （Web 进程不执行模型调用）
+  - CopilotWorker（backend/copilot/worker.py）：FOR UPDATE SKIP LOCKED 领取、
+    租约 + 心跳续租、指数退避重试、超过重试次数 -> dead、
+    recover_orphaned_runs 崩溃恢复（回队）
+  - run_copilot_worker.py 独立进程入口（SIGINT/SIGTERM 优雅停止）
+  - GET /tickets/{id}/copilot/{run_id}：运行状态轮询接口（前端轮询目标）
+  - 前端 CopilotPanel：POST 202 -> 轮询 run 状态 -> completed 展示草稿 /
+    failed 可重试 / dead 转人工；切换工单取消轮询
+  - 测试：test_copilot_worker.py（完成/退避/dead/崩溃恢复）、
+    test_copilot_api.py 适配异步语义
+
+阶段三  统一知识检索入口
+  - backend/knowledge/retriever.py：KnowledgeRetriever.search()
+    （lexical + vector + RRF 融合 + ACL/有效期过滤）
+  - retrieval_mode 显式标记：lexical-only / hybrid（两套评测分开记录）
+  - HttpEmbeddingProvider 增加 embed_documents：批量 texts 请求、单批 ≤32 条、
+    复用单一 AsyncClient、任一向量异常直接失败
+  - 测试：test_knowledge_retriever.py（lexical-only/hybrid/降级/模式标记）
+
+阶段四  工具治理完善
+  - 结构化 error_code（阶段四）：ToolInvocationResult 增加 error_code，
+    _classify_governance_error 映射 ToolGovernance 固定文案
+    （denied_scope/denied_tenant/denied_unregistered/denied_input/timeout/failed），
+    不再靠错误文本判断状态；tool_trace 记录 error_code
+  - get_ticket_messages / get_ticket_history 已最小字段 + ticket:agent scope
+
+阶段五  恢复逻辑独立化 + 指标补全
+  - 恢复由 CopilotWorker 定期执行（HTTP 请求不再承担 recover 职责）
+  - Worker 指标：copilot_lease_recovered_total / copilot_completed_total /
+    copilot_retried_total / copilot_dead_total / copilot_runs_total{status}
+  - worker 心跳经 WorkerMetricsDB.safe_beat（/ready 判定存活）
+
+阶段七  前端工作台
+  - CopilotPanel 异步轮询：202 入队 -> 轮询 GET run 状态 -> completed/failed/dead
+    状态完整；防重复点击、切换工单取消轮询、旧结果不覆盖新工单
+  - copilotPollConfig 抽到独立文件（修复 Fast refresh 警告）
+
+阶段九  面试文档
+  - docs/interview/copilot-architecture.md（新增）
+  - docs/interview/known-limitations.md（新增 13-15 条 Copilot 边界）
+  - docs/interview/demo-script.md（10 分钟时间表加入 Copilot 环节）
+
+----------------------------------------------------------------------
+二、回归门禁结果
+----------------------------------------------------------------------
+ruff            : All checks passed
+mypy            : 93 文件无问题
+后端 pytest     : 328 passed, 3 deselected（live_e2e 不纳入常规回归）
+前端 oxlint     : 0 warnings / 0 errors
+前端 tsc -b     : 通过
+前端 vitest     : 30 passed
+前端 Playwright : 20 passed（chromium + mobile-chromium）
+前端 build      : 成功（JS 297.66 kB / gzip 92.67 kB）
+测试容器        : compose.test.yml down -v 清理成功
+git diff --check: 通过
+
+----------------------------------------------------------------------
+三、诚实边界（面试表述）
+----------------------------------------------------------------------
+已完成：
+- Copilot 异步 Worker 化核心链路（入队 202 / Worker 领取 / 租约 / 退避 /
+  dead / 崩溃恢复 / 状态轮询）
+- 部门身份透传基础（RunContext + retrieval_principal + ACL 测试）
+- 统一检索入口（lexical-only / hybrid 双模式 + retrieval_mode 标记）
+- 结构化 error_code 工具治理
+
+未宣称（诚实标注）：
+- 多部门身份透传未完全落地（copilot_runs 未持久化 user_id，异步 Worker
+  场景坐席部门暂为空集合，P2）
+- Copilot 实际检索为 lexical-only（真实 embedding 服务未配置，未 hybrid 化）
+- Worker 长期运行/多副本并发/故障演练未在生产环境验证
+- 未正式生产上线、未证明长期稳定运行、未做真实企微长期压测
+========================================================================
