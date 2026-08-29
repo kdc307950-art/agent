@@ -1,0 +1,125 @@
+# Hybrid 检索评测（手动触发，受保护环境）
+#
+# 为什么不用 push/PR 自动跑：
+# - 依赖外部真实 embedding 服务，有成本、稳定性与数据泄露面；
+# - embedding 服务波动不能被误判为代码回归。
+# 所以本 workflow 仅 workflow_dispatch 手动触发，注入真实 endpoint 与凭据，
+# 运行冻结的 hybrid_holdout 集并把 JSON 报告上传为 artifact。
+#
+# 通过条件（与 docs/interview/knowledge-evaluation.md 门禁表一致）：
+#   mode=hybrid、degraded=false、Top1>=0.80、Recall@5>=0.90、MRR@5>=0.75；
+#   无答案集单独记录，不混入召回指标。
+
+name: Hybrid Eval（手动）
+
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: 评测数据集（hybrid_holdout 为冻结门禁集）
+        required: false
+        default: hybrid_holdout
+        type: choice
+        options:
+          - hybrid_holdout
+          - seed
+      tenant:
+        description: 评测租户 ID
+        required: false
+        default: demo
+      topk:
+        description: 检索深度 k
+        required: false
+        default: "5"
+      fail-under-top1:
+        description: Top1 门禁阈值（低于则失败）
+        required: false
+        default: "0.80"
+      fail-under-recall5:
+        description: Recall@5 门禁阈值
+        required: false
+        default: "0.90"
+      fail-under-mrr:
+        description: MRR@5 门禁阈值
+        required: false
+        default: "0.75"
+
+permissions:
+  contents: read
+
+jobs:
+  hybrid-eval:
+    runs-on: ubuntu-latest
+    env:
+      CI: "true"
+      APP_ENV: test
+      DATABASE_URL: postgresql://langgraph:langgraph@127.0.0.1:5432/langgraph
+      TEST_DATABASE_URL: postgresql://langgraph:langgraph@127.0.0.1:5432/langgraph
+      REDIS_URL: redis://127.0.0.1:6379/0
+      KNOWLEDGE_EMBEDDING_ENDPOINT: ${{ secrets.KNOWLEDGE_EMBEDDING_ENDPOINT }}
+      KNOWLEDGE_EMBEDDING_MODEL: ${{ secrets.KNOWLEDGE_EMBEDDING_MODEL }}
+      KNOWLEDGE_EMBEDDING_DIMENSION: ${{ secrets.KNOWLEDGE_EMBEDDING_DIMENSION || '1536' }}
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: langgraph
+          POSTGRES_USER: langgraph
+          POSTGRES_PASSWORD: langgraph
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U langgraph -d langgraph"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check uv
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Require embedding endpoint secret
+        # 未配置 secrets 时立即失败，绝不降级成 lexical-only 出"hybrid 成绩"。
+        run: |
+          if [ -z "$KNOWLEDGE_EMBEDDING_ENDPOINT" ]; then
+            echo "::error::缺少 KNOWLEDGE_EMBEDDING_ENDPOINT secret：无法执行 hybrid 评测（禁止降级伪称 hybrid）。"
+            exit 1
+          fi
+      - name: Initialize schema
+        run: uv run python -m backend.migrations
+      - name: Initialize pgvector schema
+        run: uv run python -m backend.vector_migrations
+      - name: Seed demo knowledge base
+        run: uv run python -m backend.seed_demo --tenant ${{ inputs.tenant }}
+      - name: Embed chunks (batch vectorize)
+        run: uv run python -m backend.run_knowledge_index --tenant ${{ inputs.tenant }} --embed
+      - name: Run evaluation with gate
+        run: |
+          uv run python -m backend.run_knowledge_eval \
+            --dataset ${{ inputs.dataset }} \
+            --tenant ${{ inputs.tenant }} \
+            --topk ${{ inputs.topk }} \
+            --embed \
+            --report-json artifacts/hybrid-eval-${{ github.run_id }}.json \
+            --fail-under-top1 ${{ inputs.fail-under-top1 }} \
+            --fail-under-recall5 ${{ inputs.fail-under-recall5 }} \
+            --fail-under-mrr ${{ inputs.fail-under-mrr }}
+      - name: Upload evaluation report
+        uses: actions/upload-artifact@v4
+        with:
+          name: hybrid-eval-report-${{ github.run_id }}
+          path: artifacts/hybrid-eval-${{ github.run_id }}.json
+          if-no-files-found: error
