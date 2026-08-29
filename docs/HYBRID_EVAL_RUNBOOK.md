@@ -51,6 +51,56 @@ Content-Type: application/json
 
 **日志纪律**：不要把 endpoint、token 或响应内容打印到日志中。
 
+### 1.1 embedding 服务选项与契约适配代理
+
+**重要事实**：原生 OpenAI 兼容 `/v1/embeddings` 响应是
+`{"data": [{"embedding": [...], "index": 0}, ...]}`，与项目契约**不兼容**
+（`HttpEmbeddingProvider` 会对 dict 做 `len()` 维度校验而失败）。因此推荐：
+
+**路径 A（推荐）：任意 OpenAI 兼容 API + 仓库内契约适配代理**
+`backend/embedding_proxy.py` 把任意 `/v1/embeddings` 上游转换为项目契约：
+
+```powershell
+# 本地连通性自检
+uv run python -m backend.embedding_proxy `
+  --upstream https://api.openai.com/v1/embeddings `
+  --api-key $env:OPENAI_API_KEY `
+  --model text-embedding-3-small `
+  --dimension 1536 `
+  --port 8100
+
+# 验证契约（返回 {"embeddings": [[...]]}）
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8100/" `
+  -ContentType "application/json" -Body '{"texts":["你好","世界"]}'
+```
+
+- 代理只转发，不落库；api_key 只在转发时放入 Authorization 头，绝不进日志/响应
+- 上游 4xx/5xx、数量/维度不符 -> 502（与评测"失败必须失败"语义一致）
+- 单元测试：`tests/test_embedding_proxy.py`（8 个）
+
+**GitHub Actions 可达性**：CI runner 是云端 ubuntu，无法访问你本机 `127.0.0.1`。
+代理必须部署到 runner 可访问的公网地址，二选一：
+
+- 云 PaaS（Railway / Render / Fly.io / 公司服务器）：把上述启动命令做成服务，
+  得到固定 https URL → `KNOWLEDGE_EMBEDDING_ENDPOINT` 填该 URL
+- 固定隧道（cloudflared named tunnel / frp）：内网起代理 + 固定公网域名
+
+**路径 B**：已有原生契约服务（`{"texts"}` -> `{"embeddings"}`）→ 直接用，
+跳过代理。
+
+**维度选择（以模型文档为准）示例**：
+
+| 模型 | 常见维度 |
+|---|---|
+| OpenAI text-embedding-3-small | 1536 |
+| OpenAI text-embedding-3-large | 3072 |
+| BAAI/bge-m3（硅基流动等） | 1024 |
+| 智谱 embedding-3 | 2048 |
+| Jina jina-embeddings-v3 | 1024 |
+
+`KNOWLEDGE_EMBEDDING_DIMENSION` 必须与所选模型输出维度一致（proxy 侧
+`--dimension` 与数据库向量列维度都必须对齐；`vector_migrations` 会按该值建列）。
+
 ## 2. GitHub Secrets 配置
 
 ```text
