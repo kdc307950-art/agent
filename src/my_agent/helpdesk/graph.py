@@ -227,7 +227,12 @@ def build_helpdesk_intake_graph(
     async def compose_answer_node(
         state: HelpdeskIntakeState, config: RunnableConfig
     ) -> dict[str, Any]:
-        """可选：调用 RAG 服务生成拟答与引用；未注入 rag_service 时跳过。"""
+        """可选：调用 RAG 服务生成拟答与引用；未注入 rag_service 时跳过。
+
+        主体构造说明（阶段一）：受理图由 SYSTEM 驱动，无最终用户 RunContext；
+        这里按 tenant_id 构造租户隔离主体（internal 未设=客户可见范围），
+        部门 ACL 由后端在注入真实身份时经 retrieval_principal 统一处理。
+        """
         if rag_service is None:
             return {}
         from backend.knowledge import RetrievalPrincipal

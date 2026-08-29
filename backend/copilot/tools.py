@@ -18,7 +18,7 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
-from backend.knowledge.models import RetrievalPrincipal
+from backend.knowledge.identity import retrieval_principal
 
 
 def _runtime(config: RunnableConfig | None) -> Any:
@@ -78,9 +78,7 @@ async def search_knowledge(
         )
     runtime = _runtime(config)
     context = _context(config)
-    principal = RetrievalPrincipal(
-        tenant_id=context.tenant_id, departments=frozenset(), internal=True
-    )
+    principal = retrieval_principal(context)
     hits = await runtime.knowledge.lexical_search(principal, query, limit=limit)
     return _knowledge_result(query, hits, limit)
 

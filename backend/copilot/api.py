@@ -1,8 +1,9 @@
 """Resolution Copilot HTTP API（工单详情内的"生成处理建议"）。
 
 职责：
-    - POST /tickets/{ticket_id}/copilot：生成建议（operation_id 幂等 + 运行状态机）
-    - GET  /tickets/{ticket_id}/copilot/latest：查询最新草稿
+    - POST /tickets/{ticket_id}/copilot：提交生成任务（异步 Worker 化：入队返回 202）
+    - GET  /tickets/{ticket_id}/copilot/{run_id}：查询运行状态（前端轮询）
+    - GET  /tickets/{ticket_id}/copilot/latest：查询最新草稿（展示用）
     - POST /tickets/{ticket_id}/copilot/{draft_id}/approve：审批草稿
 
 安全原则：
@@ -10,29 +11,27 @@
     - 只读执行：Copilot 不改工单状态、不写消息、不触发 Outbox
     - 草稿审批只是状态迁移（generated -> approved），不代表发送消息；
       实际发送仍由客服在界面上确认后走既有 send_message 流程
-    - 运行状态机（阶段三）：
+    - 模型执行在 CopilotWorker 进程内完成，Web 进程不调模型
+    - 运行状态机（阶段二）：
         completed + 对应 draft -> 返回该 run 的 draft（不跨 run 取最新）
-        running                 -> 202 {"status": "running", "run_id"}
+        queued/processing       -> 202 {"status", "run_id"}
         failed                  -> 允许新 operation_id 重试（不当作成功幂等）
-        超租约僵尸运行          -> recover_expired_runs 标记 failed 后可重试
+        dead                    -> 转人工；expired -> 允许重新入队
 """
 
 from __future__ import annotations
 
-from time import monotonic
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..run_context import RunContext
 from ..security import Principal, rate_limit_dependency
-from .service import CopilotService
 
 copilot_router = APIRouter(prefix="/tickets", tags=["copilot"])
 
-# 运行租约（秒）：超过则视为僵尸运行，recover 后允许重试
+# 运行租约（秒）：超过则视为僵尸运行，由 Worker recover 回队
 RUN_LEASE_SECONDS = 60
 
 
@@ -68,34 +67,6 @@ def _copilot_runtime(request: Request):
     return runtime
 
 
-def _build_run_context(
-    request: Request,
-    principal: Principal,
-    *,
-    run_id: str,
-    ticket_id: str,
-) -> RunContext:
-    """构造 Copilot 工具执行的服务端 RunContext（阶段一：工具治理上下文）。
-
-    来源只能是服务端 principal（token 解析结果）与 settings，绝不来自请求体。
-    allowed_tools 限定为 Copilot 只读 profile，治理层据此拒绝副作用工具。
-    """
-    settings = getattr(request.app.state, "settings", None)
-    timeout_seconds = getattr(settings, "agent_run_timeout_seconds", 60) or 60
-    from .tool_adapter import COPILOT_ALLOWED_TOOLS
-
-    return RunContext(
-        run_id=run_id,
-        request_id=getattr(request.state, "request_id", "") or uuid4().hex,
-        tenant_id=principal.tenant_id,
-        user_id=principal.user_id,
-        thread_id=f"copilot:{principal.tenant_id}:{ticket_id}",
-        scopes=frozenset(principal.scopes),
-        deadline=monotonic() + timeout_seconds,
-        allowed_tools=frozenset(COPILOT_ALLOWED_TOOLS),
-    )
-
-
 @copilot_router.post("/{ticket_id}/copilot")
 async def generate_copilot(
     ticket_id: str,
@@ -103,22 +74,18 @@ async def generate_copilot(
     request: Request,
     principal: Principal = Depends(rate_limit_dependency),
 ):
-    """生成 Resolution Copilot 处理建议（含运行状态机与幂等恢复）。
+    """提交 Copilot 生成任务（阶段二：异步 Worker 化）。
 
-    流程（PRD 第七节 + 阶段三）：
+    流程：
         1. 校验租户与坐席权限；服务未初始化返回 503
         2. 校验工单状态为 assigned / in_progress（否则 409）
         3. operation_id 幂等：
            - completed -> 按该 run_id 查 draft 返回（不跨 run 取最新）
-           - running   -> 202 {"status": "running", "run_id"}（不重复消耗模型）
-           - failed    -> 允许客户端用新 operation_id 显式重试
-        4. 先 recover 超租约僵尸运行，再读取工单上下文
-        5. 执行 Copilot Agent（治理层包装的只读工具循环）
-        6. 运行引用与敏感信息门禁（基于实际工具证据）
-        7. 保存草稿与运行审计
-        8. 返回结构化结果
-
-    模型失败不改变工单状态、不影响 SLA、不创建客户消息，返回 502 可重试错误。
+           - queued/processing -> 202 {"status", "run_id"}（不重复消耗模型）
+           - failed -> 409 要求新 operation_id；dead -> 409 转人工
+           - expired -> 允许同一 operation 重新入队
+        4. 创建 queued 运行，立即返回 202
+        5. 模型执行由 CopilotWorker 领取后异步完成（Web 进程不调模型）
     """
     _require_copilot_scope(principal)
     runtime = _copilot_runtime(request)
@@ -134,24 +101,21 @@ async def generate_copilot(
         # 版本已变：工单可能被并发修改；不重试生成，要求刷新后重试
         raise HTTPException(status_code=409, detail="工单版本已变化，请刷新后重试")
 
-    # 先清理超租约僵尸运行（进程崩溃后遗留的 running）
-    try:
-        await runtime.copilot_repository.recover_expired_runs(
-            lease_seconds=RUN_LEASE_SECONDS
-        )
-    except Exception:
-        pass  # 恢复失败不阻塞主流程（下一轮再试）
+    # 僵尸运行恢复由 CopilotWorker 定期执行（阶段六），HTTP 请求不承担恢复职责
 
-    # operation_id 幂等：按 run 状态分派（阶段三）
+    # operation_id 幂等：按 run 状态分派（阶段二异步 Worker 状态机）
     existing_run = await runtime.copilot_repository.get_run_by_operation(
         principal.tenant_id, ticket_id, payload.operation_id
     )
     if existing_run is not None:
-        if existing_run["status"] == "running":
-            # 仍在执行：返回 202，前端轮询任务状态，不重复调用模型
+        if existing_run["status"] in {"queued", "processing"}:
+            # 已入队/处理中：返回 202，前端轮询任务状态，不重复调用模型
             return JSONResponse(
                 status_code=202,
-                content={"status": "running", "run_id": existing_run["run_id"]},
+                content={
+                    "status": existing_run["status"],
+                    "run_id": existing_run["run_id"],
+                },
             )
         if existing_run["status"] == "completed":
             # 已完成：按该 run_id 查草稿（绝不跨 run 取最新草稿）
@@ -172,8 +136,14 @@ async def generate_copilot(
                     "请使用新的 operation_id 重试"
                 ),
             )
+        if existing_run["status"] == "dead":
+            # 死信：必须转人工处理，不允许静默重跑
+            raise HTTPException(
+                status_code=409,
+                detail="上次 Copilot 生成进入死信，请转人工处理或联系管理员",
+            )
         # expired（僵尸运行租约过期）：允许同一 operation 重新运行，
-        # 由下方 start_run 的 ON CONFLICT 分支把 expired 重置为 running
+        # 由下方 start_run 的 ON CONFLICT 分支把 expired 重置为 queued
 
     run_id = uuid4().hex
     created = await runtime.copilot_repository.start_run(
@@ -188,10 +158,10 @@ async def generate_copilot(
         race = await runtime.copilot_repository.get_run_by_operation(
             principal.tenant_id, ticket_id, payload.operation_id
         )
-        if race is not None and race["status"] == "running":
+        if race is not None and race["status"] in {"queued", "processing"}:
             return JSONResponse(
                 status_code=202,
-                content={"status": "running", "run_id": race["run_id"]},
+                content={"status": race["status"], "run_id": race["run_id"]},
             )
         if race is not None and race["status"] == "completed":
             draft = await runtime.copilot_repository.get_draft_by_run(
@@ -200,75 +170,55 @@ async def generate_copilot(
             return {"run_id": race["run_id"], "draft": draft, "idempotent_replay": True}
         raise HTTPException(status_code=409, detail="Copilot 运行登记冲突，请重试")
 
-    service: CopilotService = runtime.copilot
+    # 异步 Worker 化（阶段二）：POST 只入队立即返回 202，
+    # 模型执行由 CopilotWorker 领取后完成（Web 进程不调模型）
     metrics = getattr(runtime, "metrics", None)
-    run_context = _build_run_context(request, principal, run_id=run_id, ticket_id=ticket_id)
-    started = monotonic()
-    try:
-        # 完整流程：准备上下文 -> 生成（治理工具）-> 按实际工具证据门禁
-        outcome = await service.run_with_tenant(
-            runtime=runtime,
-            tenant_id=principal.tenant_id,
-            ticket_id=ticket_id,
-            run_context=run_context,
-        )
-        gated = outcome["result"]
-    except Exception as exc:
-        latency_ms = int((monotonic() - started) * 1000)
-        if metrics is not None:
-            metrics.increment(
-                "copilot_failures_total", attributes={"error_code": "generation_exception"}
-            )
-            metrics.observe("copilot_latency_seconds", latency_ms / 1000)
-        await runtime.copilot_repository.finish_run(
-            run_id=run_id,
-            tenant_id=principal.tenant_id,
-            status="failed",
-            tool_calls=0,
-            latency_ms=latency_ms,
-            error_code="copilot_generation_failed",
-        )
-        raise HTTPException(status_code=502, detail="处理建议生成失败，请稍后重试") from exc
-
-    latency_ms = int((monotonic() - started) * 1000)
-    status = "completed" if gated.error_code is None else "failed"
     if metrics is not None:
-        metrics.increment("copilot_runs_total", attributes={"status": status})
-        metrics.increment(
-            "copilot_failures_total",
-            attributes={"error_code": gated.error_code or "none"},
+        metrics.increment("copilot_runs_total", attributes={"status": "queued"})
+    return JSONResponse(
+        status_code=202,
+        content={"status": "queued", "run_id": run_id},
+    )
+
+
+@copilot_router.get("/{ticket_id}/copilot/{run_id}")
+async def get_copilot_run_status(
+    ticket_id: str,
+    run_id: str,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    """查询 Copilot 运行状态（前端轮询；阶段二异步 Worker）。
+
+    返回：
+        {"run_id", "status", "draft_id", "error_code", "tool_calls"}
+    status: queued / processing / completed / failed / dead / expired
+    completed 时 draft_id 指向对应草稿（按 run_id 关联，不跨 run）。
+    """
+    _require_copilot_scope(principal)
+    # 守卫：run_id == "latest" 时交给 latest 语义（该路径先于静态路由被捕获）
+    if run_id == "latest":
+        runtime = _copilot_runtime(request)
+        draft = await runtime.copilot_repository.get_latest_draft(
+            principal.tenant_id, ticket_id
         )
-        metrics.observe("copilot_latency_seconds", latency_ms / 1000)
-        if gated.needs_human_review:
-            metrics.increment("copilot_human_revision_total")
-        if not gated.citations:
-            metrics.increment("copilot_no_citation_total")
-    await runtime.copilot_repository.finish_run(
-        run_id=run_id,
-        tenant_id=principal.tenant_id,
-        status=status,
-        tool_calls=len(gated.tool_trace),
-        latency_ms=latency_ms,
-        error_code=gated.error_code,
-    )
-    draft_id = uuid4().hex
-    await runtime.copilot_repository.save_draft(
-        draft_id=draft_id,
-        tenant_id=principal.tenant_id,
-        ticket_id=ticket_id,
-        run_id=run_id,
-        draft_answer=gated.draft_answer,
-        steps=gated.troubleshooting_steps,
-        citations=[c.model_dump(mode="json") for c in gated.citations],
-        confidence=gated.confidence,
-        needs_human_review=gated.needs_human_review,
-    )
+        return {"draft": draft}
+    runtime = _copilot_runtime(request)
+    run = await runtime.copilot_repository.get_run(principal.tenant_id, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    draft = None
+    if run["status"] == "completed":
+        draft = await runtime.copilot_repository.get_draft_by_run(
+            principal.tenant_id, ticket_id, run_id
+        )
     return {
         "run_id": run_id,
-        "draft": await runtime.copilot_repository.get_draft_by_run(
-            principal.tenant_id, ticket_id, run_id
-        ),
-        "idempotent_replay": False,
+        "status": run["status"],
+        "draft": draft,
+        "draft_id": draft["draft_id"] if draft else None,
+        "error_code": run.get("error_code"),
+        "tool_calls": run.get("tool_calls") or 0,
     }
 
 

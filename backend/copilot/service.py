@@ -125,11 +125,17 @@ class CopilotService:
 
         # 第二层：权威数据校验（引用保存前再次确认）
         if gated.citations and hasattr(runtime, "knowledge"):
+            # 统一主体：优先用 RunContext（阶段一）；无 context 时退化为
+            # 租户隔离 + 服务台内部主体
+            from ..knowledge.identity import retrieval_principal
             from ..knowledge.models import RetrievalPrincipal
 
-            principal = RetrievalPrincipal(
-                tenant_id=tenant_id, departments=frozenset(), internal=True
-            )
+            if run_context is not None:
+                principal = retrieval_principal(run_context)
+            else:
+                principal = RetrievalPrincipal(
+                    tenant_id=tenant_id, departments=frozenset(), internal=True
+                )
             verified = await runtime.knowledge.verify_citations(
                 principal,
                 [c.citation_key for c in gated.citations],

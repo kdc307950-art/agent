@@ -12,6 +12,7 @@ from .models import (
 )
 from .pgvector import EmbeddingProvider, HttpEmbeddingProvider, PgVectorRetriever
 from .repository import KnowledgeRepository
+from .retriever import KnowledgeRetrievalResult, KnowledgeRetriever
 from .service import (
     AnswerDecision,
     AnswerGatePolicy,
@@ -44,6 +45,8 @@ __all__ = [
     "KnowledgeChunkInput",
     "KnowledgeDocumentInput",
     "KnowledgeRepository",
+    "KnowledgeRetrievalResult",
+    "KnowledgeRetriever",
     "NullVectorRetriever",
     "PgVectorRetriever",
     "RetrievalHit",
