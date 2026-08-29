@@ -1,4 +1,14 @@
-"""Knowledge persistence and retrieval models."""
+"""知识库的持久化与检索数据模型（Pydantic）。
+
+职责：
+    - 定义知识文档 / 分块 / 检索主体 / 检索命中 / 引用等核心数据结构
+    - 用字段约束（正则、长度、枚举）在入口处拦截非法输入
+
+关键设计：
+    - 输入模型一律 extra="forbid"：拒绝未知字段，防止脏数据流入
+    - RetrievalHit / Citation 等"对外"模型 frozen=True：不可变，
+      检索结果可在多轮 Agentic 流程中安全共享，杜绝意外篡改
+"""
 
 from __future__ import annotations
 
@@ -9,8 +19,23 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class KnowledgeDocumentInput(BaseModel):
+    """知识文档的输入元信息（创建 / 覆盖入库时提交）。
+
+    字段说明：
+        document_id: 业务侧文档 ID（仅字母数字与 _ . -，最长 128）
+        version: 文档版本号（>=1），同一 document_id 可保留多版本
+        status: 生命周期状态：draft 草稿 -> published 已发布 -> retired 已停用
+                （状态机迁移约束见 repository.publish_document_version）
+        visibility: 可见性分级 public / internal / restricted，
+                    语义见 RetrievalPrincipal.internal 的注释
+        allowed_departments: 允许访问的部门白名单（空元组 = 不限制）
+        valid_from / valid_until: 有效期窗口，检索时按当前时间过滤
+        metadata: 业务自定义元数据（JSONB 存储）
+    """
+
     model_config = ConfigDict(extra="forbid")
 
+    # 白名单正则：ID 只能含字母数字与 _ . -，杜绝路径注入 / 非法字符
     document_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.-]+$")
     version: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=512)
@@ -26,6 +51,17 @@ class KnowledgeDocumentInput(BaseModel):
 
 
 class KnowledgeChunkInput(BaseModel):
+    """知识分块的输入模型（一段可独立检索的文本单元）。
+
+    字段说明：
+        chunk_id: 分块 ID，入库侧用"序号 + 内容摘要"生成（见 ingestion.chunk_text），
+                  内容不变则 ID 不变，天然幂等
+        ordinal: 在文档内的序号（>=0），用于恢复文档顺序
+        content: 分块正文（1..20000 字符）
+        embedding_ref: 可选的外部嵌入引用（如对象存储地址）
+        embedding_model: 生成该分块向量的嵌入模型名
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     chunk_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.-]+$")
@@ -37,6 +73,12 @@ class KnowledgeChunkInput(BaseModel):
 
 
 class RetrievalPrincipal(BaseModel):
+    """检索主体：一次检索请求的"身份 + 可见性"声明。
+
+    所有检索 SQL 都以它作为强制过滤条件（租户隔离 + 部门 ACL），
+    见 repository.lexical_search 与 pgvector.search_embedding。
+    """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     tenant_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
@@ -51,6 +93,16 @@ class RetrievalPrincipal(BaseModel):
 
 
 class RetrievalHit(BaseModel):
+    """一次检索命中的不可变快照（词法 / 向量 / 混合融合的公共形态）。
+
+    字段说明：
+        source: 命中来源：lexical 词法、vector 向量、hybrid 双路融合
+        source_rank: 该来源内部的排名（>=1，由 SQL 窗口函数产生）
+        fused_score: RRF 融合分数（仅 hybrid 融合场景非零）
+        key: (document_id, document_version, chunk_id) 三元组，
+             用于跨来源去重与引用白名单匹配（见 service.reciprocal_rank_fusion）
+    """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     tenant_id: str
@@ -66,10 +118,17 @@ class RetrievalHit(BaseModel):
 
     @property
     def key(self) -> tuple[str, int, str]:
+        """稳定的唯一键：文档 + 版本 + 分块，跨检索来源可比较。"""
         return self.document_id, self.document_version, self.chunk_id
 
 
 class Citation(BaseModel):
+    """对外暴露的答案引用（带标题与来源 URI，供前端展示）。
+
+    与 GeneratedCitation 的区别：GeneratedCitation 是模型输出的
+    原始三元组；Citation 是经过白名单校验、补充了展示信息的最终形态。
+    """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     document_id: str

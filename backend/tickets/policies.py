@@ -17,6 +17,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class TenantItPolicy(BaseModel):
+    """租户 IT 策略（每 (tenant, category) 一条）。
+
+    required_fields 为受理必填字段（不足则挂起向客户追问）；
+    policy_id 引用 sla_policies 表提供 SLA 时限；auto_answer_enabled /
+    approval_required 控制受理图是否自动回答与是否人工审批。
+    """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     tenant_id: str
@@ -34,6 +41,8 @@ class TenantItPolicy(BaseModel):
 
 
 class UpsertItPolicy(BaseModel):
+    """创建/更新 IT 策略的入参；category 支持点号子分类（it.vpn / it.account）。"""
+
     model_config = ConfigDict(extra="forbid")
 
     category: str = Field(min_length=1, max_length=128)

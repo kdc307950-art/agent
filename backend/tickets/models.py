@@ -1,4 +1,17 @@
-"""Persistence-facing helpdesk models."""
+"""工单持久化模型（Pydantic）。
+
+职责：
+    - CreateTicket：建单请求的入参模型，带字段约束（租户内唯一 ticket_id、渠道、优先级等）
+    - TicketRecord：tickets 表一行的完整投影，供仓储层返回给上层
+    - TicketStatusEvent：状态流转流水（审计/历史回放用）
+    - InboundEventResult：渠道入站事件登记结果（快速 ACK 阶段）
+
+关键设计：
+    - 全部 model_config = ConfigDict(extra="forbid")：拒绝未知字段，防止调用方传错字段被静默吞掉
+    - TicketRecord/TicketStatusEvent 额外 frozen=True：不可变，防止运行中意外篡改状态快照
+    - 状态枚举（TicketStatus）与动作枚举（ActorType）复用于 src.my_agent.helpdesk，
+      保证受理图与持久化层对同一状态机的认知一致
+"""
 
 from __future__ import annotations
 
@@ -11,6 +24,12 @@ from src.my_agent.helpdesk import ActorType, TicketStatus
 
 
 class CreateTicket(BaseModel):
+    """建单请求入参：字段级约束 + 拒绝未知字段。
+
+    ticket_id 由调用方（受理流程）生成而不是数据库自增，便于渠道事件幂等映射；
+    actor_type/actor_id 记录「谁发起的建单」（客户或坐席），用于权限与审计。
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     ticket_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
@@ -29,6 +48,12 @@ class CreateTicket(BaseModel):
 
 
 class TicketRecord(BaseModel):
+    """工单记录（tickets 表一行）。
+
+    frozen=True：作为并发控制的结果快照返回，调用方不可原地修改；
+    version 是乐观锁版本号，状态流转必须携带匹配的 expected_version。
+    """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     tenant_id: str
@@ -53,6 +78,12 @@ class TicketRecord(BaseModel):
 
 
 class TicketStatusEvent(BaseModel):
+    """状态流转流水条目（ticket_status_events 表一行）。
+
+    每次状态变更（含建单 create）都会追加一条，from_status -> to_status 完整记录
+    动作、操作者与工单版本，是历史回放与审计的基础。
+    """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     event_id: int
@@ -69,6 +100,12 @@ class TicketStatusEvent(BaseModel):
 
 
 class InboundEventResult(BaseModel):
+    """渠道入站事件登记结果（InboundWorker 快速 ACK 阶段）。
+
+    created=True 表示本次调用真正插入了一条新事件；False 表示幂等命中已有记录。
+    payload_hash 用于校验「同一渠道事件标识是否对应了不同载荷」。
+    """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     created: bool

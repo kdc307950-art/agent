@@ -1,4 +1,18 @@
-"""Transactional messages, outbox delivery, SLA instances, and surveys."""
+"""工单周边运营数据：消息、Outbox 投递、SLA 实例与满意度调查。
+
+职责：
+    - Outbox 事务性发件箱：append_outbound_message 把「消息 + 出站事件」原子写入，
+      由 outbox_worker 异步投递到渠道，保证业务与投递的一致性
+    - SLA 实例：建单时按策略创建 ticket_sla（含业务日历），支持暂停/恢复/重派重置/
+      违约扫描（scan_sla_breaches 会顺带写 sla.breached Outbox 事件）
+    - 满意度调查：创建、过期、应答（1-5 分）
+    - 工单概览聚合：SLA + 调查 + 消息 + 指派记录 + RAG 引用聚合返回
+
+关键设计：
+    - 所有「业务变更 + Outbox 事件」都在同一数据库事务中完成（原子性）
+    - Outbox 领取用 FOR UPDATE SKIP LOCKED + 租约（lease）支持多 Worker 并发
+    - 幂等：idempotency_key 唯一约束，重试不会重复投递
+"""
 
 from __future__ import annotations
 
@@ -13,7 +27,7 @@ from .sla import BusinessCalendar
 
 
 class OperationsConflict(RuntimeError):
-    pass
+    """运营数据冲突：如工单 SLA 已存在。"""
 
 
 def sla_policy_candidates(category: str | None) -> tuple[str, ...]:

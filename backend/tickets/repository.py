@@ -1,4 +1,18 @@
-"""Tenant-scoped PostgreSQL repository for helpdesk tickets."""
+"""工单仓储层：租户隔离的 PostgreSQL 数据访问。
+
+职责：
+    - 工单 CRUD、乐观锁状态流转（transition_many）、状态流水
+    - 建单/受理幂等：ON CONFLICT DO NOTHING + operation_id 去重
+    - 渠道入站事件（inbound_events）与企微追问（pending_intake）登记/领取/重试
+    - 工作流运行登记（ticket_workflow_runs）：operation_id 防重复提交，result_hash 幂等校验
+
+关键设计：
+    - 所有写操作在单连接事务内完成，行锁（FOR UPDATE）串行化并发修改
+    - version 乐观锁：客户端必须携带 expected_version，冲突抛 TicketVersionConflict
+    - SKIP LOCKED 领取机制：claim_* 方法支持多 Worker 副本并行而不重复处理
+    - 异常类型细分（TicketNotFound / TicketVersionConflict / AssetBindingError /
+      InboundEventConflict / WorkflowOperationConflict ...），上层据此映射 HTTP 状态码
+"""
 
 from __future__ import annotations
 
@@ -26,34 +40,39 @@ from .models import CreateTicket, InboundEventResult, TicketRecord, TicketStatus
 
 
 class TicketAlreadyExists(RuntimeError):
-    pass
+    """建单冲突：ticket_id 或渠道工单标识已存在。"""
 
 
 class TicketNotFound(LookupError):
-    pass
+    """工单不存在（可能是租户不匹配或已删除）。"""
 
 
 class TicketCapacityExceeded(RuntimeError):
-    pass
+    """指派失败：目标坐席不存在或负载已满。"""
 
 
 class AssetBindingError(RuntimeError):
-    pass
+    """资产绑定失败：资产不存在、已删除或不属于当前用户/租户。"""
 
 
 class TicketVersionConflict(RuntimeError):
-    pass
+    """乐观锁冲突：工单 version 已变化，调用方需刷新后重试。"""
 
 
 class InboundEventConflict(RuntimeError):
-    pass
+    """渠道事件冲突：同一事件标识对应了不同载荷，或已关联其他工单。"""
 
 
 class WorkflowOperationConflict(RuntimeError):
-    pass
+    """工作流操作冲突：operation_id 不存在、类型/版本不匹配或不可提交。"""
 
 
 def canonical_payload_hash(payload: dict[str, Any]) -> str:
+    """对载荷做稳定序列化后取 SHA-256。
+
+    sort_keys + separators 保证相同语义的 dict 产生相同哈希，
+    用于幂等校验：同一事件标识携带的载荷若哈希不一致则拒绝。
+    """
     encoded = json.dumps(
         payload,
         ensure_ascii=False,

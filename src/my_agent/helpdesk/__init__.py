@@ -1,4 +1,14 @@
-"""Helpdesk domain and orchestration package."""
+"""工单领域与受理编排包：对外统一导出领域规则与受理图。
+
+子模块分工：
+    - domain.py  ：状态机（_TRANSITIONS）、动作权限、恢复命令校验（纯函数，图/API/仓储共用）
+    - intake.py  ：确定性分类（关键词）、必填字段策略、派单决策（团队/优先级/风险）
+    - graph.py   ：LangGraph 受理图（归一化 -> 分类 -> 策略 -> 完整性 -> 澄清/派单 -> 拟答）
+
+用法：
+    transition_ticket(status, command, scopes=...) 判状态机合法性；
+    build_helpdesk_intake_graph(...) 构建可中断恢复的受理工作流。
+"""
 
 from .domain import (
     ActorType,

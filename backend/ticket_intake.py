@@ -64,6 +64,12 @@ def intake_outcome_commands(
     expected_version: int,
     result: dict[str, Any],
 ) -> list[TicketCommand]:
+    """把受理图输出翻译成工单命令序列。
+
+    有 __interrupt__（缺信息向客户追问）：只发 REQUEST_INFORMATION；
+    否则发 CLASSIFY（分类）-> QUEUE（入队，带团队/优先级/原因码）两个连续命令，
+    expected_version 依次递增以匹配乐观锁。
+    """
     if "__interrupt__" in result:
         return [
             TicketCommand(
@@ -107,7 +113,11 @@ async def apply_operational_routing(
     tenant_id: str,
     channel: str,
 ) -> list[TicketCommand]:
-    """按租户路由规则注入 QUEUE/ASSIGN 命令（无规则时保持原命令）。"""
+    """按租户路由规则注入 QUEUE/ASSIGN 命令（无规则时保持原命令）。
+
+    命中规则后把 QUEUE 命令的 team_id/reason_codes 替换为路由决策；
+    若还选中了具体坐席，追加一条 ASSIGN 命令（期望版本接在最后一条命令后）。
+    """
     if "__interrupt__" in result or not commands or not hasattr(runtime, "routing"):
         return commands
     decision = await runtime.routing.route(
@@ -148,6 +158,11 @@ async def apply_operational_routing(
 
 
 def serialize_intake_result(ticket, result: dict[str, Any], snapshot: object) -> dict[str, Any]:
+    """把受理结果 + 状态快照序列化为 API 响应。
+
+    从快照的 interrupts 中提取第一个挂起项（interrupt_id + question/字段），
+    missing_fields 取图状态中的值，供前端渲染「待补全」表单。
+    """
     pending = None
     for task in getattr(snapshot, "tasks", ()) or ():
         interrupts = getattr(task, "interrupts", ()) or ()
@@ -173,16 +188,19 @@ def serialize_intake_result(ticket, result: dict[str, Any], snapshot: object) ->
 async def pending_intake_interrupt(
     runtime, tenant_id: str, ticket_id: str
 ) -> dict[str, Any] | None:
+    """查询工单当前是否挂起受理审批；无则返回 None。"""
     snapshot = await runtime.intake_graph.aget_state(intake_config(tenant_id, ticket_id))
     return serialize_intake_result(None, {}, snapshot)["interrupt"]
 
 
 def encode_cursor(updated_at, ticket_id: str) -> str:
+    """把 (updated_at, ticket_id) 编码为 URL-safe 游标（列表分页用）。"""
     raw = json.dumps([updated_at.isoformat(), ticket_id], separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
 def decode_cursor(value: str | None) -> tuple[Any, str] | None:
+    """解码分页游标；None 返回 None，非法游标抛 ValueError（上层转 422）。"""
     if value is None:
         return None
     try:

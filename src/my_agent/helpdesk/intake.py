@@ -1,4 +1,17 @@
-"""Deterministic intake, classification contracts, and dispatch rules."""
+"""确定性受理规则：分类契约、内置分类器、必填字段与派单决策。
+
+职责：
+    - TicketCategory / RiskLevel：分类与风险枚举
+    - IntakePolicy：按分类配置必填字段、追问上限、默认目标团队
+    - KeywordTicketClassifier：可解释的关键词分类器（基线实现，可替换为校准模型）
+    - assess_and_dispatch：敏感/高影响词识别 + 派单决策（团队/优先级/风险/原因码）
+
+关键设计：
+    - 分类与派单都是纯函数、确定性逻辑：不依赖模型时行为可预期、可单测
+    - 置信度规则显式写在 docstring 里，低置信度/多类并列转人工复核
+    - 敏感词（删除数据/开通权限/转账...）与高影响词（全公司/生产环境...）
+      直接映射为 risk=high / priority=urgent，是安全前置规则而非模型判断
+"""
 
 from __future__ import annotations
 
@@ -11,6 +24,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class TicketCategory(StrEnum):
+    """工单大类；与 tenant_it_policies 的 category 前缀对应。"""
+
     IT = "it"
     FINANCE = "finance"
     ADMIN = "admin"
@@ -33,12 +48,16 @@ IT_SUBCATEGORIES: tuple[str, ...] = (
 
 
 class RiskLevel(StrEnum):
+    """风险等级：驱动优先级与是否触发额外审批/人工。"""
+
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
 
 
 class ClassificationResult(BaseModel):
+    """分类结果：大类/子分类 + 命中的信号词 + 置信度 + 是否需人工复核。"""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     category: TicketCategory
@@ -49,6 +68,8 @@ class ClassificationResult(BaseModel):
 
 
 class DispatchDecision(BaseModel):
+    """派单决策：目标团队 + 优先级 + 风险等级 + 原因码（审计用）。"""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     team_id: str = Field(min_length=1, max_length=128)
@@ -58,11 +79,18 @@ class DispatchDecision(BaseModel):
 
 
 class TicketClassifier(Protocol):
+    """分类器协议：任何实现（关键词/LLM）都返回 ClassificationResult。"""
+
     async def classify(self, text: str, fields: Mapping[str, Any]) -> ClassificationResult: ...
 
 
 @dataclass(frozen=True, slots=True)
 class IntakePolicy:
+    """内置受理策略：必填字段、追问次数上限、分类 -> 团队映射。
+
+    租户级策略（backend/tickets/policies.py）会在此基础上叠加覆盖。
+    """
+
     base_required_fields: frozenset[str] = frozenset({"title", "description", "requester_id"})
     category_required_fields: Mapping[TicketCategory, frozenset[str]] = field(
         default_factory=lambda: {
@@ -110,6 +138,7 @@ class KeywordTicketClassifier:
     """
 
     _KEYWORDS: Mapping[TicketCategory, tuple[str, ...]] = {
+        # 大类关键词：命中即产生分类信号
         TicketCategory.IT: (
             "登录",
             "密码",
@@ -136,6 +165,7 @@ class KeywordTicketClassifier:
     }
 
     _IT_SUBCATEGORY_KEYWORDS: Mapping[str, tuple[str, ...]] = {
+        # IT 子分类关键词：命中则细分到 it.vpn / it.account 等
         "vpn": ("vpn", "远程接入", "无法联网", "外网"),
         "account": ("账号", "登录", "密码", "sso", "锁定", "重置密码"),
         "network": ("网络", "断网", "wifi", "局域网", "网速", "网关"),
@@ -147,6 +177,7 @@ class KeywordTicketClassifier:
     }
 
     async def classify(self, text: str, fields: Mapping[str, Any]) -> ClassificationResult:
+        """按关键词命中数分类：最多信号的大类胜出，IT 再细分到子分类。"""
         normalized = text.casefold()
         matches: list[tuple[TicketCategory, list[str]]] = []
         for category, keywords in self._KEYWORDS.items():
@@ -155,6 +186,7 @@ class KeywordTicketClassifier:
                 matches.append((category, signals))
         matches.sort(key=lambda item: len(item[1]), reverse=True)
         if not matches:
+            # 无任何信号：归 OTHER 且需人工复核（置信度 0.2）
             return ClassificationResult(
                 category=TicketCategory.OTHER,
                 signals=(),
@@ -186,11 +218,13 @@ class KeywordTicketClassifier:
         )
 
 
+# 敏感操作词 -> risk=high；高影响词 -> risk=high + priority=urgent
 _SENSITIVE_TERMS = ("删除数据", "开通权限", "管理员权限", "转账", "付款审批", "离职")
 _HIGH_IMPACT_TERMS = ("全部用户", "全公司", "生产环境", "业务中断", "无法办公", "数据泄露")
 
 
 def normalize_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """清洗字段：去空 key、去除字符串首尾空白，返回普通 dict。"""
     normalized: dict[str, Any] = {}
     for key, value in fields.items():
         safe_key = str(key).strip()
@@ -207,6 +241,7 @@ def missing_required_fields(
     category: TicketCategory,
     policy: IntakePolicy,
 ) -> tuple[str, ...]:
+    """返回缺失的必填字段（按名称排序），供追问与完整性检查使用。"""
     missing = [
         name for name in policy.required_fields(category) if fields.get(name) in (None, "", [], {})
     ]
@@ -221,6 +256,11 @@ def assess_and_dispatch(
     clarification_exhausted: bool,
     policy: IntakePolicy,
 ) -> DispatchDecision:
+    """派单决策：敏感/高影响词提风险，分类复核/追问耗尽/未知分类进原因码。
+
+    优先级规则：命中高影响词 -> urgent；其余 normal；
+    风险：命中敏感词或高影响词 -> high，否则 low。原因码完整记录决策依据。
+    """
     normalized = text.casefold()
     reasons: list[str] = []
     risk = RiskLevel.LOW
@@ -251,4 +291,5 @@ def assess_and_dispatch(
 
 
 def clarification_question(missing_fields: Sequence[str]) -> str:
+    """生成追问文本：列出全部缺失字段。"""
     return "请补充以下信息：" + "、".join(missing_fields)

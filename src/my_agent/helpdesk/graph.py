@@ -1,4 +1,17 @@
-"""LangGraph intake, clarification, classification, and dispatch workflow."""
+"""工单受理 LangGraph：归一化 → 分类 → 策略 → 完整性 → 澄清/派单 → 拟答。
+
+职责：
+    - 把客户提交的工单文本/字段跑完「受理全流程」：
+      归一化字段 → 分类（关键词/模型）→ 应用租户 IT 策略 → 检查必填字段
+      → 缺信息时 interrupt 追问客户 → 派单（团队/优先级/风险）→ 可选 RAG 拟答
+    - 通过 LangGraph checkpointer 支持中断恢复（clarify 节点 interrupt）
+
+关键设计：
+    - it_policy_provider 运行时按 tenant_id 动态查询策略，不在启动时预编译，
+      支持租户策略热更新；无策略时回退内置 IntakePolicy 默认行为
+    - clarify 节点用 interrupt 挂起等待客户补充，resume 后从同一 checkpoint 继续
+    - compose_answer 可选：注入 rag_service 后才启用拟答，否则静默跳过
+"""
 
 from __future__ import annotations
 
@@ -23,6 +36,8 @@ from .intake import (
 
 
 class HelpdeskIntakeState(TypedDict, total=False):
+    """受理图的共享状态：字段/文本、分类结果、策略应用结果、派单决策、拟答。"""
+
     ticket_id: str
     requester_id: str
     text: str
@@ -70,12 +85,14 @@ def build_helpdesk_intake_graph(
     policy = policy or IntakePolicy()
 
     def normalize_node(state: HelpdeskIntakeState) -> dict[str, Any]:
+        """字段归一化：合并/清洗客户字段，补入 requester_id。"""
         fields = normalize_fields(state.get("fields") or {})
         if state.get("requester_id") and not fields.get("requester_id"):
             fields["requester_id"] = state["requester_id"]
         return {"fields": fields}
 
     async def classify_node(state: HelpdeskIntakeState) -> dict[str, Any]:
+        """文本分类：产出 category/subcategory/置信度/是否需要人工复核。"""
         result = await classifier.classify(state.get("text", ""), state.get("fields") or {})
         return {
             "category": result.category.value,
@@ -88,6 +105,10 @@ def build_helpdesk_intake_graph(
     async def apply_policy_node(
         state: HelpdeskIntakeState, config: RunnableConfig
     ) -> dict[str, Any]:
+        """按分类链（子分类 -> 父分类）动态加载租户 IT 策略并写入状态。
+
+        无策略时返回全默认（不强制必填、不要求审批、不自动回答）。
+        """
         tenant_id = str((config.get("configurable") or {}).get("tenant_id") or "")
         if not tenant_id or it_policy_provider is None:
             return {
@@ -124,6 +145,7 @@ def build_helpdesk_intake_graph(
         }
 
     def completeness_node(state: HelpdeskIntakeState) -> dict[str, Any]:
+        """检查必填字段（内置分类要求 ∪ 策略额外要求）；缺失则进入 clarify。"""
         category = TicketCategory(state.get("category", TicketCategory.OTHER.value))
         extra = frozenset(state.get("policy_required_fields") or [])
         fields = state.get("fields") or {}
@@ -143,6 +165,11 @@ def build_helpdesk_intake_graph(
         }
 
     def clarify_node(state: HelpdeskIntakeState) -> dict[str, Any]:
+        """追问缺失字段：interrupt 挂起等待客户补充（resume 后从 checkpoint 继续）。
+
+        对响应做三重校验：动作必须是 provide_information、参与者必须是客户、
+        提交人必须等于 requester_id，防止他人代填。
+        """
         rounds = int(state.get("clarification_rounds", 0))
         response = interrupt(
             {
@@ -176,6 +203,7 @@ def build_helpdesk_intake_graph(
         }
 
     def dispatch_node(state: HelpdeskIntakeState) -> dict[str, Any]:
+        """派单决策：团队 + 优先级 + 风险等级 + 原因码（叠加策略优先级/审批要求）。"""
         category = TicketCategory(state.get("category", TicketCategory.OTHER.value))
         decision = assess_and_dispatch(
             text=state.get("text", ""),
@@ -199,6 +227,7 @@ def build_helpdesk_intake_graph(
     async def compose_answer_node(
         state: HelpdeskIntakeState, config: RunnableConfig
     ) -> dict[str, Any]:
+        """可选：调用 RAG 服务生成拟答与引用；未注入 rag_service 时跳过。"""
         if rag_service is None:
             return {}
         from backend.knowledge import RetrievalPrincipal
@@ -232,6 +261,7 @@ def build_helpdesk_intake_graph(
     graph.add_edge("normalize", "classify")
     graph.add_edge("classify", "apply_policy")
     graph.add_edge("apply_policy", "check_completeness")
+    # 字段齐全 -> dispatch；缺失且未耗尽追问次数 -> clarify（interrupt 等客户补充）
     graph.add_conditional_edges(
         "check_completeness",
         route_after_completeness,
