@@ -74,6 +74,24 @@ DEFAULT_TOOL_POLICIES: dict[str, ToolPolicy] = {
         retryable=True,
         side_effect=False,
     ),
+    # Resolution Copilot 只读工具：历史工单 / 消息流，供 Agent 2 汇总上下文。
+    # 租户隔离在工具实现层强制（tenant_id 来自 RunContext，不信任入参）。
+    "get_ticket_history": ToolPolicy(
+        name="get_ticket_history",
+        required_scopes=frozenset({"ticket:agent"}),
+        timeout_seconds=3.0,
+        max_input_chars=512,
+        retryable=True,
+        side_effect=False,
+    ),
+    "get_ticket_messages": ToolPolicy(
+        name="get_ticket_messages",
+        required_scopes=frozenset({"ticket:agent"}),
+        timeout_seconds=3.0,
+        max_input_chars=512,
+        retryable=True,
+        side_effect=False,
+    ),
     "send_message": ToolPolicy(
         name="send_message",
         required_scopes=frozenset({"ticket:agent"}),
@@ -83,6 +101,19 @@ DEFAULT_TOOL_POLICIES: dict[str, ToolPolicy] = {
         side_effect=True,
     ),
 }
+
+
+# 工具集合（profile）：Agent 可见的工具白名单。
+# - intake_agent：受理阶段只需知识/资产查询
+# - resolution_copilot：解决阶段追加历史工单/消息流（全部只读）
+# - human_action：需要人工执行的副作用动作（未来受审批工具加入这里）
+# 运行期通过 RunContext.allowed_tools 注入，ToolGovernance 在 awrap_tool_call
+# 里校验 allowed_tools 子集，杜绝模型绕过 profile 直接调用未授权工具。
+INTAKE_AGENT_TOOLS: frozenset[str] = frozenset({"search_knowledge", "search_assets"})
+RESOLUTION_COPILOT_TOOLS: frozenset[str] = frozenset(
+    {"search_knowledge", "search_assets", "get_ticket_history", "get_ticket_messages"}
+)
+HUMAN_ACTION_TOOLS: frozenset[str] = frozenset({"send_message"})
 
 
 def _transient(exc: Exception) -> bool:
