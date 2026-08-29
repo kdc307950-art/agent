@@ -86,6 +86,9 @@ python -m backend.run_knowledge_eval --dataset hybrid_holdout --embed `
   `.github/workflows/hybrid-eval.yml`，不随 PR 自动跑。
 - 当前状态：**未执行**——本地未配置真实 embedding 服务，hybrid 数字空缺，
   不得以占位或外推值填表。
+- **完整操作手册**：接入/验证/固化/上线四部分的逐条可执行命令与验收标准见
+  `docs/HYBRID_EVAL_RUNBOOK.md`（含 embedding 服务契约、Secrets 配置、
+  本地验证、CI 触发、失败处理顺序、通过/未通过后的文档动作）。
 
 ## 评测报告应记录
 
