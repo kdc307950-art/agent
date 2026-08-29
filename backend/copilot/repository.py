@@ -35,36 +35,90 @@ class CopilotRepository:
         ticket_id: str,
         operation_id: str,
         agent_name: str = "resolution_copilot",
+        lease_seconds: int = 60,
     ) -> bool:
-        """登记一次 Copilot 运行；同 (tenant, ticket, operation) 重复返回 False（幂等）。"""
+        """登记一次 Copilot 运行；同 (tenant, ticket, operation) 重复返回 False（幂等）。
+
+        lease_expires_at 用于识别僵尸运行（进程崩溃后 running 超租约）。
+        """
         async with self.pool.connection() as connection:
             async with connection.transaction(), connection.cursor() as cursor:
                 await cursor.execute(
                     """
                     INSERT INTO copilot_runs (
-                        run_id, tenant_id, ticket_id, agent_name, status, operation_id
-                    ) VALUES (%s, %s, %s, %s, 'running', %s)
+                        run_id, tenant_id, ticket_id, agent_name, status, operation_id,
+                        lease_expires_at, heartbeat_at, attempts
+                    ) VALUES (%s, %s, %s, %s, 'running', %s, now() + (%s * interval '1 second'), now(), 0)
                     ON CONFLICT (tenant_id, ticket_id, operation_id) DO NOTHING
                     """,
-                    (run_id, tenant_id, ticket_id, agent_name, operation_id),
+                    (run_id, tenant_id, ticket_id, agent_name, operation_id, lease_seconds),
                 )
                 return cursor.rowcount == 1
 
     async def get_run_by_operation(
         self, tenant_id: str, ticket_id: str, operation_id: str
     ) -> dict[str, Any] | None:
-        """按 operation_id 查询已有运行（幂等判断用）。"""
+        """按 operation_id 查询已有运行（幂等判断用），含租约与尝试次数。"""
         async with self.pool.connection() as connection:
             async with connection.cursor(row_factory=dict_row) as cursor:
                 await cursor.execute(
                     """
-                    SELECT run_id, status, error_code, tool_calls, started_at, completed_at
+                    SELECT run_id, status, error_code, tool_calls, started_at, completed_at,
+                           lease_expires_at, heartbeat_at, attempts
                     FROM copilot_runs
                     WHERE tenant_id = %s AND ticket_id = %s AND operation_id = %s
                     """,
                     (tenant_id, ticket_id, operation_id),
                 )
                 return await cursor.fetchone()
+
+    async def renew_run_lease(
+        self,
+        *,
+        tenant_id: str,
+        run_id: str,
+        lease_seconds: int = 60,
+    ) -> bool:
+        """续租运行（running 状态下刷新租约与心跳），供执行中定期调用。"""
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE copilot_runs
+                    SET lease_expires_at = now() + (%s * interval '1 second'),
+                        heartbeat_at = now()
+                    WHERE tenant_id = %s AND run_id = %s AND status = 'running'
+                    """,
+                    (lease_seconds, tenant_id, run_id),
+                )
+                return cursor.rowcount == 1
+
+    async def recover_expired_runs(
+        self,
+        *,
+        lease_seconds: int = 60,
+        max_attempts: int = 2,
+        now=None,
+    ) -> int:
+        """把超租约的 running 僵尸运行标记为 failed(copilot_lease_expired)。
+
+        返回被恢复的运行数；恢复后同一 operation_id 可被新的 operation 重试。
+        """
+        reference = now or datetime.now(UTC)
+        async with self.pool.connection() as connection:
+            async with connection.transaction(), connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE copilot_runs
+                    SET status = 'failed',
+                        error_code = 'copilot_lease_expired',
+                        completed_at = now()
+                    WHERE status = 'running'
+                      AND lease_expires_at < %s
+                    """,
+                    (reference,),
+                )
+                return cursor.rowcount
 
     async def finish_run(
         self,
@@ -139,6 +193,26 @@ class CopilotRepository:
                     LIMIT 1
                     """,
                     (tenant_id, ticket_id),
+                )
+                return await cursor.fetchone()
+
+    async def get_draft_by_run(
+        self, tenant_id: str, ticket_id: str, run_id: str
+    ) -> dict[str, Any] | None:
+        """按 run_id 查询草稿（幂等恢复的唯一依据，不用 get_latest_draft 跨 run 取）。"""
+        async with self.pool.connection() as connection:
+            async with connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    """
+                    SELECT draft_id, tenant_id, ticket_id, run_id, draft_answer,
+                           steps, citations, confidence, needs_human_review,
+                           status, created_at, approved_by, approved_at
+                    FROM copilot_drafts
+                    WHERE tenant_id = %s AND ticket_id = %s AND run_id = %s
+                    ORDER BY created_at DESC, draft_id DESC
+                    LIMIT 1
+                    """,
+                    (tenant_id, ticket_id, run_id),
                 )
                 return await cursor.fetchone()
 

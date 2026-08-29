@@ -61,11 +61,12 @@ class _FakeRepo:
         self.runs = {}
         self.drafts = {}
         self.next_draft_id = 0
+        self.recover_calls = 0
 
     async def get_run_by_operation(self, tenant_id, ticket_id, operation_id):
         return self.runs.get((tenant_id, ticket_id, operation_id))
 
-    async def start_run(self, *, run_id, tenant_id, ticket_id, operation_id, agent_name="resolution_copilot"):
+    async def start_run(self, *, run_id, tenant_id, ticket_id, operation_id, agent_name="resolution_copilot", lease_seconds=60):
         key = (tenant_id, ticket_id, operation_id)
         if key in self.runs:
             return False
@@ -83,6 +84,10 @@ class _FakeRepo:
                 record["status"] = status
                 record["error_code"] = error_code
                 record["tool_calls"] = tool_calls
+
+    async def recover_expired_runs(self, *, lease_seconds=60, max_attempts=2, now=None):
+        self.recover_calls += 1
+        return 0
 
     async def save_draft(self, **kwargs):
         self.next_draft_id += 1
@@ -105,6 +110,16 @@ class _FakeRepo:
                 return record
         return None
 
+    async def get_draft_by_run(self, tenant_id, ticket_id, run_id):
+        for record in reversed(list(self.drafts.values())):
+            if (
+                record["tenant_id"] == tenant_id
+                and record["ticket_id"] == ticket_id
+                and record["run_id"] == run_id
+            ):
+                return record
+        return None
+
     async def approve_draft(self, *, tenant_id, draft_id, approved_by):
         record = self.drafts.get(draft_id)
         if record is None or record["status"] not in ("generated", "reviewing"):
@@ -119,11 +134,13 @@ class _FakeCopilotService:
     def __init__(self):
         self.fail = False
         self.last_run = None
+        self.last_run_context = None
 
-    async def run_with_tenant(self, *, runtime, tenant_id, ticket_id):
+    async def run_with_tenant(self, *, runtime, tenant_id, ticket_id, run_context=None):
         if self.fail:
             raise RuntimeError("model down")
         self.last_run = (tenant_id, ticket_id)
+        self.last_run_context = run_context
         from backend.copilot.models import CopilotResult
 
         return {
@@ -156,7 +173,10 @@ def _make_app(ticket: _FakeTicket | None, service: _FakeCopilotService | None = 
     )
     app.state.runtime = runtime
     app.state.settings = SimpleNamespace(
-        auth_mode="dev", tenant_token_secret=SECRET, redis_fail_mode="open"
+        auth_mode="dev",
+        tenant_token_secret=SECRET,
+        redis_fail_mode="open",
+        agent_run_timeout_seconds=60,
     )
     app.state.metrics = RuntimeMetrics()
     app.state.rate_limiter = InMemoryRateLimiter(capacity=1000)
@@ -289,3 +309,136 @@ def test_copilot_approve_draft():
         headers=_headers(),
     )
     assert again.status_code == 409
+
+
+# ========== 阶段二：未初始化返回 503 ==========
+
+
+def test_copilot_unavailable_returns_503():
+    """未配置模型时 runtime.copilot 为 None，POST/GET 返回 503 而非 502。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from backend.metrics import RuntimeMetrics
+    from backend.rate_limit import InMemoryRateLimiter
+    from backend.copilot.api import copilot_router
+
+    app = FastAPI()
+    # runtime.copilot = None（未配置模型服务）
+    app.state.runtime = SimpleNamespace(
+        tickets=_FakeTickets(_FakeTicket("t-1")),
+        ticket_operations=_FakeOps(),
+        knowledge=_FakeKnowledge(),
+        copilot=None,
+        copilot_repository=None,
+    )
+    app.state.settings = SimpleNamespace(
+        auth_mode="dev",
+        tenant_token_secret=SECRET,
+        redis_fail_mode="open",
+        agent_run_timeout_seconds=60,
+    )
+    app.state.metrics = RuntimeMetrics()
+    app.state.rate_limiter = InMemoryRateLimiter(capacity=1000)
+    app.state.memory_rate_limiter = InMemoryRateLimiter(capacity=1000)
+    app.include_router(copilot_router)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/tickets/t-1/copilot",
+        json={"operation_id": f"op-{uuid4().hex}", "expected_version": 1},
+        headers=_headers(),
+    )
+    assert resp.status_code == 503
+    assert "未初始化" in resp.json()["detail"]
+
+    latest = client.get("/tickets/t-1/copilot/latest", headers=_headers())
+    assert latest.status_code == 503
+
+
+# ========== 阶段三：运行状态机（running -> 202，failed 不返旧草稿） ==========
+
+
+def test_copilot_running_returns_202():
+    """operation_id 对应的 run 仍为 running：返回 202，不重复调用模型。"""
+    ticket = _FakeTicket("t-1")
+    client = _make_app(ticket)
+    repo = client.app.state.runtime.copilot_repository
+    op_id = f"op-{uuid4().hex}"
+    run_id = f"run-{uuid4().hex}"
+    # 预置一条 running 运行（模拟第一次请求仍在执行）
+    import asyncio
+
+    async def seed():
+        await repo.start_run(
+            run_id=run_id,
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            operation_id=op_id,
+        )
+
+    asyncio.run(seed())
+    resp = client.post(
+        "/tickets/t-1/copilot",
+        json={"operation_id": op_id, "expected_version": 1},
+        headers=_headers(),
+    )
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["status"] == "running"
+    assert body["run_id"] == run_id
+
+
+def test_copilot_failed_run_does_not_return_stale_draft():
+    """failed 运行不能当成功幂等结果：返回 409，不返回其他 run 的旧草稿。"""
+    ticket = _FakeTicket("t-1")
+    client = _make_app(ticket)
+    repo = client.app.state.runtime.copilot_repository
+
+    async def seed_with_fixed_op():
+        old_run = f"run-old-{uuid4().hex}"
+        await repo.start_run(
+            run_id=old_run,
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            operation_id="op-old-fixed",
+        )
+        await repo.finish_run(
+            run_id=old_run, tenant_id="tenant-a", status="completed", tool_calls=1, latency_ms=10
+        )
+        await repo.save_draft(
+            draft_id=f"draft-old-{uuid4().hex}",
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            run_id=old_run,
+            draft_answer="旧草稿内容",
+            steps=[],
+            citations=[],
+            confidence=0.9,
+            needs_human_review=False,
+        )
+        failed_run = f"run-failed-{uuid4().hex}"
+        await repo.start_run(
+            run_id=failed_run,
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            operation_id="op-failed-fixed",
+        )
+        await repo.finish_run(
+            run_id=failed_run,
+            tenant_id="tenant-a",
+            status="failed",
+            tool_calls=0,
+            latency_ms=5,
+            error_code="model_failed",
+        )
+
+    asyncio.run(seed_with_fixed_op())
+    resp = client.post(
+        "/tickets/t-1/copilot",
+        json={"operation_id": "op-failed-fixed", "expected_version": 1},
+        headers=_headers(),
+    )
+    assert resp.status_code == 409
+    assert "上次 Copilot 生成失败" in resp.json()["detail"]
+    assert "旧草稿内容" not in resp.json()["detail"]

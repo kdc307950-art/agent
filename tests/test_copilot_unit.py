@@ -22,6 +22,7 @@ from backend.copilot.agent import CopilotLimits, ResolutionCopilot, _extract_jso
 from backend.copilot.models import CopilotRequest
 from backend.copilot.service import CopilotService
 from backend.run_context import RunContext
+from backend.tool_governance import ToolGovernance
 
 
 def _request(**overrides) -> CopilotRequest:
@@ -113,21 +114,37 @@ class _AlwaysToolCallModel:
         )
 
 
-def _runtime():
+class _FakeAudit:
+    def __init__(self):
+        self.events = []
+
+    async def record_event(self, context, event_type, **kwargs):
+        self.events.append((context.run_id, event_type, kwargs))
+
+
+def _runtime(*, scopes=frozenset({"ticket:agent"}), allowed_tools=None, tenant_id="tenant-a"):
     context = RunContext(
         run_id="run-copilot",
         request_id="req-1",
-        tenant_id="tenant-a",
+        tenant_id=tenant_id,
         user_id="user-1",
         thread_id="t-1",
-        scopes=frozenset({"ticket:agent"}),
+        scopes=scopes,
         deadline=asyncio.get_running_loop().time() + 60,
+        allowed_tools=allowed_tools,
     )
-    return SimpleNamespace(context=context)
+    audit = _FakeAudit()
+    governance = ToolGovernance(audit)
+    return SimpleNamespace(context=context, tool_governance=governance, audit=audit)
 
 
 def _copilot(tools: dict[str, Any], model, limits: CopilotLimits | None = None):
     return ResolutionCopilot(model=model, tools=tools, limits=limits)
+
+
+def _run(copilot, request, runtime):
+    """执行 Copilot：注入 runtime + 服务端 RunContext（工具治理依赖）。"""
+    return copilot.run(request, runtime=runtime, run_context=runtime.context)
 
 
 def test_extract_json_tolerates_noise():
@@ -139,11 +156,12 @@ def test_extract_json_tolerates_noise():
 def test_copilot_runs_tool_loop_and_produces_structured_result():
     async def run():
         tool = _Tool("search_knowledge")
+        runtime = _runtime()
         copilot = _copilot(
             {"search_knowledge": tool},
             _ToolCallModel(["search_knowledge"]),
         )
-        return await copilot.run(_request()), tool.calls
+        return await _run(copilot, _request(), runtime), tool.calls
 
     result, calls = asyncio.run(run())
     assert result["draft_answer"] == "请检查网络连接"
@@ -158,6 +176,7 @@ def test_tool_call_limit_terminates_run():
     """工具调用超过上限（max_tool_calls）立即终止并标记错误。"""
     async def run():
         tool = _Tool("search_knowledge")
+        runtime = _runtime()
         copilot = _copilot(
             {"search_knowledge": tool},
             _AlwaysToolCallModel("search_knowledge"),
@@ -165,7 +184,7 @@ def test_tool_call_limit_terminates_run():
                 max_rounds=10, max_tool_calls=2, max_tool_calls_per_round=2
             ),
         )
-        return await copilot.run(_request()), tool.calls
+        return await _run(copilot, _request(), runtime), tool.calls
 
     result, calls = asyncio.run(run())
     assert len(calls) <= 2
@@ -177,6 +196,7 @@ def test_round_limit_terminates_run():
     """达到最大轮次仍未产出结构化结果时标记 round_limit_exceeded。"""
     async def run():
         tool = _Tool("search_knowledge")
+        runtime = _runtime()
         copilot = _copilot(
             {"search_knowledge": tool},
             _AlwaysToolCallModel("search_knowledge"),
@@ -184,7 +204,7 @@ def test_round_limit_terminates_run():
                 max_rounds=1, max_tool_calls=10, max_tool_calls_per_round=1
             ),
         )
-        return await copilot.run(_request())
+        return await _run(copilot, _request(), runtime)
 
     result = asyncio.run(run())
     assert result["error_code"] == "round_limit_exceeded"
@@ -196,12 +216,13 @@ def test_single_tool_timeout_does_not_break_run():
     async def run():
         tool = _Tool("search_knowledge")
         tool.timeout_on = 1  # 第一次调用即超时
+        runtime = _runtime()
         copilot = _copilot(
             {"search_knowledge": tool},
             _ToolCallModel(["search_knowledge"], final={"draft_answer": "超时后仍出草稿", "confidence": 0.9}),
             limits=CopilotLimits(single_tool_timeout_seconds=0.1),
         )
-        return await copilot.run(_request())
+        return await _run(copilot, _request(), runtime)
 
     result = asyncio.run(run())
     assert result["tool_trace"][0]["status"] == "timeout"
@@ -213,15 +234,98 @@ def test_unregistered_tool_is_denied():
     """模型请求未注册工具：拒绝执行并记录 denied，不崩溃。"""
     async def run():
         tool = _Tool("search_knowledge")
+        runtime = _runtime()
         copilot = _copilot(
             {"search_knowledge": tool},
             _ToolCallModel(["send_message"]),  # 模型请求副作用工具
         )
-        return await copilot.run(_request())
+        return await _run(copilot, _request(), runtime)
 
     result = asyncio.run(run())
     assert result["tool_trace"][0]["status"] == "denied"
     assert result["tool_trace"][0]["reason"] == "unregistered_tool"
+
+
+# ========== 阶段一：工具调用必须经 ToolGovernance ==========
+
+
+def test_copilot_tool_calls_go_through_governance_and_are_audited():
+    """Copilot 工具调用产生治理审计事件（tool_call_started/completed）。"""
+    async def run():
+        tool = _Tool("search_knowledge")
+        runtime = _runtime()
+        copilot = _copilot(
+            {"search_knowledge": tool},
+            _ToolCallModel(["search_knowledge"]),
+        )
+        await _run(copilot, _request(), runtime)
+        return runtime.audit.events
+
+    events = asyncio.run(run())
+    types = [event[1] for event in events]
+    assert "tool_call_started" in types
+    assert "tool_call_completed" in types
+
+
+def test_copilot_tool_denied_by_tenant_allowlist():
+    """租户 allowlist 不允许的工具无法调用（治理层拒绝）。"""
+    async def run():
+        tool = _Tool("search_knowledge")
+        # 租户 allowlist 为空：任何工具都被拒绝
+        runtime = _runtime()
+        governance = ToolGovernance(runtime.audit, tenant_allowlist={"tenant-a": frozenset()})
+        runtime.tool_governance = governance
+        copilot = _copilot(
+            {"search_knowledge": tool},
+            _ToolCallModel(["search_knowledge"]),
+        )
+        return await _run(copilot, _request(), runtime)
+
+    result = asyncio.run(run())
+    assert result["tool_trace"][0]["status"] == "denied"
+    assert "未启用" in result["tool_trace"][0]["reason"] or "不允许" in str(
+        result["tool_trace"][0].get("reason", "")
+    )
+
+
+def test_copilot_tool_denied_when_scope_missing():
+    """缺少 ticket:agent scope 时工具被拒绝（治理层）。"""
+    async def run():
+        tool = _Tool("search_knowledge")
+        runtime = _runtime(scopes=frozenset({"chat:write"}))  # 无 ticket:agent
+        copilot = _copilot(
+            {"search_knowledge": tool},
+            _ToolCallModel(["search_knowledge"]),
+        )
+        return await _run(copilot, _request(), runtime)
+
+    result = asyncio.run(run())
+    assert result["tool_trace"][0]["status"] == "denied"
+    assert "权限不足" in result["tool_trace"][0]["reason"]
+
+
+def test_copilot_forged_send_message_is_denied_by_governance():
+    """模型伪造 send_message（注册在 tools 里但 allowed_tools 排除）被治理层拒绝。
+
+    模拟：工具集合包含 send_message，但 RunContext.allowed_tools 只含只读工具；
+    治理层 allowed_tools 子集校验必须拦截。
+    """
+    async def run():
+        send_tool = _Tool("send_message")
+        runtime = _runtime(
+            allowed_tools=frozenset(
+                {"search_knowledge", "search_assets", "get_ticket_history", "get_ticket_messages"}
+            )
+        )
+        copilot = _copilot(
+            {"send_message": send_tool},
+            _ToolCallModel(["send_message"]),
+        )
+        return await _run(copilot, _request(), runtime), send_tool.calls
+
+    result, calls = asyncio.run(run())
+    assert calls == []  # send_message 从未执行
+    assert result["tool_trace"][0]["status"] == "denied"
 
 
 class _FakeKnowledge:

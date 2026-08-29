@@ -71,9 +71,15 @@ class CopilotService:
             current_status=ticket.status.value,
         )
 
-    async def generate(self, request: CopilotRequest, runtime=None) -> dict[str, Any]:
-        """执行 Copilot Agent，返回原始结果（未门禁）。"""
-        return await self.copilot.run(request, runtime=runtime)
+    async def generate(
+        self,
+        request: CopilotRequest,
+        runtime=None,
+        *,
+        run_context=None,
+    ) -> dict[str, Any]:
+        """执行 Copilot Agent，返回原始结果（未门禁，含结构化证据）。"""
+        return await self.copilot.run(request, runtime=runtime, run_context=run_context)
 
     async def run_with_tenant(
         self,
@@ -81,28 +87,38 @@ class CopilotService:
         runtime,
         tenant_id: str,
         ticket_id: str,
+        run_context=None,
     ) -> dict[str, Any]:
-        """带租户上下文执行完整流程：准备上下文 -> 检索白名单 -> 生成 -> 门禁。
+        """带租户上下文执行完整流程：准备上下文 -> 生成 -> 按实际工具证据门禁。
 
         返回 {"request", "raw", "result"}；result 为已过门禁的 CopilotResult。
+
+        引用白名单来自 Agent 实际工具结果（search_knowledge 命中的
+        ToolEvidence），不额外做独立 lexical 查询——避免"补充查询命中合法
+        文档却被误判无效"的问题；权威校验（租户/发布/有效期/ACL）由
+        knowledge.lexical_search 的检索 SQL 在工具执行时完成。
         """
         request = await self.prepare_context(
             runtime=runtime, tenant_id=tenant_id, ticket_id=ticket_id
         )
-        from ..knowledge.models import RetrievalPrincipal
+        raw = await self.generate(request, runtime=runtime, run_context=run_context)
 
-        # 引用白名单的权威来源：知识库对工单文本的租户隔离检索命中。
-        # 未发布/过期/跨租户文档被检索 SQL 过滤，进不了白名单。
+        # 从实际工具证据收集引用白名单（search_knowledge 命中）
         allowed: set[tuple[str, int, str]] = set()
-        if hasattr(runtime, "knowledge"):
-            principal = RetrievalPrincipal(
-                tenant_id=tenant_id, departments=frozenset(), internal=True
-            )
-            hits = await runtime.knowledge.lexical_search(
-                principal, request.ticket_text, limit=10
-            )
-            allowed = {hit.key for hit in hits}
-        raw = await self.generate(request, runtime=runtime)
+        for item in raw.get("tool_evidence") or []:
+            if (
+                item.get("document_id")
+                and item.get("document_version") is not None
+                and item.get("chunk_id")
+            ):
+                allowed.add(
+                    (
+                        str(item["document_id"]),
+                        int(item["document_version"]),
+                        str(item["chunk_id"]),
+                    )
+                )
+
         gated = self.apply_gate(raw, request=request, allowed_citations=allowed)
         return {"request": request, "raw": raw, "result": gated}
 

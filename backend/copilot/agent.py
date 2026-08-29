@@ -7,9 +7,11 @@
       单工具超时、总执行超时 —— 杜绝无限循环/失控调用
 
 关键设计：
-    - 不依赖模型自述，逐轮记录 tool_trace 供审计与门禁
-    - 工具集合由调用方注入（默认只读 RESOLUTION_COPILOT 集合），
-      本执行器不创建新工具、不绑定副作用工具
+    - 所有工具调用经 tool_adapter.governed_invoke 走 ToolGovernance：
+      profile/scope/租户 allowlist/输入长度/超时/重试/审计/指标统一由治理层执行，
+      不信任模型自述或工具集合绑定（伪造 send_message 会被拒绝）
+    - 收集结构化 ToolEvidence（search_knowledge 命中的引用键），
+      作为答案门禁引用白名单的唯一来源
     - 每个工具结果做长度截断，控制注入模型的上下文体积
 """
 
@@ -26,6 +28,11 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from .models import CopilotRequest
+from .tool_adapter import (
+    ToolEvidence,
+    ToolInvocationResult,
+    governed_invoke,
+)
 
 logger = logging.getLogger("langgraph.copilot")
 
@@ -102,7 +109,7 @@ class ResolutionCopilot:
     """Resolution Copilot Agent：有界只读工具循环执行器。
 
     不依赖 LangGraph 图编译（保持轻量、可测）；手动循环逐轮：
-        模型输出 -> 若有工具调用则按限制执行 -> 结果回填 -> 下一轮
+        模型输出 -> 若有工具调用则经治理执行 -> 结果回填 -> 下一轮
     直到模型不再调用工具、超限或超时。
     """
 
@@ -117,7 +124,7 @@ class ResolutionCopilot:
 
         参数：
             model: 可 ainvoke(messages, config) 的模型（结构化输出/工具调用）
-            tools: 工具名 -> 可 ainvoke(args, config) 的执行器（只读集合）
+            tools: 工具名 -> LangChain 工具对象（只读集合；执行经治理层）
             limits: 执行限制；默认 PRD 初始值
 
         模型绑定：若模型支持 bind_tools（LangChain 系），绑定只读工具集，
@@ -132,20 +139,28 @@ class ResolutionCopilot:
         self.tools = tools
         self.limits = limits or CopilotLimits()
 
-    async def run(self, request: CopilotRequest, runtime=None) -> dict[str, Any]:
-        """执行一次有界 Copilot 生成，返回结构化结果 + 工具轨迹。
+    async def run(
+        self,
+        request: CopilotRequest,
+        runtime=None,
+        *,
+        run_context=None,
+    ) -> dict[str, Any]:
+        """执行一次有界 Copilot 生成，返回结构化结果 + 工具轨迹 + 结构化证据。
 
         参数：
             request: 工单上下文快照
-            runtime: AgentRuntime（提供 RunContext 给工具）；为 None 时
-                     工具调用会因缺少上下文而失败（由工具实现报错）
+            runtime: AgentRuntime（提供 tool_governance 与业务仓库）
+            run_context: RunContext（服务端身份/租户/scopes/allowed_tools）；
+                         工具治理与工具实现都依赖它；为 None 时工具调用会被拒绝
 
         不做答案门禁（门禁由 service 层负责）；这里只保证：
             - 工具调用总数/轮次不超限（超限立即终止并标记 error）
             - 单工具超时/总超时不拖垮工单主流程
+            - 所有调用经 ToolGovernance（权限/租户/审计/指标）
         """
         started = monotonic()
-        evidence: list[str] = []
+        evidence: list[ToolEvidence] = []
         tool_trace: list[dict[str, Any]] = []
         tool_call_count = 0
         rounds = 0
@@ -191,6 +206,7 @@ class ResolutionCopilot:
                     error_code = "tool_call_limit_exceeded"
                     break
                 tool_name = str(call.get("name") or "")
+                call_id = str(call.get("id") or f"call-{tool_call_count}")
                 if tool_name not in self.tools:
                     # 模型请求了未注册工具：拒绝并记录，不执行
                     tool_trace.append(
@@ -199,7 +215,7 @@ class ResolutionCopilot:
                     messages.append(
                         ToolMessage(
                             content="工具未注册或不可用",
-                            tool_call_id=str(call.get("id") or ""),
+                            tool_call_id=call_id,
                             name=tool_name,
                             status="error",
                         )
@@ -208,23 +224,25 @@ class ResolutionCopilot:
                 tool_call_count += 1
                 args = dict(call.get("args") or {})
                 tool_call_started = monotonic()
+
+                # 经治理层执行：profile/scope/租户/超时/重试/审计/指标
+                tool_obj = self.tools[tool_name]
                 try:
-                    async with asyncio.timeout(self.limits.single_tool_timeout_seconds):
-                        result = await self.tools[tool_name].ainvoke(
-                            args, config=_runtime_config(runtime)
+                    async with asyncio.timeout(
+                        self.limits.single_tool_timeout_seconds
+                        + 2.0  # 治理包装自身开销余量
+                    ):
+                        invocation: ToolInvocationResult = await governed_invoke(
+                            tool_name=tool_name,
+                            args=args,
+                            tool=tool_obj,
+                            runtime=runtime,
+                            run_context=run_context,
+                            call_id=call_id,
+                            execute=lambda tool_args, _tool=tool_obj: _tool.ainvoke(
+                                tool_args, config=_runtime_config(runtime)
+                            ),
                         )
-                    result_text = str(result)
-                    evidence.append(f"[{tool_name}] {_truncate(result_text)}")
-                    tool_trace.append(
-                        {
-                            "tool": tool_name,
-                            "status": "completed",
-                            "elapsed_ms": round((monotonic() - tool_call_started) * 1000, 1),
-                        }
-                    )
-                    messages.append(
-                        ToolMessage(content=result_text, tool_call_id=str(call.get("id") or ""))
-                    )
                 except TimeoutError:
                     tool_trace.append(
                         {
@@ -236,18 +254,35 @@ class ResolutionCopilot:
                     messages.append(
                         ToolMessage(
                             content="工具调用超时",
-                            tool_call_id=str(call.get("id") or ""),
+                            tool_call_id=call_id,
                             name=tool_name,
                             status="error",
                         )
                     )
-                except Exception as exc:
-                    logger.warning("Copilot 工具 %s 失败: %s", tool_name, type(exc).__name__)
-                    tool_trace.append({"tool": tool_name, "status": "failed"})
+                    continue
+
+                elapsed_ms = round((monotonic() - tool_call_started) * 1000, 1)
+                if invocation.ok:
+                    evidence.extend(invocation.evidence)
+                    tool_trace.append(
+                        {"tool": tool_name, "status": "completed", "elapsed_ms": elapsed_ms}
+                    )
+                    messages.append(
+                        ToolMessage(content=invocation.content, tool_call_id=call_id)
+                    )
+                else:
+                    tool_trace.append(
+                        {
+                            "tool": tool_name,
+                            "status": invocation.status,
+                            "elapsed_ms": elapsed_ms,
+                            "reason": invocation.denied_reason,
+                        }
+                    )
                     messages.append(
                         ToolMessage(
-                            content="工具调用失败，请稍后重试",
-                            tool_call_id=str(call.get("id") or ""),
+                            content=invocation.content,
+                            tool_call_id=call_id,
                             name=tool_name,
                             status="error",
                         )
@@ -267,6 +302,18 @@ class ResolutionCopilot:
         result.setdefault("needs_human_review", True)
         result.setdefault("reason_codes", [])
         result["tool_trace"] = tool_trace
+        # 结构化证据：答案门禁引用白名单的唯一来源
+        result["tool_evidence"] = [
+            {
+                "tool_name": e.tool_name,
+                "document_id": e.document_id,
+                "document_version": e.document_version,
+                "chunk_id": e.chunk_id,
+                "title": e.title,
+                "content": e.content[:2_000],
+            }
+            for e in evidence
+        ]
         if error_code:
             result["error_code"] = error_code
             result["needs_human_review"] = True

@@ -195,9 +195,9 @@ async def runtime_context(
             from langchain_openai import ChatOpenAI
             from pydantic import SecretStr
 
-            from src.my_agent.helpdesk.tools import RESOLUTION_COPILOT_TOOLS
+            from .copilot.tools import COPILOT_TOOLS
 
-            copilot_tools = {tool.name: tool for tool in RESOLUTION_COPILOT_TOOLS}
+            copilot_tools = {tool.name: tool for tool in COPILOT_TOOLS}
             copilot_model = ChatOpenAI(
                 api_key=SecretStr(settings.deepseek_api_key),
                 base_url=settings.llm_base_url,

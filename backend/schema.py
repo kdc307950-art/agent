@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from psycopg import AsyncConnection
 
 APP_SCHEMA_NAME = "langgraph_agent"
-APP_SCHEMA_VERSION = 16
+APP_SCHEMA_VERSION = 17
 MIGRATION_LOCK_KEY = 891274631
 
 # These are the tables created by the pinned LangGraph PostgreSQL adapters and
@@ -963,6 +963,31 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 ON copilot_drafts (tenant_id, ticket_id, created_at DESC)
                 """)
             current = 16
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 17:
+            # v17: Copilot 运行租约 —— 识别僵尸运行（进程崩溃后 running 超租约）。
+            # lease_expires_at/heartbeat_at 由执行中定期续租刷新；
+            # 超租约的 running 由 recover_expired_runs 标记 failed(copilot_lease_expired)，
+            # 之后同一 operation_id 可被新的 operation 重试。
+            await cursor.execute(
+                "ALTER TABLE copilot_runs ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ"
+            )
+            await cursor.execute(
+                "ALTER TABLE copilot_runs ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ"
+            )
+            await cursor.execute(
+                "ALTER TABLE copilot_runs ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0"
+            )
+            await cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_copilot_runs_zombie
+                ON copilot_runs (lease_expires_at)
+                WHERE status = 'running'
+                """)
+            current = 17
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
                 (current, APP_SCHEMA_NAME),
