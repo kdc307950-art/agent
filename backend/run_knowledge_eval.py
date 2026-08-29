@@ -21,9 +21,9 @@ import os
 import sys
 from collections import defaultdict
 
-from dotenv import load_dotenv
 from psycopg_pool import AsyncConnectionPool
 
+from .config import load_environment
 from .knowledge import (
     HttpEmbeddingProvider,
     KnowledgeRepository,
@@ -216,7 +216,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    load_dotenv()
+    load_environment()
     conninfo = args.database_url or os.getenv("DATABASE_URL", "").strip()
     if not conninfo:
         raise SystemExit("缺少 DATABASE_URL：请设置环境变量或使用 --database-url")

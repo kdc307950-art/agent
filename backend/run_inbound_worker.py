@@ -11,8 +11,7 @@ import asyncio
 import os
 import signal
 
-from dotenv import load_dotenv
-
+from .config import load_environment
 from .inbound_worker import InboundWorker
 from .logging_config import setup_json_logging
 from .runtime import runtime_context
@@ -47,7 +46,7 @@ async def run_worker(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    load_dotenv()
+    load_environment()
     parser = argparse.ArgumentParser(description="运行渠道入站事件常驻 Worker")
     parser.add_argument("--poll-interval", type=float, default=1.0)
     parser.add_argument("--batch-size", type=int, default=20)

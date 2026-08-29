@@ -7,8 +7,7 @@ import asyncio
 import os
 import signal
 
-from dotenv import load_dotenv
-
+from .config import load_environment
 from .sla_worker import SLAWorker
 from .tickets import TicketOperationsRepository
 from .worker_metrics import WorkerMetricsDB
@@ -40,7 +39,7 @@ async def run_worker(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    load_dotenv()
+    load_environment()
     parser = argparse.ArgumentParser(description="运行客服 SLA 常驻 Worker")
     parser.add_argument("--interval", type=float, default=30.0)
     parser.add_argument("--batch-size", type=int, default=100)

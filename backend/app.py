@@ -35,6 +35,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from .assets.api import router as asset_router
 from .audit import NoopAuditRepository
 from .budget import TenantBudget, TenantBudgetExceeded
+from .config import load_environment
 from .knowledge.api import router as knowledge_router
 from .metrics import RuntimeMetrics
 from .rate_limit import RedisRateLimiter
@@ -208,6 +209,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    load_environment()  # 进程入口统一加载 .env（幂等，不覆盖已注入变量）
     settings = Settings.from_env()
     app.state.settings = settings
     app.state.metrics = RuntimeMetrics()

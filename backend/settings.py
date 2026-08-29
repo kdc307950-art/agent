@@ -3,6 +3,9 @@
 Settings 是不可变 dataclass，from_env() 做类型转换 + 生产环境强约束：
     - APP_ENV=production 时强制 OIDC 鉴权、Redis 限流/撤销、关闭 auto_setup 等
     - 所有 *_setting 辅助函数负责解析单类环境变量并给出清晰报错
+
+本模块**只从 os.environ 读取**，不加载 .env：环境加载由进程入口统一调用
+``backend.config.load_environment()`` 完成（见 backend/config.py）。
 """
 
 from __future__ import annotations
@@ -10,10 +13,6 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-
-from dotenv import load_dotenv
-
-load_dotenv()
 
 
 def _required(name: str) -> str:
@@ -173,6 +172,8 @@ class Settings:
             raise RuntimeError("APP_ENV=production 必须使用 REDIS_FAIL_MODE=closed")
         if app_env == "production" and auto_setup_enabled:
             raise RuntimeError("APP_ENV=production 禁止 LANGGRAPH_AUTO_SETUP=true")
+        if app_env == "production" and not os.getenv("DEEPSEEK_API_KEY", "").strip():
+            raise RuntimeError("APP_ENV=production 必须配置 DEEPSEEK_API_KEY")
         if app_env == "production" and not os.getenv("CORS_ALLOWED_ORIGINS", "").strip():
             raise RuntimeError("APP_ENV=production 必须显式配置 CORS_ALLOWED_ORIGINS")
         oidc_require_jti = _bool_setting("OIDC_REQUIRE_JTI", app_env == "production")
@@ -236,7 +237,9 @@ class Settings:
             raise RuntimeError("钉钉 Webhook 必须完整配置 DINGTALK_TENANT_ID/APP_SECRET")
         return cls(
             app_env=app_env,
-            deepseek_api_key=_required("DEEPSEEK_API_KEY"),
+            deepseek_api_key=os.getenv(
+                "DEEPSEEK_API_KEY", ""
+            ).strip(),  # 允许 dev/test 无 key：agentic RAG 降级为无答案生成
             llm_base_url=os.getenv("LLM_BASE_URL", "https://api.deepseek.com").strip(),
             llm_model=os.getenv("LLM_MODEL", "deepseek-chat").strip(),
             auth_mode=auth_mode,

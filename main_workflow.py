@@ -15,14 +15,14 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
-from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
+from backend.config import load_environment
 from src.my_agent.workflow import build_workflow_from_json
 
-load_dotenv()
+load_environment()
 
 
 async def _handle_interrupts(agent, config) -> None:

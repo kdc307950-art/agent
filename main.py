@@ -12,13 +12,13 @@
 import asyncio
 import os
 
-from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
+from backend.config import load_environment
 from src.my_agent.agent import build_agent
 
-load_dotenv()
+load_environment()
 
 # ====== 配置 ======
 MAX_MESSAGES_BEFORE_SUMMARY = 15  # 超过 15 条消息触发摘要

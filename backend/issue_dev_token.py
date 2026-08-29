@@ -10,8 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 
-from dotenv import load_dotenv
-
+from .config import load_environment
 from .security import make_tenant_token, scopes_for_dev_role
 
 
@@ -34,7 +33,7 @@ def main() -> None:
         help="令牌角色及对应 scope 集合",
     )
     args = parser.parse_args()
-    load_dotenv()
+    load_environment()
     secret = os.getenv("TENANT_TOKEN_SECRET", "").strip()
     if not secret:
         raise SystemExit("缺少 TENANT_TOKEN_SECRET")

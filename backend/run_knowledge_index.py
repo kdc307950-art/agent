@@ -20,10 +20,10 @@ import os
 import sys
 from datetime import UTC, datetime
 
-from dotenv import load_dotenv
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from .config import load_environment
 from .knowledge import (
     HttpEmbeddingProvider,
     KnowledgeRepository,
@@ -142,7 +142,7 @@ async def _run(tenant_id: str, conninfo: str, *, batch_size: int, embed: bool) -
 
 
 def main() -> None:
-    load_dotenv()
+    load_environment()
     parser = argparse.ArgumentParser(description="知识文档向量化导入")
     parser.add_argument("--tenant", default="demo")
     parser.add_argument("--batch-size", type=int, default=32)
