@@ -1,0 +1,33 @@
+# 生产覆盖：环境、只读根文件系统、非 root、镜像 digest（见 kustomization.yaml）。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langgraph-agent
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: agent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: APP_ENV
+              value: production
+            - name: AUTH_MODE
+              value: oidc
+            - name: RATE_LIMIT_BACKEND
+              value: redis
+            - name: REDIS_FAIL_MODE
+              value: closed
+            - name: OIDC_REVOCATION_MODE
+              value: redis
+            - name: LANGGRAPH_AUTO_SETUP
+              value: "false"

@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langgraph-agent
+spec:
+  template:
+    spec:
+      containers:
+        - name: agent
+          env:
+            - name: APP_ENV
+              value: development
+            - name: AUTH_MODE
+              value: dev
+            - name: RATE_LIMIT_BACKEND
+              value: redis
+            - name: LANGGRAPH_AUTO_SETUP
+              value: "true"

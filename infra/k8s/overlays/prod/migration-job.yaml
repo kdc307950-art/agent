@@ -1,0 +1,20 @@
+# 生产一次性迁移 Job：副本升级前执行（或由发布流水线触发）。
+# 模板：镜像 digest 与 Secret 名需按实际替换。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: langgraph-agent-migrate
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: ghcr.io/your-org/langgraph-agent@sha256:REPLACE_WITH_REAL_DIGEST
+          command: ["python", "-m", "backend.migrations"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: langgraph-runtime
+                  key: database-url

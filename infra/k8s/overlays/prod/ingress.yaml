@@ -1,0 +1,22 @@
+# 生产 Ingress（模板）：TLS 由实际网关/证书管理器提供，host 必须替换。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: langgraph-agent
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - it-helpdesk.example.com # 必须替换为真实域名
+      secretName: langgraph-agent-tls # 需由 cert-manager/Secret Manager 提供
+  rules:
+    - host: it-helpdesk.example.com # 必须替换
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: langgraph-agent
+                port:
+                  number: 8000

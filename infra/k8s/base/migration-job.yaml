@@ -1,0 +1,22 @@
+# 模板：一次性迁移 Job（生产 overlay 启用）。
+# 数据库连接从 Secret 读取；不要在 YAML 中写密钥。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: langgraph-agent-migrate
+spec:
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      backoffLimit: 2
+      containers:
+        - name: migrate
+          image: ghcr.io/your-org/langgraph-agent:REPLACE
+          command: ["python", "-m", "backend.migrations"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: langgraph-runtime
+                  key: database-url

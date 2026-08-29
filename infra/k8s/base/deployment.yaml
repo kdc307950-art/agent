@@ -1,3 +1,5 @@
+# 模板：镜像地址必须替换（见本目录 README.md「模板限制」）。
+# 环境差异（dev/prod 的 env、镜像、加固）由 overlays 覆盖，本文件只含公共形态。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,6 +8,9 @@ spec:
   replicas: 2
   strategy:
     type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
   selector:
     matchLabels:
       app: langgraph-agent
@@ -14,25 +19,21 @@ spec:
       labels:
         app: langgraph-agent
     spec:
+      # 生产覆盖（overlays/prod）会强化为非 root + 只读根文件系统；
+      # base 提供可运行的最小安全形态。
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
       containers:
         - name: agent
-          image: ghcr.io/your-org/langgraph-agent:REPLACE
+          image: ghcr.io/your-org/langgraph-agent:REPLACE # 必须替换
           ports:
             - containerPort: 8000
           envFrom:
             - secretRef:
                 name: langgraph-runtime
-          env:
-            - name: APP_ENV
-              value: production
-            - name: AUTH_MODE
-              value: oidc
-            - name: RATE_LIMIT_BACKEND
-              value: redis
-            - name: REDIS_FAIL_MODE
-              value: closed
-            - name: LANGGRAPH_AUTO_SETUP
-              value: "false"
           readinessProbe:
             httpGet:
               path: /readyz
@@ -53,14 +54,3 @@ spec:
             limits:
               cpu: "2"
               memory: 2Gi
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: langgraph-agent
-spec:
-  selector:
-    app: langgraph-agent
-  ports:
-    - port: 8000
-      targetPort: 8000

@@ -1,0 +1,10 @@
+# 生产 PodDisruptionBudget：滚动更新/节点维护时保证至少 1 副本可用。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: langgraph-agent
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: langgraph-agent

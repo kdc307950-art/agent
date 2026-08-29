@@ -1,0 +1,27 @@
+# 生产 NetworkPolicy（模板）：默认拒绝外部入站，仅允许 Ingress 访问 8000。
+# 需按集群实际 Ingress 标签调整；PostgreSQL/Redis/OIDC 出站地址按需放行。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: langgraph-agent
+spec:
+  podSelector:
+    matchLabels:
+      app: langgraph-agent
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx # 按集群调整
+      ports:
+        - port: 8000
+          protocol: TCP
+  egress:
+    - ports:
+        - port: 5432
+          protocol: TCP
+        - port: 6379
+          protocol: TCP
+        - port: 443
+          protocol: TCP
