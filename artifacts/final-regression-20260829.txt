@@ -1,0 +1,75 @@
+========================================================================
+最终回归记录 —— 身份快照透传 + Copilot 统一检索接线（冻结前）
+========================================================================
+
+生成时间   : 2026-08-29
+最终 commit: 232ba79b055dce1967cebb07d8b0139e28dd9596
+             身份快照 + 检索接线 + 前端徽标 + 面试文档全部落库后的 HEAD
+             （基线 07ce49b → 功能提交 7993c4b / 232ba79 / 本记录随文档提交）
+
+----------------------------------------------------------------------
+一、本次修复内容
+----------------------------------------------------------------------
+P1-1  持久化 Copilot 发起人身份快照（阶段一）
+  - schema v20：copilot_runs 增加 requester_user_id / requester_role /
+    requester_departments / requester_internal + 租户索引
+  - POST 入队从认证主体读取身份（服务端查询坐席部门），禁止请求体提交；
+    身份查询失败 -> 503 闭锁（不创建任务、不默认全权限）
+  - Worker 从运行记录恢复真实身份构造 RunContext（删除固定 copilot-worker
+    身份）；身份缺失 -> copilot_identity_missing（dead 闭锁，不重试）
+  - 死信管理端点：GET /admin/copilot/runs?status=dead、
+    POST /admin/copilot/runs/{run_id}/replay（保留原审计，新 run_id 重放）
+  - Worker 长任务租约续期（_keep_lease_alive），租约丢失 -> copilot_lease_lost
+
+P1-2  Copilot 统一知识检索接线（阶段二）
+  - runtime 注入 knowledge_retriever（KnowledgeRetriever）
+  - search_knowledge 经 retriever.search() 执行，返回 {content, evidence,
+    retrieval_mode, degraded}
+  - retrieval_mode 进入 tool_trace / copilot_runs / copilot_drafts /
+    指标 / 最终结果；hybrid 降级时 degraded=True（禁止标成 hybrid）
+  - 引用两层门禁不放宽（工具证据白名单 + 权威 verify_citations）
+
+----------------------------------------------------------------------
+二、新增回归用例
+----------------------------------------------------------------------
+tests/test_copilot_identity_postgres.py（4 个）：
+  1. 身份快照持久化 + Worker 使用真实 requester_user_id/部门
+  2. Copilot search_knowledge 经 KnowledgeRetriever（lexical-only + evidence）
+  3. 部门 ACL 隔离（IT 坐席见 restricted，财务坐席不可见）
+  4. 身份缺失闭锁（不默认全权限）
+
+tests/test_copilot_unit.py 新增：
+  - service 层 retrieval_mode=lexical-only 断言
+  - hybrid 模式标记测试（注入向量检索器 -> retrieval_mode=hybrid）
+
+----------------------------------------------------------------------
+三、回归门禁结果
+----------------------------------------------------------------------
+ruff            : All checks passed
+mypy            : 93 文件无问题
+后端 pytest     : 333 passed, 3 deselected（live_e2e 不纳入常规回归）
+前端 oxlint     : 0 warnings / 0 errors
+前端 tsc -b     : 通过
+前端 vitest     : 30 passed
+前端 Playwright : 20 passed（chromium + mobile-chromium）
+前端 build      : 成功（JS 297.84 kB / gzip 92.76 kB）
+测试容器        : compose.test.yml down -v 清理成功
+git diff --check: 通过
+
+----------------------------------------------------------------------
+四、环境说明
+----------------------------------------------------------------------
+Docker : 29.6.2
+Python : 3.12.9（py launcher / C:\Python312）
+Node   : v24.19.0；npm 11.17.0
+测试库 : pgvector/pg17（compose.test.yml，tmpfs 数据卷）
+
+----------------------------------------------------------------------
+五、未验证边界（诚实标注）
+----------------------------------------------------------------------
+- 真实 embedding 服务未配置：Copilot 实际检索为 lexical-only，
+  hybrid holdout 评测（Top1>=80% / Recall@5>=90% / MRR@5>=0.75）未执行
+- 多 Worker 并发领取的生产级验证未做（单机测试覆盖 SKIP LOCKED 语义）
+- 生产长期运行、高并发、灾备未验证
+- 未正式生产上线
+========================================================================

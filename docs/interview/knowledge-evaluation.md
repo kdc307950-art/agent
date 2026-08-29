@@ -41,10 +41,28 @@ query ──▶ lexical_search（必开，纯 SQL）
 门禁参数（CI 用）：`--fail-under-top1 0.95 --fail-under-recall5 0.98`
 （seed 集）；语义改写用例集不在 lexical-only 下设置 80% 门禁。
 
+## Hybrid 评测（holdout，独立门禁）
+
+真实 embedding 接入后执行，与 lexical-only 基线**分开记录、分开门禁**：
+
+| 指标 | holdout 门禁 |
+|---|---|
+| Top1 | ≥ 80% |
+| Recall@5 | ≥ 90% |
+| MRR@5 | ≥ 0.75 |
+
+- 门禁参数（CI 用，hybrid 专属）：
+  `--fail-under-top1 0.80 --fail-under-recall5 0.90 --fail-under-mrr5 0.75`。
+- 与 seed 集门禁（Top1 0.95 / Recall@5 0.98）互不混用；
+  `--embed` 无 endpoint 时直接失败，禁止以 lexical-only 数字伪称 hybrid 达标。
+- 当前状态：**未执行**——本地未配置真实 embedding 服务，hybrid 数字空缺，
+  不得以占位或外推值填表。
+
 ## 评测报告应记录
 
 数据集名称（seed_eval）、样本数量（52）、检索模式（lexical-only / hybrid）、
-知识库版本（seed_demo 当前版本）、embedding 模型（配置时）、评测时间（2026-08-28）。
+知识库版本（seed_demo 当前版本）、embedding 模型（配置时）、评测时间（2026-08-28）、
+向量降级标记（degraded=true 时注明原因，hybrid 数字无效）。
 
 ## 明确局限（对外表述须一致）
 

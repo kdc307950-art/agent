@@ -50,15 +50,21 @@
 
 ## Resolution Copilot 边界（异步 Worker 化后）
 
-13. **多部门身份透传未完全落地**：`RunContext` 已携带 departments/internal，
-    统一 `retrieval_principal()` 封装就绪，ACL 集成测试通过；但 `copilot_runs`
-    尚未持久化 user_id，异步 Worker 场景的坐席部门透传暂为空集合（需 schema
-    扩展，列为 P2）。**不能说"已完成真正的多部门身份透传"。**
+13. **部门身份透传已落地（发起人快照）**：`copilot_runs` 持久化
+    requester_user_id / requester_role / requester_departments /
+    requester_internal，POST 入队时从认证主体保存快照，Worker 从运行记录
+    恢复真实身份执行部门级 ACL（身份缺失闭锁，不默认全权限）。
+    **已验证到集成测试层面；多 Worker 并发与生产环境透传未做压力验证。**
 
 14. **Copilot 检索为 lexical-only 基线**：统一 `KnowledgeRetriever` 入口就绪
-    （lexical-only / hybrid 双模式 + retrieval_mode 标记），但真实 embedding
-    服务未配置，Copilot 实际走 lexical-only。**不能说"Copilot 已完全 hybrid 化"。**
+    （lexical-only / hybrid 双模式 + retrieval_mode 标记 + degraded 降级标记），
+    但真实 embedding 服务未配置，Copilot 实际走 lexical-only。
+    **不能说"Copilot 已完全 hybrid 化"。**
 
 15. **Copilot 异步 Worker 化已完成核心链路**：POST 只入队返回 202、
-    Worker 领取/租约/退避/dead/恢复、GET 状态轮询、崩溃恢复测试通过；
+    Worker 领取/租约续期/退避/dead/恢复、GET 状态轮询、崩溃恢复测试通过；
     但 Worker 进程的长期运行、多副本并发与故障演练未在生产环境验证。
+
+16. **死信管理端点为管理面操作**：`/admin/copilot/runs`（列出 dead）与
+    `/admin/copilot/runs/{run_id}/replay`（重放保留原审计）已实现并测试；
+    生产级操作审批流（谁可重放、限流、审计联动）未设计。

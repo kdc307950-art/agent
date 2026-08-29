@@ -78,26 +78,28 @@ denied_scope / denied_tenant / denied_unregistered / denied_input / timeout）�
 业务门禁（不得自动发送）：无引用、引用校验失败、confidence < 0.80、
 finance 类别、模型/工具异常。`auto_reply` 恒为 False。
 
-## 统一知识检索（阶段三）
+## 统一知识检索（阶段三，Copilot 已接线）
 
-`KnowledgeRetriever.search()` 是统一入口：
+Copilot `search_knowledge` 经 `runtime.knowledge_retriever.search()` 执行：
 
 ```text
 未配置 embedding → lexical-only（jieba + PostgreSQL 全文 + pg_trgm）
 配置 embedding   → hybrid（lexical + vector + RRF 融合 + 分类权重）
+向量请求失败     → lexical-only + degraded=true（禁止标成 hybrid）
 ```
 
-`retrieval_mode` 显式标记（lexical-only / hybrid），两套评测结果分开记录。
-文档嵌入走批量 texts 请求（单批 ≤32 条，复用 HTTP Client，任一向量异常直接失败）。
+`retrieval_mode` 显式标记并进入 tool_trace / copilot_runs / copilot_drafts /
+指标 / 最终结果；两套评测结果分开记录。文档嵌入走批量 texts 请求
+（单批 ≤32 条，复用 HTTP Client，任一向量异常直接失败）。
 
-## 部门身份透传（阶段一）
+## 部门身份透传（阶段一，已完成）
 
 `RunContext` 增加 role / departments / internal；`retrieval_principal(context)`
-统一构造检索主体，所有知识检索入口复用。部门来自服务端
-`support_members JOIN support_teams`，前端/模型请求体不能提交。
-
-**已知边界（诚实标注）**：copilot_runs 当前未持久化 user_id，异步 Worker
-场景的坐席部门透传暂为空集合；真正的多部门身份透传需 schema 扩展（P2）。
+统一构造检索主体。**发起人身份快照**：POST 入队时从认证主体（服务端查询
+坐席部门，`support_members JOIN support_teams`）持久化到 `copilot_runs`
+（requester_user_id / role / departments / internal），Worker 从运行记录
+恢复快照构造 RunContext——任务执行期间权限变化不影响本任务；
+身份缺失闭锁（不默认全权限）、查询失败闭锁（503）。
 
 ## 关键文件
 

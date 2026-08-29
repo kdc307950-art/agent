@@ -12,23 +12,25 @@
 | 1–3 | Web 建单到派单 | 演示主线：VPN 工单 → 分类 it.vpn → 追问 → 派单 team-it → SLA |
 | 3–5 | 企微追问 Resume | 客户回复「字段:值」关联原工单恢复受理，**绝不新建工单** |
 | 5–7 | 202 ACK、幂等、Worker 重试/租约恢复 | 快速 ACK + 异步 Worker；崩溃恢复与死信重放的设计 |
-| 7–8 | **Copilot 生成草稿** | assigned 工单 → 生成 AI 建议（异步 Worker）→ 知识引用 → 两层门禁 → 客服确认 |
-| 8–9 | 中文检索 52 条基准 + /metrics | 98.1% Top1（内部基准）；双轨指标、心跳门禁 |
-| 9–10 | 边界与未完成项 | 企微沙箱待执行、hybrid 未评测、多部门透传 P2、生产长期运行未证明 |
+| 7–8 | **Copilot 生成草稿** | assigned 工单 → 生成 AI 建议（异步 Worker）→ 发起人身份快照持久化 → 统一知识检索（lexical-only，向量缺失自动降级标记）→ 两层门禁 → 客服确认 |
+| 8–9 | 中文检索 52 条基准 + /metrics | 98.1% Top1（内部基准，lexical-only）；hybrid holdout 门禁已定未执行；双轨指标、心跳门禁 |
+| 9–10 | 边界与未完成项 | 企微沙箱待执行、hybrid 未评测、生产长期运行未证明（身份透传与检索接线已完成） |
 
 ## 必须展示的证据（按优先级）
 
-1. **Docker 全量回归输出**：`328 passed, 0 failed`（含测试命令与日期，可复现）。
+1. **Docker 全量回归输出**：`333 passed, 3 deselected`（含测试命令与日期，可复现）。
 2. **52 条评测报告**：lexical-only Top1 98.1%（51/52）、Recall@5 100%、MRR@5 0.990，
-   `it.account` 83.3% 及成因说明。
+   `it.account` 83.3% 及成因说明；hybrid holdout 门禁（Top1≥80% / Recall@5≥90% /
+   MRR@5≥0.75）已写入 CI 参数，**未配置真实 embedding，未执行**。
 3. **Worker 依赖故障注入测试**：`tests/test_worker_fault_isolation.py`
    （替身注入：指标写入失败仍 committed、心跳失败不退出、claim 故障不终止循环）。
 4. **Copilot 异步 Worker 证据**：`tests/test_copilot_worker.py`（领取/完成/退避/dead/
-   崩溃恢复）、POST 202 入队 + GET 状态轮询（`tests/test_copilot_api.py`）；
-   `run_copilot_worker.py` 独立进程入口。
+   崩溃恢复）、POST 202 入队 + GET 状态轮询（`tests/test_copilot_api.py`）、
+   `tests/test_copilot_identity_postgres.py`（发起人身份快照持久化 / 部门 ACL 隔离 /
+   身份缺失闭锁）、`run_copilot_worker.py` 独立进程入口。
 5. **企微自动化验收**：`tests/test_wecom_resume_postgres.py` / `test_channel_adapters.py`
    （验签/解密/幂等/Resume 的自动化用例，非真实沙箱）。
-6. **关键 commit SHA**：`git log --oneline -6`（worker 修复 / 评测证据 / 面试材料三个提交）。
+6. **关键 commit SHA**：`git log --oneline -8`（身份快照 / 检索接线 / worker 租约与死信 / 前端徽标 / 面试材料五个提交）。
 7. **/metrics 与 /readyz 示例**：worker 心跳 ok、outbox 门禁、`worker_loop_errors_total`、
    `copilot_runs_total` / `copilot_tool_calls_total`。
 
