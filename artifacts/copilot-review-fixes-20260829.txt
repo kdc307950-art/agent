@@ -1,0 +1,99 @@
+========================================================================
+审查修复回归记录 —— 双 Agent 治理化 / 幂等恢复 / 前端业务修复
+========================================================================
+
+修复日期   : 2026-08-29（第二轮审查后）
+基线       : 上一轮 Resolution Copilot 功能（cd040f1..5cccf4c）
+本次目标   : 从"能运行的 Copilot"提升为"受治理、可恢复、可审计的双 Agent 功能"
+
+----------------------------------------------------------------------
+一、修复内容（对照审查方案 10 阶段）
+----------------------------------------------------------------------
+阶段 1  ToolGovernance 绕过修复（最高优先级）
+  - 新增 backend/copilot/tool_adapter.py：governed_invoke 构造 ToolNode 兼容
+    request，复用 ToolGovernance.awrap_tool_call（profile/scope/租户 allowlist/
+    输入长度/超时/重试/审计/指标全链路）
+  - ResolutionCopilot 不再直接 tool.ainvoke：所有调用经治理层，伪造
+    send_message 即使注册在工具集也被 allowed_tools 子集校验拒绝
+  - Copilot 专用工具集（backend/copilot/tools.py）：search_knowledge 返回
+    结构化 JSON 证据（document_id/version/chunk_id/title/content）
+
+阶段 2  未初始化状态修复
+  - _copilot_runtime 同时检查 runtime.copilot 与 copilot_repository 为 None，
+    未配置模型服务返回 503（而非 502）；语义：503=服务不可用，502=服务在但模型失败
+
+阶段 3  幂等与运行恢复
+  - copilot_runs 增加租约列（schema v17）：lease_expires_at / heartbeat_at / attempts
+  - running -> 202 {"status":"running","run_id"}（前端轮询，不重复消耗模型）
+  - completed -> 按 run_id 查草稿（新增 get_draft_by_run，绝不跨 run 取最新）
+  - failed -> 返回原错误，允许新 operation_id 重试（不当作成功幂等）
+  - recover_expired_runs：超租约僵尸运行 -> failed(copilot_lease_expired)
+
+阶段 4  引用门禁修复
+  - 删除额外的独立 lexical 白名单查询（避免"补充查询命中合法文档被误判"）
+  - 引用白名单改从 Agent 实际工具证据（tool_evidence / ToolEvidence）收集；
+    权威校验（租户/发布/有效期/ACL）由 lexical_search 检索 SQL 在工具执行时完成
+
+阶段 5  前端"我的处理"筛选修复（业务 bug）
+  - QueueView 不再 URLSearchParams -> Object.fromEntries 转对象（键名漂移导致
+    assigned_user_id 丢失）；改为类型化 TicketQuery，view=mine 发送
+    assignedUserId='current_user'（经 listTickets 正确映射为 assigned_user_id）
+
+阶段 6  侧栏无障碍
+  - 新增 useMediaQuery((max-width:900px))；只有移动端抽屉关闭才设置
+    aria-hidden + inert；桌面端始终可键盘聚焦
+  - 移动端遮罩（sidebar-overlay 点击关闭）+ Escape 关闭后焦点恢复到触发元素
+
+阶段 7  移动端搜索恢复
+  - ≤540px：搜索框不再 display:none，改为搜索图标按钮展开内联输入框
+    （.search-toggle / .mobile-search）
+
+阶段 8  Copilot 前端交互
+  - 503 -> "Copilot 服务未配置"；202 -> "正在生成"并轮询 latest；
+    409 -> 提示刷新当前工单；生成中禁用按钮（防重复点击）
+  - 切换工单（ticketId 变化）AbortController 取消旧请求 + ticketIdRef 守卫，
+    旧工单结果不覆盖新工单
+
+阶段 9  测试矩阵
+  - 后端单元：治理审计产生、allowlist 拒绝、scope 缺失拒绝、伪造 send_message 拒绝
+    （tests/test_copilot_unit.py 16 用例）
+  - API：503 未初始化、202 running、failed 不返旧草稿（tests/test_copilot_api.py 10）
+  - Postgres：租约过期恢复（tests/test_copilot_postgres.py 5）
+  - 前端单测：view=mine/queue/resolved 查询参数（QueueView.test.tsx 3）、
+    CopilotPanel 503/409/防重复/202/切换取消（CopilotPanel.test.tsx 6）
+  - E2E：我的处理筛选参数、桌面侧栏键盘可达、移动侧栏 inert、移动端搜索
+    （e2e/fixes.spec.ts 4 用例 x2 项目）
+
+----------------------------------------------------------------------
+二、回归门禁结果
+----------------------------------------------------------------------
+ruff            : All checks passed
+mypy            : 89 文件无问题
+后端 pytest     : 307 passed, 3 deselected（live_e2e 不纳入常规回归）
+前端 oxlint     : 0 warnings / 0 errors
+前端 tsc -b     : 通过
+前端 vitest     : 29 passed
+前端 Playwright : 20 passed（chromium + mobile-chromium）
+前端 build      : 成功（JS 297.53 kB / gzip 92.67 kB）
+测试容器        : compose.test.yml down -v 清理成功
+git diff --check: 通过
+
+----------------------------------------------------------------------
+三、安全边界（修复后）
+----------------------------------------------------------------------
+- Agent 2 所有工具调用经 ToolGovernance：权限/租户/超时/重试/审计/指标统一治理
+- 模型伪造 send_message：allowed_tools 子集校验拒绝（即使注册在工具集）
+- 引用白名单来自 Agent 实际工具证据，门禁仍做权威校验（租户/发布/有效期/ACL）
+- 运行状态机：running 不重复消耗模型；failed 不返回旧草稿；僵尸运行租约可恢复
+- 草稿审批只做状态迁移，不创建客户消息；生成草稿 ≠ 发送消息
+- 桌面端侧栏不再被 inert 隐藏（无障碍修复）
+
+----------------------------------------------------------------------
+四、已知限制（保持不变）
+----------------------------------------------------------------------
+- 生产认证未接入（dev token 模式）
+- Playwright 使用 mock API
+- Copilot 依赖真实 DEEPSEEK_API_KEY（未配置时 API 返回 503）
+- live_e2e 未纳入常规回归
+- 未证明高并发、灾备与长期生产稳定性
+========================================================================
