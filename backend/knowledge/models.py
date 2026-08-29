@@ -115,6 +115,9 @@ class RetrievalHit(BaseModel):
     source: Literal["lexical", "vector", "hybrid"]
     source_rank: int = Field(ge=1)
     fused_score: float = Field(default=0.0, ge=0.0)
+    # 向量相似度（1 - 余弦距离，仅 vector 来源命中非 None）：
+    # 供检索后拒答阈值判定「无答案」——低于阈值的命中不应进入证据链
+    similarity: float | None = Field(default=None, ge=0.0, le=1.0)
 
     @property
     def key(self) -> tuple[str, int, str]:

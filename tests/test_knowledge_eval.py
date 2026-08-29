@@ -157,13 +157,60 @@ def test_evaluate_metric_case():
 
 
 def test_evaluate_no_answer_case_tracks_misrecall_only():
-    # 无答案用例：hits 非空即误召回，不进召回指标。
+    # 无答案用例：hits 非空即误召回（未配置拒答阈值时），不进召回指标。
     result = _evaluate_case({"query": "x", "expected_none": True}, [], topk=5)
-    assert result == {"kind": "no_answer", "misrecalled": False}
+    assert result == {"kind": "no_answer", "misrecalled": False, "top_similarity": None}
     leaked = _evaluate_case(
         {"query": "x", "expected_none": True}, [_hit("vpn-001", 1)], topk=5
     )
     assert leaked["misrecalled"] is True
+
+
+def _hit_with_similarity(document_id: str, rank: int, similarity: float) -> RetrievalHit:
+    return RetrievalHit(
+        tenant_id="demo",
+        document_id=document_id,
+        document_version=1,
+        chunk_id=f"c-{document_id}-{rank}",
+        title=document_id,
+        content="content",
+        source_uri=None,
+        source="vector",
+        source_rank=rank,
+        similarity=similarity,
+    )
+
+
+def test_evaluate_no_answer_respects_min_similarity_threshold():
+    # 拒答阈值：命中相似度低于阈值 = 证据不足，正确拒绝（转人工）。
+    low = _evaluate_case(
+        {"query": "x", "expected_none": True},
+        [_hit_with_similarity("vpn-001", 1, 0.30)],
+        topk=5,
+        min_similarity=0.45,
+    )
+    assert low["misrecalled"] is False
+    assert low["top_similarity"] == 0.30
+    # 相似度达到阈值才算误召回（高置信误判）。
+    high = _evaluate_case(
+        {"query": "x", "expected_none": True},
+        [_hit_with_similarity("vpn-001", 1, 0.50)],
+        topk=5,
+        min_similarity=0.45,
+    )
+    assert high["misrecalled"] is True
+    # 阈值判定只看最高相似度。
+    mixed = _evaluate_case(
+        {"query": "x", "expected_none": True},
+        [
+            _hit_with_similarity("a-001", 1, 0.20),
+            _hit_with_similarity("b-001", 2, 0.55),
+        ],
+        topk=5,
+        min_similarity=0.45,
+    )
+    assert mixed["misrecalled"] is True
+    assert mixed["top_similarity"] == 0.55
 
 
 def test_evaluate_acl_case_tracks_leak_only():

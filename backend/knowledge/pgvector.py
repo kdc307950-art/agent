@@ -111,6 +111,7 @@ class PgVectorRetriever:
         embedder: EmbeddingProvider,
         *,
         dimension: int,
+        min_similarity: float = 0.0,
     ) -> None:
         """构造检索器。
 
@@ -118,13 +119,19 @@ class PgVectorRetriever:
             repository: 知识仓库（提供连接池与文档元数据）
             embedder: 查询嵌入提供方
             dimension: 向量维度（8..4096，须与列定义一致）
+            min_similarity: 向量相似度（1 - 余弦距离）拒答阈值，[0,1]；
+                低于阈值的命中不返回（用于「无答案」检索后拒答；
+                默认 0.0 = 不过滤，保持既有行为）
         """
         # 维度范围与 PostgreSQL vector 类型的合理范围对齐，越界即配置错误
         if dimension < 8 or dimension > 4096:
             raise ValueError("向量维度必须在 8 到 4096 之间")
+        if not 0.0 <= min_similarity <= 1.0:
+            raise ValueError("min_similarity 必须在 0 到 1 之间")
         self.repository = repository
         self.embedder = embedder
         self.dimension = dimension
+        self.min_similarity = min_similarity
 
     def _literal(self, embedding: Sequence[float]) -> str:
         """把向量序列格式化为 pgvector 字面量字符串（如 "[0.1,0.2]"）。
@@ -230,7 +237,8 @@ class PgVectorRetriever:
         async with self.repository.pool.connection() as connection:
             async with connection.cursor(row_factory=dict_row) as cursor:
                 # SQL 过滤链（按参数顺序）：租户 -> 已发布 + 有效期 -> 可见性分级
-                # （public 全可见 / internal·restricted 需 internal 主体）-> 部门白名单；
+                # （public 全可见 / internal·restricted 需 internal 主体）-> 部门白名单
+                # -> 相似度拒答阈值（min_similarity，1 - 余弦距离）；
                 # 距离用 <=>（余弦距离），窗口函数 row_number 生成来源内排名
                 await cursor.execute(
                     """
@@ -238,7 +246,8 @@ class PgVectorRetriever:
                            d.title, c.content, d.source_uri,
                            row_number() OVER (
                                ORDER BY c.embedding <=> %s::vector, c.document_id, c.chunk_id
-                           ) AS source_rank
+                           ) AS source_rank,
+                           1 - (c.embedding <=> %s::vector) AS similarity
                     FROM knowledge_chunks AS c
                     JOIN knowledge_documents AS d
                       ON d.tenant_id = c.tenant_id
@@ -259,10 +268,12 @@ class PgVectorRetriever:
                       )
                       AND (cardinality(d.allowed_departments) = 0
                            OR d.allowed_departments && %s::TEXT[])
+                      AND 1 - (c.embedding <=> %s::vector) >= %s
                     ORDER BY c.embedding <=> %s::vector, c.document_id, c.chunk_id
                     LIMIT %s
                     """,
                     (
+                        literal,
                         literal,
                         principal.tenant_id,
                         principal.internal,
@@ -270,9 +281,27 @@ class PgVectorRetriever:
                         list(principal.departments),
                         list(principal.departments),
                         literal,
+                        self.min_similarity,
+                        literal,
                         limit,
                     ),
                 )
                 rows = await cursor.fetchall()
-        # 构造不可变的检索命中；fused_score 由融合阶段（RRF）再填充
-        return [RetrievalHit(source="vector", fused_score=0.0, **row) for row in rows]
+        # 构造不可变的检索命中；fused_score 由融合阶段（RRF）再填充。
+        # similarity 在 SQL 中已返回，从 row 提出显式转换（numeric -> float）后
+        # 从 **row 中移除，避免重复关键字。
+        hits: list[RetrievalHit] = []
+        for row in rows:
+            raw_similarity = row.pop("similarity", None)
+            similarity = (
+                float(raw_similarity) if raw_similarity is not None else None
+            )
+            hits.append(
+                RetrievalHit(
+                    source="vector",
+                    fused_score=0.0,
+                    similarity=similarity,
+                    **row,
+                )
+            )
+        return hits

@@ -98,16 +98,36 @@ def _classify_case(case: Mapping[str, Any]) -> str:
     return "metric"
 
 
-def _evaluate_case(case: Mapping[str, Any], hits: list[RetrievalHit], topk: int) -> dict[str, Any]:
+def _evaluate_case(
+    case: Mapping[str, Any],
+    hits: list[RetrievalHit],
+    topk: int,
+    min_similarity: float | None = None,
+) -> dict[str, Any]:
     """对单条用例按分类产出评估结果（纯函数，便于单元测试）。
 
     metric 用例 -> {kind, top1, recall, mrr}
-    no_answer 用例 -> {kind, misrecalled}（检索返回非空即误召回）
+    no_answer 用例 -> {kind, misrecalled, top_similarity}：
+        检索返回非空即误召回；当配置 min_similarity（拒答阈值）时，
+        仅当最高向量相似度 >= 阈值才算误召回（低于阈值 = 证据不足，正确
+        拒绝转人工，与"检索后门禁"语义一致）。
     acl 用例 -> {kind, leaked, leaked_documents}（命中受限文档即泄露）
     """
     kind = _classify_case(case)
     if kind == "no_answer":
-        return {"kind": kind, "misrecalled": bool(hits)}
+        if not hits:
+            return {"kind": kind, "misrecalled": False, "top_similarity": None}
+        sims = [h.similarity for h in hits if h.similarity is not None]
+        top_similarity = max(sims) if sims else None
+        if min_similarity is None:
+            misrecalled = bool(hits)
+        else:
+            misrecalled = top_similarity is not None and top_similarity >= min_similarity
+        return {
+            "kind": kind,
+            "misrecalled": misrecalled,
+            "top_similarity": top_similarity,
+        }
     if kind == "acl":
         forbidden = set(case.get("forbidden_document_ids") or ())
         leaked = [h.document_id for h in hits if h.document_id in forbidden]
@@ -149,6 +169,7 @@ async def _run_eval(
     seed: bool,
     embed: bool,
     dataset: str,
+    min_similarity: float | None = None,
 ) -> dict:
     started = monotonic()
     if seed:
@@ -195,7 +216,7 @@ async def _run_eval(
             lambda: {"count": 0.0, "top1": 0.0, "recall": 0.0}
         )
         no_hits: list[str] = []
-        no_answer: dict[str, Any] = {"count": 0, "misrecalled": 0, "queries": []}
+        no_answer: dict[str, Any] = {"count": 0, "misrecalled": 0, "queries": [], "similarities": []}
         acl: dict[str, Any] = {"count": 0, "leaked": 0, "queries": []}
         category_of = {
             doc_id: category
@@ -210,13 +231,14 @@ async def _run_eval(
                 tenant_id=tenant_id, departments=departments, internal=True
             )
             hits = await _retrieve(repository, vector, principal, case["query"], topk=topk)
-            result = _evaluate_case(case, hits, topk)
+            result = _evaluate_case(case, hits, topk, min_similarity=min_similarity)
             kind = result["kind"]
             if kind == "no_answer":
                 no_answer["count"] += 1
                 if result["misrecalled"]:
                     no_answer["misrecalled"] += 1
                     no_answer["queries"].append(case["query"])
+                    no_answer["similarities"].append(result["top_similarity"])
                 continue
             if kind == "acl":
                 acl["count"] += 1
@@ -254,6 +276,7 @@ async def _run_eval(
             "knowledge_base": {"documents": doc_count, "max_version": max_version},
             "runtime_seconds": round(monotonic() - started, 3),
             "degraded": degraded,
+            "min_similarity": min_similarity,
             "totals": (
                 {key: value / metric_count for key, value in totals.items()}
                 if metric_count
@@ -305,9 +328,13 @@ def _print_report(report: dict) -> None:
     print("-" * 64)
     no_answer = report["no_answer"]
     if no_answer["count"]:
+        threshold = report.get("min_similarity")
+        threshold_note = (
+            f"（拒答阈值 similarity >= {threshold} 才算误召回）" if threshold is not None else ""
+        )
         print(
             f"无答案集（单独记录，不计入召回指标）: {no_answer['count']} 条，"
-            f"误召回 {no_answer['misrecalled']} 条（应转人工）"
+            f"误召回 {no_answer['misrecalled']} 条（应转人工）{threshold_note}"
         )
         for query in no_answer["queries"]:
             print(f"  - {query}")
@@ -332,7 +359,7 @@ def main() -> None:
         "--dataset",
         choices=DATASETS,
         default="seed",
-        help="评测数据集：seed（开发期回归）/ hybrid_holdout（冻结，独立门禁）",
+        help="评测数据集：seed（开发期回归）/ hybrid_holdout（冻结门禁集）",
     )
     parser.add_argument("--topk", type=int, default=DEFAULT_TOPK, help="检索深度 k（默认 5）")
     parser.add_argument("--limit", type=int, default=0, help="只评测前 N 条（0 = 全部）")
@@ -362,6 +389,13 @@ def main() -> None:
     parser.add_argument(
         "--fail-under-mrr", type=float, default=None, help="MRR@5 门禁阈值（如 0.75）"
     )
+    parser.add_argument(
+        "--min-similarity",
+        type=float,
+        default=None,
+        help="向量相似度拒答阈值 [0,1]：无答案用例的最高命中相似度低于该值"
+        "视为正确拒绝（检索后门禁），仅影响无答案判定，不影响召回指标",
+    )
     args = parser.parse_args()
 
     load_environment()
@@ -377,6 +411,7 @@ def main() -> None:
             seed=args.seed,
             embed=args.embed,
             dataset=args.dataset,
+            min_similarity=args.min_similarity,
         )
     )
     _print_report(report)

@@ -18,8 +18,9 @@ from backend.vector_migrations import setup_vector_schema
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
 
-# 与评测/导入流水线对齐：vector_migrations 建 1536 维列，测试不再假设列不存在或维度为 8。
-_EMBEDDING_DIMENSION = 1536
+# 与评测/导入流水线对齐：维度从 KNOWLEDGE_EMBEDDING_DIMENSION 读取（默认 1536），
+# 与 vector_migrations 建列维度一致；测试不再假设固定维度或列不存在。
+_EMBEDDING_DIMENSION = int(os.getenv("KNOWLEDGE_EMBEDDING_DIMENSION", "1536").strip())
 _EMBEDDING = [1.0] + [0.0] * (_EMBEDDING_DIMENSION - 1)
 
 
