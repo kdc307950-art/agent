@@ -6,7 +6,7 @@
 
 技术底座：确定性工单状态机 + LangGraph 受理/补全/分类/派单图 + Agentic RAG 引用门禁，运行在多租户隔离、PostgreSQL Checkpoint、审计、Redis 限流、预算和 Outbox 之上。
 
-> 仓库根目录的 `main.py` / `main_supervisor.py` / `main_workflow.py` 与 `workflows/legacy-demo.json` 是早期通用聊天/天气/计算 Demo，统一标记为 **legacy-demo**，仅供试跑图结构，与生产工单链路无关；产品定位与入口见下文。
+> `legacy-demo/` 目录下的 `main.py` / `main_supervisor.py` / `main_workflow.py` 与 `workflows/legacy-demo.json` 是早期通用聊天/天气/计算 Demo，统一标记为 **legacy-demo**，仅供试跑图结构，与生产工单链路无关；产品定位与入口见下文。
 
 ## 5 分钟跑起来
 
@@ -51,16 +51,16 @@ uv run python -m backend.issue_dev_token demo admin-1    --role helpdesk-it-admi
 
 **生产路径只有一条：`backend/app.py`。** 本文档其余部分讲的都是它——多租户、审计、预算、限流、工具治理、跨请求人工审批都在这条路径上。
 
-根目录还有三个 CLI 脚本与一个 JSON 工作流，是早期通用聊天/天气/计算 Demo（**legacy-demo**），保留用于快速试跑图结构，**不是**产品入口：
+`legacy-demo/` 目录下还有三个 CLI 脚本与一个 JSON 工作流（已从根目录迁出，根目录生产入口唯一为 `backend/app.py`），是早期通用聊天/天气/计算 Demo（**legacy-demo**），保留用于快速试跑图结构，**不是**产品入口：
 
 | 入口 | 用途 | 与生产路径的关系 |
 | --- | --- | --- |
 | `backend/app.py` | **生产服务**，FastAPI + SSE（IT 服务台） | 唯一受支持的部署形态 |
-| `main.py` | legacy-demo：单 Agent 命令行对话，带消息摘要 | 不经过鉴权、审计、限流和预算 |
-| `main_supervisor.py` | legacy-demo：硬编码 supervisor 图 + 命令行审批 | 审批是进程内 `input()` 阻塞，**不是**生产的跨请求审批 |
-| `main_workflow.py` | legacy-demo：从 JSON 加载图 + 命令行审批 | 用本地 `checkpoints.db`，加载 `workflows/legacy-demo.json` |
+| `legacy-demo/main.py` | legacy-demo：单 Agent 命令行对话，带消息摘要 | 不经过鉴权、审计、限流和预算 |
+| `legacy-demo/main_supervisor.py` | legacy-demo：硬编码 supervisor 图 + 命令行审批 | 审批是进程内 `input()` 阻塞，**不是**生产的跨请求审批 |
+| `legacy-demo/main_workflow.py` | legacy-demo：从 JSON 加载图 + 命令行审批 | 用本地 `checkpoints.db`，加载 `legacy-demo/workflows/legacy-demo.json` |
 
-三个 CLI 的价值是改完 `workflows/*.json` 后不起容器就能验证图跑不跑得通。**但人工审批的真实实现不在它们里面**——CLI 里审批是同一个进程同一次调用中的阻塞输入，生产里是两次 HTTP 请求、两条 SSE 流、状态落在 PostgreSQL checkpoint 上，见 [人工审批为什么是两次请求](#人工审批为什么是两次请求)。
+三个 CLI 的价值是改完 `legacy-demo/workflows/*.json` 后不起容器就能验证图跑不跑得通。**但人工审批的真实实现不在它们里面**——CLI 里审批是同一个进程同一次调用中的阻塞输入，生产里是两次 HTTP 请求、两条 SSE 流、状态落在 PostgreSQL checkpoint 上，见 [人工审批为什么是两次请求](#人工审批为什么是两次请求)。运行示例：`uv run python legacy-demo/main.py`（启动时会打印 DEMO ONLY 提示）。
 
 `SUPERVISOR_AGENT.md` 是同一时期写的说明书（legacy-demo），其中的 HITL 部分已被生产链路取代，只作为图结构和路由逻辑的补充阅读。
 
@@ -145,10 +145,10 @@ sequenceDiagram
 
 ```dotenv
 AGENT_GRAPH_MODE=workflow
-AGENT_WORKFLOW_PATH=workflows/legacy-demo.json
+AGENT_WORKFLOW_PATH=legacy-demo/workflows/legacy-demo.json
 ```
 
-`workflow` 模式由 JSON 定义编译出图，支持 supervisor 路由、子 Agent 和 `human_approval` 审批节点。配置缺失或 spec 不合法时服务在启动阶段直接失败，不会带病启动。示例图 `workflows/legacy-demo.json` 是天气/计算路由，仅用于试跑 JSON 编译层。
+`workflow` 模式由 JSON 定义编译出图，支持 supervisor 路由、子 Agent 和 `human_approval` 审批节点。配置缺失或 spec 不合法时服务在启动阶段直接失败，不会带病启动。示例图 `legacy-demo/workflows/legacy-demo.json` 是天气/计算路由，仅用于试跑 JSON 编译层。
 
 图停在审批节点时，`POST /chat/stream` 的 SSE 流下发一条 interrupt 事件并结束，**不发 `end`**：
 

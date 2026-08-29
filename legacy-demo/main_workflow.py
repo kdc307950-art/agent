@@ -1,19 +1,24 @@
 """【legacy-demo】通用工作流 CLI —— 从 JSON 加载工作流、编译并交互运行（含 HITL 审批）。
 
 遗留演示：天气/计算图 + 本地 SQLite checkpoints，不经过生产链路。
-生产 IT 服务台入口是 `backend/app.py`；默认加载 `workflows/legacy-demo.json`。
+生产 IT 服务台入口是 `backend/app.py`；默认加载 `legacy-demo/workflows/legacy-demo.json`。
 
 用法：
-    uv run python main_workflow.py workflows/legacy-demo.json
-    uv run python main_workflow.py --help
+    uv run python legacy-demo/main_workflow.py legacy-demo/workflows/legacy-demo.json
+    uv run python legacy-demo/main_workflow.py --help
 
 与 main_supervisor.py 等价，但图结构来自 JSON 配置而非硬编码代码。
 """
 
+# ruff: noqa: E402  # legacy 脚本：先修正 sys.path 才能导入项目包
 import argparse
 import asyncio
 import sqlite3
+import sys
 from pathlib import Path
+
+if str(Path(__file__).resolve().parents[1]) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -76,10 +81,14 @@ def _sqlite_conn():
 def main() -> None:
     parser = argparse.ArgumentParser(description="从 JSON 工作流编译并运行 LangGraph 图")
     parser.add_argument(
-        "workflow", nargs="?", default="workflows/legacy-demo.json", help="工作流 JSON 路径"
+        "workflow",
+        nargs="?",
+        default="legacy-demo/workflows/legacy-demo.json",
+        help="工作流 JSON 路径",
     )
     parser.add_argument("--thread", default="workflow_demo_001", help="thread_id")
     args = parser.parse_args()
+    print("⚠️  DEMO ONLY：遗留演示入口，不经过鉴权/审计/限流/预算；生产入口是 backend.app:app")
     asyncio.run(_run(args.workflow, args.thread))
 
 

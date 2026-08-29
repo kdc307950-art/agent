@@ -440,7 +440,9 @@ def test_workflow_loader_reads_shipped_spec():
 
     root = Path(__file__).resolve().parents[1]
     spec = load_workflow_spec(
-        SimpleNamespace(agent_workflow_path=str(root / "workflows" / "legacy-demo.json"))
+        SimpleNamespace(
+            agent_workflow_path=str(root / "legacy-demo" / "workflows" / "legacy-demo.json")
+        )
     )
     assert spec["name"]
     assert any(node["type"] == "human_approval" for node in spec["nodes"])

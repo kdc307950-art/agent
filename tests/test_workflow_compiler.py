@@ -24,7 +24,7 @@ from src.my_agent.workflow import (
 from src.my_agent.workflow.nodes import condition_factory, rag_factory
 from src.my_agent.workflow.schema import NodeSpec
 
-WORKFLOW_PATH = "workflows/legacy-demo.json"
+WORKFLOW_PATH = "legacy-demo/workflows/legacy-demo.json"
 
 
 def _fake_model():

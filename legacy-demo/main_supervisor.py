@@ -10,8 +10,13 @@
     - thread_id 固定为 supervisor_demo_001
 """
 
+# ruff: noqa: E402  # legacy 脚本：先修正 sys.path 才能导入项目包
 import asyncio
 import sys
+from pathlib import Path
+
+if str(Path(__file__).resolve().parents[1]) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
