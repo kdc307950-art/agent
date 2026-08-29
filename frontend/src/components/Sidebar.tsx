@@ -2,19 +2,21 @@
  * 侧边导航组件（Sidebar.tsx）。
  *
  * 职责：
- * - 桌面端常驻显示导航；移动端以抽屉形式展示（mobileOpen 控制展开，点击导航项或按 Escape 收起）。
+ * - 桌面端常驻显示导航；移动端以抽屉形式展示（mobileOpen 控制展开，点击导航项、按 Escape
+ *   或点击遮罩收起）。
  * - 导航分三组：工单相关（队列/我的处理/已解决）、主要页面（助手/资产/知识库）、底部（IT 策略设置 + 坐席信息）。
  *
  * 与后端 API 的对应关系：纯导航组件，不调用 API；跳转目标为 React Router 路径，
  * 其中「我的处理」「已解决」通过 ?view=mine / ?view=resolved 查询参数区分工单队列视角。
  *
- * 关键交互逻辑：
- * - 工单导航用 button + 手动高亮（isTicketsActive）：详情页 /tickets/:ticketId 保持「工单队列」高亮；
- *   列表页按 path 与 view 参数精确匹配。
- * - 主导航用 NavLink 自动高亮；跳转后统一调用 onClose 收起移动端抽屉。
- * - 移动端展开时监听 Escape 键关闭；未展开时设置 inert 阻止键盘聚焦（React 19 原生布尔属性）。
+ * 无障碍关键设计（阶段六修复）：
+ * - 桌面端（isMobile=false）：侧栏常驻可见、始终可键盘聚焦，不设置 aria-hidden / inert。
+ * - 移动端抽屉关闭（isMobile && !mobileOpen）：设置 aria-hidden + inert，禁止 Tab 聚焦
+ *   （React 19 原生布尔属性），并渲染遮罩拦截点击。
+ * - 移动端抽屉打开时：遮罩可点击关闭；Escape 关闭后焦点恢复到打开前的触发元素
+ *   （focus restoration），关闭的瞬间侧栏 inert 生效前完成。
  */
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   BookOpen,
@@ -30,6 +32,9 @@ import {
 
 // 导航图标统一尺寸
 const ICON_SIZE = 18
+
+// 移动端断点：与 CSS 媒体查询 (max-width: 900px) 保持一致
+const MOBILE_BREAKPOINT = 900
 
 // 单个导航项：key 为工单视角标识（queue/mine/resolved），to 为目标路径
 interface NavEntry {
@@ -53,6 +58,27 @@ const mainNav: Omit<NavEntry, 'key'>[] = [
   { label: '知识库', Icon: BookOpen, to: '/knowledge' },
 ]
 
+/** 响应式媒体查询：返回当前是否命中指定 CSS 媒体查询（监听 resize，SSR 安全）。 */
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return false
+    }
+    return window.matchMedia(query).matches
+  })
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return
+    }
+    const mql = window.matchMedia(query)
+    const onChange = () => setMatches(mql.matches)
+    setMatches(mql.matches)
+    mql.addEventListener('change', onChange)
+    return () => mql.removeEventListener('change', onChange)
+  }, [query])
+  return matches
+}
+
 export default function Sidebar({
   mobileOpen,
   onClose,
@@ -65,6 +91,12 @@ export default function Sidebar({
   // 从 URL 查询参数读取当前工单视角，缺省为 queue
   const view = new URLSearchParams(location.search).get('view') ?? 'queue'
   const path = location.pathname
+  // 当前是否为移动端视口（<=900px）
+  const isMobile = useMediaQuery(`(max-width: ${MOBILE_BREAKPOINT}px)`)
+  // 移动端抽屉关闭状态：只有移动端且未展开时才隐藏/禁用侧栏
+  const drawerClosed = isMobile && !mobileOpen
+  // 记忆打开抽屉前的焦点元素（关闭后恢复）
+  const triggerRef = useRef<HTMLElement | null>(null)
 
   // 判断工单导航项是否高亮：
   const isTicketsActive = (key: string) => {
@@ -79,23 +111,40 @@ export default function Sidebar({
     onClose()
   }
 
-  // 移动端：Escape 关闭侧栏
+  // 移动端：Escape 关闭侧栏 + 关闭后焦点恢复到打开前的触发元素
   useEffect(() => {
     if (!mobileOpen) return
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+      if (event.key === 'Escape') {
+        onClose()
+        // 焦点恢复到打开前的触发元素（汉堡按钮）
+        triggerRef.current?.focus()
+        triggerRef.current = null
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [mobileOpen, onClose])
 
+  // 记录打开抽屉时的焦点元素（供 Escape 关闭后恢复）
+  useEffect(() => {
+    if (mobileOpen && document.activeElement instanceof HTMLElement) {
+      triggerRef.current = document.activeElement
+    }
+  }, [mobileOpen])
+
   return (
-    <aside
-      className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`}
-      aria-hidden={!mobileOpen ? 'true' : undefined}
-      // 桌面端侧栏常驻可聚焦；移动端未展开时禁止 Tab 聚焦（React 19 原生布尔 inert）
-      inert={!mobileOpen}
-    >
+    <>
+      {/* 移动端遮罩：抽屉打开时拦截点击（点击关闭）；关闭时不渲染 */}
+      {isMobile && mobileOpen && (
+        <div className="sidebar-overlay" onClick={onClose} aria-hidden="true" />
+      )}
+      <aside
+        className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`}
+        aria-hidden={drawerClosed ? 'true' : undefined}
+        // 桌面端侧栏常驻可聚焦；仅移动端抽屉关闭时禁止 Tab 聚焦（React 19 原生布尔 inert）
+        inert={drawerClosed || undefined}
+      >
       <div className="brand">
         <span className="brand-mark">H</span>
         <span>Helpdesk</span>
@@ -144,6 +193,7 @@ export default function Sidebar({
           </div>
         </div>
       </div>
-    </aside>
+      </aside>
+    </>
   )
 }

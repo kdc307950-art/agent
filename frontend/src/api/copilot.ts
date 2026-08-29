@@ -6,7 +6,11 @@ import type {
   CopilotLatestResult,
 } from '../types'
 
-/** 生成 Copilot 处理建议；operation_id 幂等，expected_version 做并发校验。 */
+/** 生成 Copilot 处理建议；operation_id 幂等，expected_version 做并发校验。
+ *
+ * 可能返回 202 {"status":"running"}（后端仍在生成，前端轮询 latest）；
+ * 503 = Copilot 未配置；409 = 工单已变更。
+ */
 export interface CopilotGenerateInput {
   operation_id: string
   expected_version: number
@@ -16,12 +20,18 @@ export function generateCopilot(
   ticketId: string,
   input: CopilotGenerateInput,
   signal?: AbortSignal,
-): Promise<CopilotGenerateResult> {
+): Promise<CopilotGenerateResult | CopilotRunningResult> {
   return api(`/tickets/${ticketId}/copilot`, {
     method: 'POST',
     body: JSON.stringify(input),
     signal,
   })
+}
+
+/** 202 运行中的中间响应（前端轮询 latest 直到拿到草稿）。 */
+export interface CopilotRunningResult {
+  status: 'running'
+  run_id: string
 }
 
 /** 查询工单最新 Copilot 草稿（无则 draft 为 null）。 */

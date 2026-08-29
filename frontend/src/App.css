@@ -103,6 +103,8 @@
 .approval-card .secondary-action { color: #8f3438; border-color: #e6b8b8; }
 .approval-card .primary-action:disabled, .approval-card .secondary-action:disabled { opacity: .55; }
 .mobile-only { display: none; }
+/* 移动端侧栏遮罩：抽屉打开时覆盖主内容，点击关闭 */
+.sidebar-overlay { position: fixed; inset: 0; background: rgba(15,23,28,.45); z-index: 39; }
 @media (max-width: 900px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { position: fixed; inset: 0 auto 0 0; width: 230px; z-index: 40; transform: translateX(-100%); transition: transform .2s ease; box-shadow: 12px 0 30px rgba(0,0,0,.18); }
@@ -116,7 +118,11 @@
 @media (max-width: 540px) {
   .topbar, .detail-header { min-height: 68px; padding: 11px 12px; }
   .topbar h1 { font-size: 17px; }
-  .filters { overflow-x: auto; padding: 8px; }.search-box { display: none; }.filters label { flex: 0 0 auto; }
+  .filters { overflow-x: auto; padding: 8px; }.filters label { flex: 0 0 auto; }
+  /* 阶段七：移动端搜索改为图标按钮（search-toggle）展开输入框，不再 display:none */
+  .search-box.desktop-search { display: none; }
+  .search-toggle { display: inline-grid; }
+  .search-box.mobile-search { display: flex; width: 100%; }
   .ticket-row { padding: 12px; }.summary-band dl { grid-template-columns: repeat(2, 1fr); }
   .detail-actions { padding: 8px 12px; overflow-x: auto; }.detail-section { padding: 15px 13px; }
   .modal { padding: 16px; }.assistant-message { max-width: 88%; }

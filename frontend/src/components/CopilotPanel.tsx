@@ -2,16 +2,19 @@
  * Resolution Copilot 面板（CopilotPanel.tsx）。
  *
  * 职责：
- * - 展示"生成 AI 处理建议"按钮与生成状态（loading / 失败 / 结果）
+ * - 展示"生成 AI 处理建议"按钮与生成状态（loading / 202 轮询 / 失败 / 结果）
  * - 渲染处理步骤、AI 回复草稿、知识引用、置信度与风险提示
  * - 提供"采用草稿"（填充回复编辑框）、"复制到回复框"、"重新生成"
  *
- * 安全边界：
+ * 安全边界（阶段八完善）：
  * - 所有生成结果标注"AI 草稿，发送前必须由客服确认"
  * - "采用草稿"只填充回复编辑框，绝不直接发送（发送仍走工单消息流程）
- * - 切换工单时父组件负责重置本组件状态（或通过 key 强制重建）
+ * - 503 -> 显示"Copilot 未配置"；202 -> 显示"正在生成"并轮询；
+ *   409 -> 提示刷新当前工单
+ * - 生成期间禁用按钮（防重复点击）；切换工单（ticketId 变化）时取消旧请求，
+ *   旧工单结果不能覆盖新工单（ticketId 守卫 + AbortController）
  */
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
   BookOpen,
@@ -21,9 +24,9 @@ import {
   Sparkles,
   Wand2,
 } from 'lucide-react'
-import type { CopilotDraft } from '../types'
-import { approveCopilotDraft, generateCopilot } from '../api/copilot'
-import { describeApiError } from '../api/client'
+import type { CopilotDraft, CopilotGenerateResult } from '../types'
+import { approveCopilotDraft, generateCopilot, getCopilotLatest } from '../api/copilot'
+import { ApiError, describeApiError } from '../api/client'
 
 interface CopilotPanelProps {
   ticketId: string
@@ -35,6 +38,9 @@ interface CopilotPanelProps {
   /** 切换工单时父组件通过 key 重建本组件，因此无需手动重置 */
 }
 
+/** 202 running 轮询间隔（测试可覆写以加速）。 */
+export const COPILOT_POLL_INTERVAL_MS = 2000
+
 export default function CopilotPanel({
   ticketId,
   expectedVersion,
@@ -43,24 +49,103 @@ export default function CopilotPanel({
 }: CopilotPanelProps) {
   const [draft, setDraft] = useState<CopilotDraft | null>(null)
   const [loading, setLoading] = useState(false)
+  const [running, setRunning] = useState(false) // 202：后端仍在生成
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
+  // 请求取消与竞态守卫：ticketId 变化 / 组件卸载时 abort；响应回来时校验是否仍属当前工单
+  const abortRef = useRef<AbortController | null>(null)
+  const mountedRef = useRef(true)
+  // 最新工单 id 的 ref：generate 闭包捕获的是发起时的值，切换工单后必须用 ref 判断
+  const ticketIdRef = useRef(ticketId)
+  ticketIdRef.current = ticketId
 
-  // 生成建议：operation_id 用随机 UUID 保证每次生成独立可审计；
-  // 若后端返回 idempotent_replay（相同 operation），仍会返回已有草稿
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      abortRef.current?.abort()
+    }
+  }, [])
+
+  // 切换工单：取消旧请求、清空旧结果（父组件用 key 重建，这里兜底防旧响应覆盖）
+  useEffect(() => {
+    abortRef.current?.abort()
+    setDraft(null)
+    setRunning(false)
+    setError('')
+    setLoading(false)
+  }, [ticketId])
+
+  // 202 轮询：后端仍在生成时每 2s 查一次 latest，直到拿到草稿或超时
+  const pollLatest = async (runId: string, signal: AbortSignal) => {
+    const deadline = Date.now() + 30_000
+    while (Date.now() < deadline) {
+      if (signal.aborted || !mountedRef.current) return
+      await new Promise((resolve) => setTimeout(resolve, COPILOT_POLL_INTERVAL_MS))
+      if (signal.aborted || !mountedRef.current) return
+      try {
+        const latest = await getCopilotLatest(ticketId, signal)
+        if (!mountedRef.current || signal.aborted) return
+        if (latest.draft && latest.draft.run_id === runId) {
+          setDraft(latest.draft)
+          setRunning(false)
+          return
+        }
+      } catch {
+        if (signal.aborted) return
+      }
+    }
+    setRunning(false)
+    setError('生成超时，请稍后重试')
+  }
+
+  // 生成建议：operation_id 用随机 UUID 保证每次生成独立可审计
   const generate = async () => {
     setLoading(true)
+    setRunning(false)
     setError('')
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    // 发起时的工单 id 快照：响应回来时若用户已切走（ref 已更新），丢弃结果
+    const requestTicketId = ticketIdRef.current
     try {
-      const result = await generateCopilot(ticketId, {
+      const result = await generateCopilot(requestTicketId, {
         operation_id: crypto.randomUUID(),
         expected_version: expectedVersion,
-      })
-      setDraft(result.draft)
+      }, controller.signal)
+      // 竞态守卫：响应返回时若已切走工单则丢弃
+      if (!mountedRef.current || ticketIdRef.current !== requestTicketId) return
+      // 202 running：后端仍在生成，显示"正在生成"并轮询 latest
+      if ('status' in result && result.status === 'running') {
+        setRunning(true)
+        setLoading(false)
+        void pollLatest(result.run_id, controller.signal)
+        return
+      }
+      const completed = result as CopilotGenerateResult
+      if (completed.draft) {
+        setDraft(completed.draft)
+      } else if (completed.idempotent_replay) {
+        // 幂等重放且无草稿：尝试查 latest
+        const latest = await getCopilotLatest(requestTicketId, controller.signal)
+        if (mountedRef.current && ticketIdRef.current === requestTicketId) {
+          setDraft(latest.draft)
+        }
+      }
     } catch (err) {
-      setError(describeApiError(err))
+      if (controller.signal.aborted || !mountedRef.current) return
+      if (err instanceof ApiError && err.status === 503) {
+        setError('Copilot 服务未配置（未接入模型服务）')
+      } else if (err instanceof ApiError && err.status === 409) {
+        setError('工单已变更，请刷新当前工单后重试')
+      } else {
+        setError(describeApiError(err))
+      }
     } finally {
-      setLoading(false)
+      if (mountedRef.current) {
+        setLoading(false)
+      }
     }
   }
 
@@ -89,7 +174,8 @@ export default function CopilotPanel({
     }
   }
 
-  const canGenerate = enabled && !loading
+  // 防重复点击：生成中 / 后端运行中 / 未启用时均禁用按钮
+  const canGenerate = enabled && !loading && !running
 
   return (
     <section className="detail-section copilot-panel">
@@ -121,6 +207,14 @@ export default function CopilotPanel({
         <p className="copilot-hint">
           <LoaderCircle className="spin" size={14} />
           正在分析知识库、资产与历史工单…
+        </p>
+      )}
+
+      {/* 202：后端仍在生成（running），显示"正在生成"并轮询 */}
+      {running && !loading && (
+        <p className="copilot-hint">
+          <LoaderCircle className="spin" size={14} />
+          正在生成，请稍候…
         </p>
       )}
 

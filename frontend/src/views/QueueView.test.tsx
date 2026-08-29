@@ -211,4 +211,42 @@ describe('QueueView', () => {
     expect(screen.queryByText('工单 B')).not.toBeInTheDocument()
     expect(screen.queryByText('工单 A')).not.toBeInTheDocument()
   })
+
+  // ========== 阶段五：view=mine / queue / resolved 查询参数（assignedUserId 修复） ==========
+
+  it('view=mine 时发送 assigned_user_id=current_user', async () => {
+    const listSpy = vi.spyOn(api, 'listTickets').mockResolvedValue({ items: [ticketB] })
+    vi.spyOn(api, 'getTicket').mockResolvedValue(ticketB)
+    vi.spyOn(api, 'getTicketOverview').mockResolvedValue({})
+    vi.spyOn(api, 'getPendingInterrupt').mockResolvedValue({ interrupt: null })
+
+    render(<Wrapper initialEntries={['/tickets?view=mine']} />)
+    await waitFor(() => expect(listSpy).toHaveBeenCalled())
+    const params = listSpy.mock.calls[0][0] as { assignedUserId?: string }
+    expect(params.assignedUserId).toBe('current_user')
+  })
+
+  it('view=queue 时不发送 assigned_user_id', async () => {
+    const listSpy = vi.spyOn(api, 'listTickets').mockResolvedValue({ items: [ticketA] })
+    vi.spyOn(api, 'getTicket').mockResolvedValue(ticketA)
+    vi.spyOn(api, 'getTicketOverview').mockResolvedValue({})
+    vi.spyOn(api, 'getPendingInterrupt').mockResolvedValue({ interrupt: null })
+
+    render(<Wrapper initialEntries={['/tickets']} />)
+    await waitFor(() => expect(listSpy).toHaveBeenCalled())
+    const params = listSpy.mock.calls[0][0] as { assignedUserId?: string }
+    expect(params.assignedUserId).toBeUndefined()
+  })
+
+  it('view=resolved 时发送 status=resolved', async () => {
+    const listSpy = vi.spyOn(api, 'listTickets').mockResolvedValue({ items: [] })
+    vi.spyOn(api, 'getTicket').mockResolvedValue(ticketA)
+    vi.spyOn(api, 'getTicketOverview').mockResolvedValue({})
+    vi.spyOn(api, 'getPendingInterrupt').mockResolvedValue({ interrupt: null })
+
+    render(<Wrapper initialEntries={['/tickets?view=resolved']} />)
+    await waitFor(() => expect(listSpy).toHaveBeenCalled())
+    const params = listSpy.mock.calls[0][0] as { status?: string }
+    expect(params.status).toBe('resolved')
+  })
 })

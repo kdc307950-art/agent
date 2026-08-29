@@ -31,7 +31,7 @@ import {
   resumeIntake,
   transitionTicket,
 } from '../api'
-import type { ResumeIntakeInput } from '../api/tickets'
+import type { ResumeIntakeInput, TicketQuery } from '../api/tickets'
 import TicketList from '../components/TicketList'
 import TicketDetail from '../components/TicketDetail'
 import type { TransitionAction } from '../components/TicketDetail'
@@ -96,6 +96,8 @@ export default function QueueView({ onOpenSidebar }: { onOpenSidebar?: () => voi
   const [pendingClarification, setPendingClarification] = useState<PendingInterrupt | null>(null)
   // Copilot 采用的回复草稿：由 CopilotPanel 填充，仅作展示/复制，不自动发送
   const [adoptedReply, setAdoptedReply] = useState('')
+  // 移动端搜索框是否展开（阶段七：≤540px 时搜索按钮展开内联输入框）
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false)
 
   // —— 竞态防护：详情请求与列表请求各自独立的「序号 + AbortController」 ——
   // 序号用于忽略过期响应；AbortController 用于取消尚未完成的旧请求
@@ -104,18 +106,20 @@ export default function QueueView({ onOpenSidebar }: { onOpenSidebar?: () => voi
   const listRequestId = useRef(0)
   const listAbortRef = useRef<AbortController | null>(null)
 
-  // 组装列表请求的公共查询参数；依赖筛选条件变化时自动重建（useMemo 减少重复计算）
+  // 组装列表请求的公共查询参数（类型化 TicketQuery，避免 URLSearchParams 键名漂移）；
+  // 依赖筛选条件变化时自动重建（useMemo 减少重复计算）
   const baseQuery = useMemo(() => {
-    const params = new URLSearchParams({ limit: String(LIMIT) })
     // resolved 视角下强制 status=resolved，忽略用户选择的状态筛选项
     const status = view === 'resolved' ? 'resolved' : filters.status
-    if (status) params.set('status', status)
-    if (filters.category) params.set('category', filters.category)
-    if (filters.priority) params.set('priority', filters.priority)
-    if (debouncedQ.trim()) params.set('q', debouncedQ.trim())
-    // mine 视角下只查分配给当前用户（current_user）的工单
-    if (view === 'mine') params.set('assigned_user_id', 'current_user')
-    return params
+    return {
+      status: status || undefined,
+      category: filters.category || undefined,
+      priority: filters.priority || undefined,
+      q: debouncedQ.trim() || undefined,
+      // mine 视角下只查分配给当前用户（current_user）的工单
+      assignedUserId: view === 'mine' ? 'current_user' : undefined,
+      limit: LIMIT,
+    } satisfies TicketQuery
   }, [view, filters.status, filters.category, filters.priority, debouncedQ])
 
   // 加载工单列表。append=false 为首次/刷新（替换列表），true 为「加载更多」（游标分页追加）
@@ -131,10 +135,8 @@ export default function QueueView({ onOpenSidebar }: { onOpenSidebar?: () => voi
       setLoading(true)
       setListError('')
       try {
-        const params = new URLSearchParams(baseQuery)
-        if (pageCursor) params.set('cursor', pageCursor)
         const result = await listTickets(
-          { ...Object.fromEntries(params), limit: LIMIT },
+          { ...baseQuery, cursor: pageCursor ?? undefined },
           controller.signal,
         )
         // 请求已被更新的请求取代（如用户切换筛选）时，丢弃本次结果
@@ -399,7 +401,8 @@ export default function QueueView({ onOpenSidebar }: { onOpenSidebar?: () => voi
 
         {/* 筛选区：搜索（防抖）+ 状态/类别/优先级下拉 + 手动刷新；筛选变化时清空分页游标回到第一页 */}
         <div className="filters">
-          <div className="search-box">
+          {/* 桌面搜索框（≤540px 隐藏，见 CSS .desktop-search） */}
+          <div className="search-box desktop-search">
             <Search size={16} />
             <input
               placeholder="搜索工单"
@@ -410,6 +413,28 @@ export default function QueueView({ onOpenSidebar }: { onOpenSidebar?: () => voi
               }}
             />
           </div>
+          {/* 移动端搜索按钮：展开内联搜索框（阶段七恢复移动端搜索） */}
+          <button
+            className="icon-button search-toggle"
+            aria-label={mobileSearchOpen ? '收起搜索' : '展开搜索'}
+            onClick={() => setMobileSearchOpen((open) => !open)}
+          >
+            <Search size={16} />
+          </button>
+          {mobileSearchOpen && (
+            <div className="search-box mobile-search">
+              <Search size={16} />
+              <input
+                autoFocus
+                placeholder="搜索工单"
+                value={filters.q}
+                onChange={(e) => {
+                  setCursor(null)
+                  setFilters({ ...filters, q: e.target.value })
+                }}
+              />
+            </div>
+          )}
           <label>
             <Filter size={15} />
             {/* resolved 视角下状态由后端固定，禁用下拉避免与强制 status 冲突 */}
