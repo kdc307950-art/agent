@@ -45,8 +45,11 @@ export default function Sidebar({
   const view = new URLSearchParams(location.search).get('view') ?? 'queue'
   const path = location.pathname
 
-  const isTicketsActive = (key: string) =>
-    path === '/tickets' && view === key
+  const isTicketsActive = (key: string) => {
+    // 详情页 /tickets/:ticketId 保持"工单队列"高亮
+    if (path.startsWith('/tickets/')) return key === 'queue'
+    return path === '/tickets' && view === key
+  }
 
   const go = (to: string) => {
     navigate(to)
@@ -67,8 +70,8 @@ export default function Sidebar({
     <aside
       className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`}
       aria-hidden={!mobileOpen ? 'true' : undefined}
-      // 桌面端侧栏常驻可聚焦；移动端未展开时禁止 Tab 聚焦（inert）
-      {...(!mobileOpen ? { inert: '' as unknown as boolean } : {})}
+      // 桌面端侧栏常驻可聚焦；移动端未展开时禁止 Tab 聚焦（React 19 原生布尔 inert）
+      inert={!mobileOpen}
     >
       <div className="brand">
         <span className="brand-mark">H</span>
