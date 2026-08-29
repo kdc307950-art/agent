@@ -24,9 +24,10 @@ import {
   Sparkles,
   Wand2,
 } from 'lucide-react'
-import type { CopilotDraft, CopilotGenerateResult } from '../types'
-import { approveCopilotDraft, generateCopilot, getCopilotLatest } from '../api/copilot'
+import type { CopilotDraft } from '../types'
+import { approveCopilotDraft, generateCopilot, getCopilotRunStatus } from '../api/copilot'
 import { ApiError, describeApiError } from '../api/client'
+import { copilotPollConfig } from './copilotPoll'
 
 interface CopilotPanelProps {
   ticketId: string
@@ -37,9 +38,6 @@ interface CopilotPanelProps {
   onAdopt: (text: string) => void
   /** 切换工单时父组件通过 key 重建本组件，因此无需手动重置 */
 }
-
-/** 202 running 轮询间隔（测试可覆写以加速）。 */
-export const COPILOT_POLL_INTERVAL_MS = 2000
 
 export default function CopilotPanel({
   ticketId,
@@ -76,30 +74,52 @@ export default function CopilotPanel({
     setLoading(false)
   }, [ticketId])
 
-  // 202 轮询：后端仍在生成时每 2s 查一次 latest，直到拿到草稿或超时
-  const pollLatest = async (runId: string, signal: AbortSignal) => {
-    const deadline = Date.now() + 30_000
+  // 状态轮询：POST 入队后每 2s 查 run 状态，直到 completed/failed/dead
+  const pollRunStatus = async (runId: string, signal: AbortSignal) => {
+    const deadline = Date.now() + 60_000
     while (Date.now() < deadline) {
       if (signal.aborted || !mountedRef.current) return
-      await new Promise((resolve) => setTimeout(resolve, COPILOT_POLL_INTERVAL_MS))
+      await new Promise((resolve) => setTimeout(resolve, copilotPollConfig.intervalMs))
       if (signal.aborted || !mountedRef.current) return
       try {
-        const latest = await getCopilotLatest(ticketId, signal)
+        const status = await getCopilotRunStatus(ticketIdRef.current, runId, signal)
         if (!mountedRef.current || signal.aborted) return
-        if (latest.draft && latest.draft.run_id === runId) {
-          setDraft(latest.draft)
+        if (status.status === 'completed') {
+          setDraft(status.draft)
           setRunning(false)
+          setLoading(false)
           return
         }
+        if (status.status === 'failed') {
+          setRunning(false)
+          setLoading(false)
+          setError('生成失败，请重新生成重试')
+          return
+        }
+        if (status.status === 'dead') {
+          setRunning(false)
+          setLoading(false)
+          setError('生成进入死信，请转人工处理')
+          return
+        }
+        if (status.status === 'expired') {
+          setRunning(false)
+          setLoading(false)
+          setError('生成任务已过期，请重新生成')
+          return
+        }
+        // queued/processing：继续轮询
       } catch {
         if (signal.aborted) return
       }
     }
     setRunning(false)
+    setLoading(false)
     setError('生成超时，请稍后重试')
   }
 
-  // 生成建议：operation_id 用随机 UUID 保证每次生成独立可审计
+  // 生成建议：operation_id 用随机 UUID 保证每次生成独立可审计；
+  // POST 只入队（202），模型执行由后端 Worker 异步完成，前端轮询 run 状态
   const generate = async () => {
     setLoading(true)
     setRunning(false)
@@ -116,23 +136,10 @@ export default function CopilotPanel({
       }, controller.signal)
       // 竞态守卫：响应返回时若已切走工单则丢弃
       if (!mountedRef.current || ticketIdRef.current !== requestTicketId) return
-      // 202 running：后端仍在生成，显示"正在生成"并轮询 latest
-      if ('status' in result && result.status === 'running') {
-        setRunning(true)
-        setLoading(false)
-        void pollLatest(result.run_id, controller.signal)
-        return
-      }
-      const completed = result as CopilotGenerateResult
-      if (completed.draft) {
-        setDraft(completed.draft)
-      } else if (completed.idempotent_replay) {
-        // 幂等重放且无草稿：尝试查 latest
-        const latest = await getCopilotLatest(requestTicketId, controller.signal)
-        if (mountedRef.current && ticketIdRef.current === requestTicketId) {
-          setDraft(latest.draft)
-        }
-      }
+      // 202 入队成功：显示"正在生成"并轮询 run 状态
+      setRunning(true)
+      setLoading(false)
+      void pollRunStatus(result.run_id, controller.signal)
     } catch (err) {
       if (controller.signal.aborted || !mountedRef.current) return
       if (err instanceof ApiError && err.status === 503) {

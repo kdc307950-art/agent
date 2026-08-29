@@ -47,3 +47,18 @@
 
 12. **审计/预算/撤销**：具备实现（audit.py、budget.py、revocation.py、
     OIDC 可选），但仅在测试环境验证，未在生产流量下评估性能开销。
+
+## Resolution Copilot 边界（异步 Worker 化后）
+
+13. **多部门身份透传未完全落地**：`RunContext` 已携带 departments/internal，
+    统一 `retrieval_principal()` 封装就绪，ACL 集成测试通过；但 `copilot_runs`
+    尚未持久化 user_id，异步 Worker 场景的坐席部门透传暂为空集合（需 schema
+    扩展，列为 P2）。**不能说"已完成真正的多部门身份透传"。**
+
+14. **Copilot 检索为 lexical-only 基线**：统一 `KnowledgeRetriever` 入口就绪
+    （lexical-only / hybrid 双模式 + retrieval_mode 标记），但真实 embedding
+    服务未配置，Copilot 实际走 lexical-only。**不能说"Copilot 已完全 hybrid 化"。**
+
+15. **Copilot 异步 Worker 化已完成核心链路**：POST 只入队返回 202、
+    Worker 领取/租约/退避/dead/恢复、GET 状态轮询、崩溃恢复测试通过；
+    但 Worker 进程的长期运行、多副本并发与故障演练未在生产环境验证。

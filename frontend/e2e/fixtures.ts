@@ -156,13 +156,35 @@ export function mockCopilotGenerate(
     (url) => url.pathname === `/api/tickets/${ticketId}/copilot`,
     async (route, request) => {
       if (request.method() !== 'POST') return route.continue()
+      // 阶段二异步 Worker：POST 只入队返回 202
+      return route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({ status: 'queued', run_id: draft.run_id }),
+      })
+    },
+  )
+}
+
+/** 轮询 GET /copilot/{run_id}：直接返回 completed + 草稿（模拟 Worker 已完成）。 */
+export function mockCopilotRunStatus(
+  page: Page,
+  ticketId: string,
+  draft: MockCopilotDraft,
+) {
+  return page.route(
+    (url) => url.pathname === `/api/tickets/${ticketId}/copilot/${draft.run_id}`,
+    async (route) => {
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
           run_id: draft.run_id,
+          status: 'completed',
           draft,
-          idempotent_replay: false,
+          draft_id: draft.draft_id,
+          error_code: null,
+          tool_calls: 2,
         }),
       })
     },

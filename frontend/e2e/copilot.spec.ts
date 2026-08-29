@@ -11,6 +11,7 @@ import {
   mockCopilotApprove,
   mockCopilotGenerate,
   mockCopilotLatest,
+  mockCopilotRunStatus,
   mockPendingInterrupt,
   mockTicketDetail,
   mockTicketList,
@@ -46,6 +47,7 @@ test.describe('Resolution Copilot 演示流程', () => {
     await mockTicketOverview(page, ticket.ticket_id)
     await mockPendingInterrupt(page, ticket.ticket_id)
     await mockCopilotGenerate(page, ticket.ticket_id, draft)
+    await mockCopilotRunStatus(page, ticket.ticket_id, draft)
     await mockCopilotLatest(page, ticket.ticket_id, draft)
     await mockCopilotApprove(page, ticket.ticket_id)
 
