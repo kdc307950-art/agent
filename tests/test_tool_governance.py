@@ -175,3 +175,84 @@ def test_side_effect_tool_is_never_retried():
     assert result.status == "error"
     assert calls == 1
     assert not any(event[1] == "tool_call_retry" for event in events)
+
+
+# ========== IT 服务台真实工具策略（DEFAULT_TOOL_POLICIES） ==========
+
+
+def test_helpdesk_search_knowledge_retries_on_transient_error():
+    """search_knowledge 策略 retryable=True：临时错误按 max_retry_attempts 重试。"""
+    import httpx
+
+    from backend.tool_governance import DEFAULT_TOOL_POLICIES
+
+    async def run():
+        audit = FakeAudit()
+        governance = ToolGovernance(audit, policies=DEFAULT_TOOL_POLICIES, max_retry_attempts=1)
+        context = make_context(scopes=frozenset({"ticket:agent"}))
+        request = make_request("search_knowledge", {"query": "VPN"}, context)
+        calls = 0
+
+        async def execute(_request):
+            nonlocal calls
+            calls += 1
+            raise httpx.TimeoutException("upstream slow")
+
+        result = await governance.awrap_tool_call(request, execute)
+        return result, calls, audit.events
+
+    result, calls, events = asyncio.run(run())
+    assert result.status == "error"
+    assert calls == 2  # 1 次失败 + 1 次重试
+    assert any(event[1] == "tool_call_retry" for event in events)
+
+
+def test_helpdesk_send_message_failure_is_not_retried():
+    """send_message 策略 side_effect=True / retryable=False：失败绝不自动重试。"""
+    from backend.tool_governance import DEFAULT_TOOL_POLICIES
+
+    async def run():
+        audit = FakeAudit()
+        governance = ToolGovernance(audit, policies=DEFAULT_TOOL_POLICIES, max_retry_attempts=3)
+        context = make_context(scopes=frozenset({"ticket:agent"}))
+        request = make_request("send_message", {"ticket_id": "t-1", "content": "hello"}, context)
+        calls = 0
+
+        async def execute(_request):
+            nonlocal calls
+            calls += 1
+            raise OSError("outbox unavailable")
+
+        result = await governance.awrap_tool_call(request, execute)
+        return result, calls, audit.events
+
+    result, calls, events = asyncio.run(run())
+    assert result.status == "error"
+    assert calls == 1  # 即使 max_retry_attempts=3 也不重试（side_effect）
+    assert not any(event[1] == "tool_call_retry" for event in events)
+
+
+def test_helpdesk_tool_denied_without_ticket_agent_scope():
+    """search_knowledge 需要 ticket:agent scope；缺失时工具不执行。"""
+    from backend.tool_governance import DEFAULT_TOOL_POLICIES
+
+    async def run():
+        audit = FakeAudit()
+        governance = ToolGovernance(audit, policies=DEFAULT_TOOL_POLICIES)
+        context = make_context(scopes=frozenset({"chat:write"}))  # 缺 ticket:agent
+        request = make_request("search_knowledge", {"query": "VPN"}, context)
+        executed = False
+
+        async def execute(_request):
+            nonlocal executed
+            executed = True
+            return "should not run"
+
+        result = await governance.awrap_tool_call(request, execute)
+        return result, executed, audit.events
+
+    result, executed, events = asyncio.run(run())
+    assert result.status == "error"
+    assert "权限" in result.content
+    assert executed is False
+    assert events[0][1] == "tool_call_denied"
