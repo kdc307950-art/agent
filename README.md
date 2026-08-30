@@ -206,6 +206,46 @@ OIDC 生产模式要求 issuer、audience、JWKS、Redis 撤销、`jti` 和 toke
 
 需要限制租户工具集合时设置 `TOOL_TENANT_ALLOWLIST=tenant-a=calculate,get_weather,search_knowledge;tenant-b=calculate,search_assets`；启用该配置后，未列出的租户默认不能调用任何工具。生产工具策略还包含 `search_assets`、`search_knowledge` 和副作用工具 `send_message`，分别要求客服 scope，并对后者关闭自动重试。
 
+## 工具调用与治理
+
+项目把「能暴露给 LLM 的能力」定义为工具（`@tool` + `model.bind_tools(...)`），生产侧共 **7 个工具**、分属 3 个集合，并**全部统一经过 `ToolGovernance` 治理层**放行。下面三张表分别列出工具清单、治理策略与工具集合（profile）。
+
+### 工具清单
+
+| 工具 | 参数 | 类型 | 所属集合 / 用途 |
+|---|---|---|---|
+| `search_assets` | `query?`、`owner_user_id?`、`limit` | 只读 | 搜索当前租户 IT 资产（按 hostname/名称/部门/型号/编号） |
+| `search_knowledge` | `query`、`limit` | 只读 | 检索知识库，返回 `{content, evidence}`（引用白名单唯一来源） |
+| `get_ticket_history` | `requester_id`、`limit` | 只读 | 查客户历史工单（解决阶段汇总上下文） |
+| `get_ticket_messages` | `ticket_id`、`limit` | 只读 | 查工单消息流（解决阶段汇总上下文） |
+| `send_message` | `ticket_id`、`content` | **副作用** | 写入 Outbox 异步投递渠道消息（唯一带副作用的工具） |
+| `get_weather` | `location` | 只读 | **legacy**：查 Open-Meteo 实时天气 |
+| `calculate` | `expression` | 只读 | **legacy**：AST 白名单安全数学计算 |
+
+> 说明：工具实现分两处——`src/my_agent/helpdesk/tools.py`（`HELPDESK_TOOLS` / `RESOLUTION_COPILOT_TOOLS`）与 `backend/copilot/tools.py`（`COPILOT_TOOLS`，`search_knowledge` 走统一 `KnowledgeRetriever`，附带 `retrieval_mode`/`degraded`）。`backend/knowledge/agentic.py` 的 Agentic RAG 改写查询属于检索组件内部逻辑，**不是** function calling。
+
+### 治理策略（`backend/tool_governance.py`）
+
+| 工具 | 所需 scope | 超时 | 输入上限 | 可重试 | 副作用 |
+|---|---|---|---|---|---|
+| `search_assets` | `ticket:agent` | 3s | 512 | 是 | 否 |
+| `search_knowledge` | `ticket:agent` | 5s | 1024 | 是 | 否 |
+| `get_ticket_history` | `ticket:agent` | 3s | 512 | 是 | 否 |
+| `get_ticket_messages` | `ticket:agent` | 3s | 512 | 是 | 否 |
+| `send_message` | `ticket:agent` | 5s | 4096 | **否** | **是** |
+| `get_weather` | `chat:write` | 5s | 128 | 是 | 否 |
+| `calculate` | `chat:write` | 2s | 512 | 否 | 否 |
+
+### 工具集合（profile 白名单）
+
+| 集合 | 允许的工具 | 用途 |
+|---|---|---|
+| `INTAKE_AGENT_TOOLS` | `search_knowledge`、`search_assets` | 受理阶段（Agent 1） |
+| `RESOLUTION_COPILOT_TOOLS` | `search_knowledge`、`search_assets`、`get_ticket_history`、`get_ticket_messages` | 解决阶段（Agent 2），全部只读 |
+| `HUMAN_ACTION_TOOLS` | `send_message` | 需人工介入的副作用动作 |
+
+运行期 `RunContext.allowed_tools` 注入上述集合，`ToolGovernance.awrap_tool_call`（挂在每个 ToolNode 上）按序执行：**scope 校验 → `allowed_tools`/租户 `TOOL_TENANT_ALLOWLIST` 子集校验 → 输入长度裁剪 → 单工具超时**；仅 `retryable=True` 且非副作用的工具才自动重试临时错误；审计只记工具名/状态/耗时/错误码，不落 prompt、Authorization、API key 或原始工具结果。
+
 ## 本地开发（不走容器）
 
 先启动 PostgreSQL 和 Redis，再初始化 checkpoint/store/审计表：
