@@ -1,4 +1,9 @@
-/** 工单 API。 */
+/**
+ * 工单 API 封装：前端所有工单相关请求的入口。
+ *
+ * 覆盖：列表/详情/概览、建单、启动与恢复受理图、状态流转、满意度回访、
+ * 以及查询挂起中的受理 interrupt。请求统一经 `api()` 携带租户令牌与错误处理。
+ */
 
 import { api } from './client'
 import type {
@@ -19,6 +24,7 @@ export interface TicketQuery {
   limit?: number
 }
 
+/** 游标分页查询工单；仅传非空筛选参数，limit 默认 30。 */
 export function listTickets(
   query: TicketQuery,
   signal?: AbortSignal,
@@ -34,9 +40,11 @@ export function listTickets(
   return api<TicketListResult>(`/tickets?${params.toString()}`, { signal })
 }
 
+/** 查询单个工单详情。 */
 export const getTicket = (ticketId: string, signal?: AbortSignal): Promise<Ticket> =>
   api(`/tickets/${ticketId}`, { signal })
 
+/** 聚合概览：SLA、满意度、消息流、指派记录与 RAG 引用。 */
 export const getTicketOverview = (
   ticketId: string,
   signal?: AbortSignal,
@@ -56,6 +64,7 @@ export interface CreateTicketInput {
   asset_id?: string | null
 }
 
+/** 新建工单（Web 渠道），可选绑定资产。 */
 export function createTicket(input: CreateTicketInput): Promise<Ticket> {
   return api('/tickets', {
     method: 'POST',
@@ -70,6 +79,7 @@ export interface StartIntakeInput {
   expected_version: number
 }
 
+/** 启动受理图；带 operation_id 与 expected_version 保证幂等与乐观锁。 */
 export function startIntake(
   ticketId: string,
   input: StartIntakeInput,
@@ -92,6 +102,7 @@ export interface TransitionInput {
   expected_version: number
 }
 
+/** 工单状态流转（接单/处理/解决/关闭等）。 */
 export function transitionTicket(ticketId: string, input: TransitionInput): Promise<Ticket> {
   return api(`/tickets/${ticketId}/transitions`, {
     method: 'POST',
@@ -120,6 +131,7 @@ export interface ResumeIntakeInput {
   payload: { fields: Record<string, string> }
 }
 
+/** 恢复被 interrupt 挂起的受理图（客户补充字段 / 审批人批准）。 */
 export function resumeIntake(ticketId: string, input: ResumeIntakeInput): Promise<IntakeResult> {
   return api(`/tickets/${ticketId}/resume`, {
     method: 'POST',

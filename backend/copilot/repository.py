@@ -35,6 +35,13 @@ STATUS_EXPIRED = "expired"
 
 
 class CopilotRepository:
+    """Resolution Copilot 运行与草稿的持久化仓储。
+
+    - 运行：POST 只入队（queued），模型执行由 CopilotWorker 异步领取；
+      SKIP LOCKED + 租约支持多副本，失败指数退避，超限进 dead，僵尸回队。
+    - 草稿：save_draft 写入、get_latest_draft 取最新、approve/reject 走审批状态机。
+    """
+
     def __init__(self, pool: AsyncConnectionPool) -> None:
         self.pool = pool
 

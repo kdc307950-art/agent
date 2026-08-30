@@ -21,6 +21,15 @@ logger = logging.getLogger(__name__)
 
 
 class InboundWorker:
+    """入站事件异步处理 Worker（建单/受理的常驻执行者）。
+
+    与 Outbox Worker 采用同一套租约机制：领取用 FOR UPDATE SKIP LOCKED，
+    处理中持租约，超时视为失联可被其他副本回收。单条处理：
+      - 成功：complete_inbound_event 标记 committed；
+      - 失败：未达上限则指数退避重试，达上限进入 dead（可重放）。
+    可观测性：处理结果/时延写 worker_metrics，心跳写 worker_heartbeats。
+    """
+
     def __init__(
         self,
         runtime,
@@ -98,6 +107,7 @@ class InboundWorker:
                     {"result": str(result.get("reason") or "noop")},
                 )
         except Exception as exc:
+            # 失败分支：按剩余可重试次数决定进 dead 还是指数退避后重试。
             error_code = getattr(exc, "error_code", None) or type(exc).__name__
             error_code_log = error_code
             if attempts >= self.max_attempts:
@@ -113,6 +123,7 @@ class InboundWorker:
                     self.worker_metrics, "inbound_worker_dead_total", {"channel": channel}
                 )
             else:
+                # 指数退避：第 N 次失败后等待 base * 2^(N-1)，再回到 pending 队列。
                 retry_at = datetime.now(UTC) + timedelta(
                     seconds=self.backoff_base_seconds * (2 ** (attempts - 1))
                 )

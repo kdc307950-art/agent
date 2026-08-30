@@ -139,7 +139,12 @@ async def _resume_from_customer_reply(
 async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor_id: str) -> dict:
     """处理一条已登记（received）的渠道入站事件。
 
-    优先匹配客户待补全工单（企微回复 → resume 原工单）；否则建单并受理。
+    处理流程（业务链唯一一份，Worker 与 HTTP 共用）：
+      1. 企微客户回复优先匹配待补全工单 → resume 原工单受理（绝不新建）；
+      2. 否则建单：事件未关联工单则新建 ticket，已关联则复用上次崩溃遗留的工单恢复；
+      3. 跑受理图（若未开始）或从记录的工作流意图续跑，得到 分类/追问/派单 命令；
+      4. 若有缺字段 → 登记待补全关联并写入澄清 Outbox 消息；
+      5. transition_many 执行命令，进入 Q/A 状态时补建 SLA；最后返回受理快照。
     """
     existing = await runtime.tickets.get_inbound_event(
         event.tenant_id, event.channel, event.external_event_id
@@ -158,7 +163,8 @@ async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor
         if resumed is not None:
             return resumed
 
-    # 幂等：事件已关联工单（上次崩溃在建单后/受理中）→ 复用该工单恢复受理。
+    # 幂等：事件已关联工单（上次崩溃在建单后/受理中）→ 复用该工单恢复受理，
+    # 避免同 event_id 重复登记造成的重复建单；未关联则新建工单并回写关联。
     ticket = None
     if existing["ticket_id"] is not None:
         ticket = await runtime.tickets.get(event.tenant_id, existing["ticket_id"])
@@ -194,6 +200,7 @@ async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor
         checkpoint_thread_id=config["configurable"]["thread_id"],
     )
     if run["status"] == "committed":
+        # 受理图上一轮已提交（例如崩溃后恢复）：直接复用挂起状态，不再重复跑图。
         snapshot = await runtime.intake_graph.aget_state(config)
         return {
             "created": created,
@@ -254,6 +261,7 @@ async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor
         commands = deserialize_commands(run["intent"])
         result = dict(run["intent"].get("result") or {})
 
+    # 受理图被 interrupt 挂起（缺字段）时，向客户登记待补全关联并推送澄清消息。
     clarification = (
         "、".join(result.get("missing_fields") or []) if "__interrupt__" in result else None
     )

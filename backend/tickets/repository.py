@@ -84,6 +84,13 @@ def canonical_payload_hash(payload: dict[str, Any]) -> str:
 
 
 class TicketRepository:
+    """工单核心仓储：CRUD + 乐观锁流转 + 渠道/追问/工作流运行的登记与领取。
+
+    所有写操作在单连接事务内完成，用行锁串行化并发修改；version 乐观锁由
+    expected_version 校验，冲突抛 TicketVersionConflict。渠道入站与 Outbox
+    使用 SKIP LOCKED 领取，支持多副本并行处理而不重复。
+    """
+
     def __init__(self, pool: AsyncConnectionPool) -> None:
         self.pool = pool
 
@@ -429,6 +436,16 @@ class TicketRepository:
         scopes: Iterable[str],
         operation_id: str | None = None,
     ) -> TicketRecord:
+        """在单个事务内按顺序执行一批状态流转命令（乐观锁 + 工作流运行幂等）。
+
+        前置校验：
+          - 所有命令必须作用于同一工单，且 expected_version 从起始版本起连续递增；
+          - 工单行被 FOR UPDATE 锁定，并发写被串行化；
+          - 若带 operation_id，先校验对应 ticket_workflow_runs：已 committed 则幂等返回当前快照，
+            版本不匹配则抛 WorkflowOperationConflict；
+          - 最终校验 current.version == expected_version，不一致抛 TicketVersionConflict。
+        随后逐条执行 transition_ticket，并把多条 UPDATE 的聚合结果作为最终 TicketRecord 返回。
+        """
         if not commands:
             raise ValueError("至少需要一个工单动作")
         ticket_id = commands[0].ticket_id

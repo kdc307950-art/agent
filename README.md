@@ -88,12 +88,19 @@ uv run python -m backend.issue_dev_token demo admin-1    --role helpdesk-it-admi
 | `POST /tickets/{id}/transitions` | 与 actor 对应的 `ticket:*` | 接单、处理、解决、关闭等 |
 | `POST /tickets/{id}/survey` | `ticket:agent` | 发起回访并写 Outbox |
 | `POST /tickets/{id}/survey/{survey_id}/response` | `ticket:customer` | 提交 1–5 分满意度 |
+| `POST /tickets/{id}/copilot` | `ticket:agent` | 触发 Resolution Copilot（入队 `queued`，返回 `run_id`） |
+| `GET /tickets/{id}/copilot/{run_id}` | `ticket:agent` | 轮询运行状态（`queued/processing/completed/failed/dead`） |
+| `GET /tickets/{id}/copilot/latest` | `ticket:agent` | 查询工单最新 Copilot 草稿 |
+| `POST /tickets/{id}/copilot/{draft_id}/approve` | `ticket:agent` | 审批草稿（仅状态迁移，不发送消息） |
+| `GET /admin/copilot/runs` | `security:admin` | 管理端查看 Copilot 运行 |
 
 渠道入站采用**快速 ACK + 异步 Worker**：企微/钉钉 Webhook 与内部通道 `POST /integrations/{channel}/events` 只做验签解密并登记事件（`inbound_events`，状态 `received`），立即返回 `202 {"accepted": true, "event_id": ...}`；`run_inbound_worker` 领取后异步建单、受理、分类、派单与澄清 Outbox，状态经 `received → processing → committed/failed/dead`，临时错误指数退避、超限进 dead 可重放。调用方通过 `GET /integrations/events/{event_id}`（`ticket:channel`）轮询状态并获取 `ticket_id`；同 `event_id` 重复登记幂等，不重复建单。企微事件消息（enter_agent / location 等）验签通过后返回 200 忽略，不登记、不建单。
 
 企业微信 `/integrations/wecom/webhook` 使用 SHA-1 验签、AES-CBC 解密、CorpID 与重放窗口校验；钉钉 `/integrations/dingtalk/webhook` 使用时间戳和 HMAC-SHA256。两个厂商端点以服务端配置绑定租户，不信任请求体 tenant。内部适配器也可使用带 `ticket:channel` scope 的 `/integrations/{channel}/events`。
 
 知识库采用 Agentic RAG：Agent 可在有界轮次内根据检索结果生成补充查询，所有查询都重复执行 tenant、发布状态、有效期和部门 ACL；全文与向量候选使用 RRF 融合。运行时已装配 `AgenticRAGService`、`KnowledgeAnswerService` 和可选 `PgVectorRetriever`，受理图在派单后调用回答门禁生成建议回复。默认策略是建议回复，搜索耗尽后不会自动发送。没有双路证据、缺少有效引用、高风险或财务类问题都禁止自动回复并转人工。pgvector 为可选真实向量后端，未安装扩展或未配置 embedding 端点时只使用全文并明确记录降级原因。
+
+Solution Copilot（`backend/copilot/`，解决阶段 Agent）：针对「处理/解决」阶段的有界只读 Agent，与受理图（Agent 1）解耦。客服在工单上触发后，`ResolutionCopilot` 在固定管道内做多轮只读工具调用（`search_knowledge` / `search_assets` / 历史工单），汇总证据生成**待审批草稿**，再经独立答案门禁（引用必须落在工具返回的证据里、敏感类别「财务」强制转人工、置信度阈值）把关；默认 `auto_reply=False`，只产出草稿、不改变工单状态、不发送客户消息。阶段二采用异步 Worker：`POST /tickets/{id}/copilot` 只登记 `queued` 运行并立即返回 `run_id`，模型执行由 `backend/copilot/worker.py` 领取，前端轮询 `GET /tickets/{id}/copilot/{run_id}` 至终态；草稿 `approve` 只做状态迁移，不触发发送。
 
 ## 架构
 
@@ -105,15 +112,33 @@ flowchart LR
     AUTH --> TICKET[工单领域状态机]
     TICKET --> INTAKE[受理 / 补全 / 分类 / 派单图]
     INTAKE --> RAG[ACL 检索 / 引用门禁]
+    TICKET --> COPILOT[Resolution Copilot<br/>解决阶段只读 Agent]
+    COPILOT --> RAG
     API --> CHAT[legacy-demo<br/>旧 Chat / JSON 多 Agent 编排]
     TICKET --> PG[(PostgreSQL<br/>工单 / 事件 / Checkpoint / Outbox)]
     API --> REDIS[(Redis<br/>限流 / 预算 / 撤销)]
-    PG --> WORKER[Outbox / SLA / 回访任务]
+    PG --> WORKER[Outbox / SLA / 回访 / Copilot Worker]
     INTAKE --> LLM[DeepSeek / 可替换分类器]
     API -. 指标 / 链路 .-> OTEL[OTel / Prometheus / Jaeger]
 ```
 
 两种图形态共用同一套 checkpointer、store 和工具治理钩子，因此多租户隔离、审计、预算、限流对上层完全一致，差异只在图结构本身。
+
+### 「Agent / Worker / 确定性流程」边界
+
+这个项目**不是**多智能体编排（生产链路上没有 supervisor 路由、Agent 互不协作）；真正的多 Agent 能力保留在 legacy-demo。生产侧的“智能体”只有两个**各自独立、面向不同阶段**的专用 Agent，其余大规模并行靠**异步 Worker**，受理与派单主体是**确定性流程**。
+
+| 类别 | 模块 / 入口 | 是否用 LLM | 触发方式 | 说明 |
+|---|---|---|---|---|
+| 确定性流程（受理主体） | `helpdesk/graph.py` 除 `compose_answer` 外的节点 | 否 | 受理链路自动 | 归一化 → 关键词分类 → 策略 → 完整性 → 澄清中断 → 规则派单，纯函数 + 状态机 |
+| Agent 1（受理图） | `helpdesk/graph.py` 的 `compose_answer_node` | 是（RAG 拟答） | 受理链路末尾 | 全图唯一走 LLM 的节点：检索知识生成带引用的建议回复 |
+| Agent 2（Resolution Copilot） | `copilot/agent.py` | 是（有界工具循环） | 客服触发，`run_copilot_worker` 异步执行 | 解决阶段只读多轮工具调用，产出**待审批草稿**，过独立答案门禁 |
+| Agentic RAG 内部循环 | `knowledge/agentic.py` | 是 | 检索时 | 单组件内部的有界轮次重写查询，不算独立的“智能体” |
+| 状态机 / 规则域 | `helpdesk/domain.py`、`tickets/routing.py`、`tickets/policies.py`、`tickets/sla.py` | 否 | 被上层调用 | 状态转移、派单路由、租户策略、SLA 计算，纯函数 / 数据访问 |
+| 异步 Worker | `inbound_worker` / `outbox_worker` / `sla_worker` / `workflow_recovery` / `run_copilot_worker` | 否（只执行，不编排） | 常驻进程 / 定时 | 渠道入站建单受理、消息投递、SLA 违约扫描、恢复、异步跑 Copilot 模型 |
+| legacy-demo（多 Agent 编排） | `legacy-demo/main_supervisor.py`、`supervisor_agent.py`、`workflow/` | 是 | CLI 手动 | supervisor 路由 + 子 Agent + interrupt 人工审批，仅试跑图结构，**非产品入口** |
+
+> 说明：`run_*_worker.py` 是各 Worker 的进程入口，`*_worker.py`（`inbound_worker` / `outbox_worker` / `sla_worker` / `copilot/worker.py`）是常驻实现；它们负责把渠道事件与模型执行异步化（`FOR UPDATE SKIP LOCKED` + 租约 + 指数退避 + dead 重放），与“是否多 Agent”是两个维度。
 
 ### 人工审批为什么是两次请求
 

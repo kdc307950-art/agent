@@ -43,6 +43,12 @@ def sla_policy_candidates(category: str | None) -> tuple[str, ...]:
 
 
 class TicketOperationsRepository:
+    """工单周边运营数据仓储：Outbox 发件箱、SLA 实例、满意度调查与工单概览聚合。
+
+    所有写操作都与对应的 Outbox 事件在同一数据库事务内完成，保证「业务变更 + 渠道投递」
+    的原子性；Outbox 领取使用 FOR UPDATE SKIP LOCKED + 租约，支持多 Worker 并发且不重复投递。
+    """
+
     def __init__(self, pool: AsyncConnectionPool) -> None:
         self.pool = pool
 
@@ -81,6 +87,13 @@ class TicketOperationsRepository:
         idempotency_key: str,
         payload: dict[str, Any],
     ) -> bool:
+        """追加工单出站消息，并在同一事务内写入对应 Outbox 事件。
+
+        步骤：
+          1. 先插 Outbox 事件（唯一键 tenant_id+idempotency_key 幂等；冲突则说明已投递，直接返回 False）；
+          2. 再插 ticket_messages 消息记录；
+        两者同事务提交，保证「消息落库 + 待投递事件」要么都发生、要么都不发生。
+        """
         async with self.pool.connection() as connection:
             async with connection.transaction(), connection.cursor() as cursor:
                 await cursor.execute(
@@ -96,6 +109,7 @@ class TicketOperationsRepository:
                 )
                 created = await cursor.fetchone()
                 if created is None:
+                    # 幂等键冲突：该事件此前已登记，避免重复投递
                     return False
                 await cursor.execute(
                     """
@@ -116,6 +130,13 @@ class TicketOperationsRepository:
         limit: int = 20,
         tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
+        """领取一批待投递的 Outbox 事件（含失败重试恢复）。
+
+        SQL 说明：
+          - ready 子集：`pending` 且到重试时间，或 `processing` 但租约已过期（视为上一 Worker 失联，可被回收）；
+          - `FOR UPDATE SKIP LOCKED`：锁住领到的事件但跳过已被其他 Worker 锁定的行，实现多副本并发领取；
+          - 更新为 `processing` 并写租约（lease）与尝试次数；`lease_recovered` 标记是否回收了过期租约。
+        """
         if not worker_id or lease_seconds < 1 or limit < 1 or limit > 100:
             raise ValueError("Outbox 租约参数无效")
         async with self.pool.connection() as connection:
@@ -227,6 +248,10 @@ class TicketOperationsRepository:
                 return cursor.rowcount == 1
 
     async def get_ticket_overview(self, tenant_id: str, ticket_id: str) -> dict[str, Any]:
+        """聚合工单概览：SLA、满意度调查、消息流、指派记录与 RAG 建议引用。
+
+        全部按 tenant_id + ticket_id 过滤（强制租户隔离），供详情页一次取全。
+        """
         async with self.pool.connection() as connection:
             async with connection.cursor(row_factory=dict_row) as cursor:
                 await cursor.execute(
@@ -487,6 +512,13 @@ class TicketOperationsRepository:
         limit: int = 100,
         tenant_id: str | None = None,
     ) -> int:
+        """扫描已到期的 SLA：标记违约并写出 'sla.breached' Outbox 事件。
+
+        - 只处理「未暂停」的 SLA（暂停期间不计时）；
+        - 首次响应与解决分别计算：逾期且尚未标记违约的打入违约；
+        - 违约标记与 Outbox 事件在同一事务内完成，且事件用幂等键防重复发送。
+        返回本次新增的违约事件数。
+        """
         if limit < 1 or limit > 1000:
             raise ValueError("limit 必须在 1 到 1000 之间")
         reference = now or datetime.now(UTC)
