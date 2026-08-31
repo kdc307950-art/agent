@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .models import Citation, RetrievalHit, RetrievalPrincipal
 from .repository import KnowledgeRepository
@@ -68,9 +68,15 @@ class GeneratedAnswer(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    text: str = Field(min_length=1, max_length=8_000)
+    text: str = Field(default="", max_length=8_000)
     citations: tuple[GeneratedCitation, ...] = ()
     abstained: bool = False
+
+    @model_validator(mode="after")
+    def require_text_unless_abstained(self) -> GeneratedAnswer:
+        if not self.abstained and not self.text.strip():
+            raise ValueError("非 abstained 答案必须包含文本")
+        return self
 
 
 class AnswerDecision(BaseModel):
@@ -104,6 +110,10 @@ class AnswerGatePolicy:
     minimum_hybrid_hits: int = 1
     require_both_retrievers: bool = True
     sensitive_categories: frozenset[str] = frozenset({"finance"})
+
+    def __post_init__(self) -> None:
+        if self.minimum_hybrid_hits < 0:
+            raise ValueError("minimum_hybrid_hits 不能为负数")
 
 
 class NullVectorRetriever:
@@ -215,6 +225,10 @@ class KnowledgeAnswerService:
             AnswerDecision；无检索结果时直接返回
             ("no_retrieval_hits",) 的拒绝决策，不调用生成器。
         """
+        if not question or not question.strip():
+            raise ValueError("question 不能为空")
+        if limit < 1 or limit > 100:
+            raise ValueError("limit 必须在 1 到 100 之间")
         # 双路检索：词法 + 向量，随后 RRF 融合去重
         lexical = await self.repository.lexical_search(principal, question, limit=limit)
         vector = await self.vector_retriever.search(principal, question, limit=limit)

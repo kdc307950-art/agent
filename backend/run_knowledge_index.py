@@ -85,12 +85,18 @@ async def _mark_ready(pool, chunk: dict, model: str) -> None:
 
 
 async def _run(tenant_id: str, conninfo: str, *, batch_size: int, embed: bool) -> dict:
+    if batch_size < 1 or batch_size > HttpEmbeddingProvider.EMBED_BATCH_SIZE:
+        raise ValueError(
+            f"batch_size 必须在 1 到 {HttpEmbeddingProvider.EMBED_BATCH_SIZE} 之间"
+        )
     embedding_endpoint = os.getenv("KNOWLEDGE_EMBEDDING_ENDPOINT", "").strip()
     try:
         dimension = int(os.getenv("KNOWLEDGE_EMBEDDING_DIMENSION", "1536"))
     except ValueError as exc:
         raise SystemExit("KNOWLEDGE_EMBEDDING_DIMENSION 必须是整数") from exc
-    embedding_model = os.getenv("KNOWLEDGE_EMBEDDING_MODEL", "").strip() or "unknown"
+    embedding_model = os.getenv("KNOWLEDGE_EMBEDDING_MODEL", "").strip() or None
+    record_model = embedding_model or "unknown"
+    embedding_token = os.getenv("KNOWLEDGE_EMBEDDING_TOKEN", "").strip() or None
     if embed and not embedding_endpoint:
         raise SystemExit("--embed 需要配置 KNOWLEDGE_EMBEDDING_ENDPOINT")
 
@@ -98,18 +104,32 @@ async def _run(tenant_id: str, conninfo: str, *, batch_size: int, embed: bool) -
     await pool.open(wait=True)
     try:
         chunks = await _pending_chunks(pool, tenant_id)
-        if not embedding_endpoint:
+        # 只有显式 --embed 才允许产生外部 embedding 请求；即使环境已配置
+        # endpoint，默认命令也只做盘点，避免误触发付费调用。
+        if not embed:
             return {"mode": "dry-run", "pending": len(chunks), "ready": 0}
         repository = KnowledgeRepository(pool)
         vector = PgVectorRetriever(
             repository,
-            HttpEmbeddingProvider(embedding_endpoint, dimension=dimension),
+            HttpEmbeddingProvider(
+                embedding_endpoint,
+                dimension=dimension,
+                auth_token=embedding_token,
+                model=embedding_model,
+            ),
             dimension=dimension,
         )
         ready = 0
         for start in range(0, len(chunks), batch_size):
             batch = chunks[start : start + batch_size]
-            embeddings = [await vector.embedder.embed_query(chunk["content"]) for chunk in batch]
+            texts = [str(chunk["content"]) for chunk in batch]
+            # 文档导入优先走批量接口，避免逐 chunk 建立请求；保留单条回退以兼容
+            # 外部注入的旧 EmbeddingProvider 实现。
+            embed_documents = getattr(vector.embedder, "embed_documents", None)
+            if callable(embed_documents):
+                embeddings = await embed_documents(texts)
+            else:
+                embeddings = [await vector.embedder.embed_query(text) for text in texts]
             if len(embeddings) != len(batch):
                 raise RuntimeError(f"embedding 返回数量 {len(embeddings)} != 输入数量 {len(batch)}")
             for chunk, embedding in zip(batch, embeddings, strict=True):
@@ -128,13 +148,13 @@ async def _run(tenant_id: str, conninfo: str, *, batch_size: int, embed: bool) -
                     document_version=chunk["document_version"],
                     chunk_id=chunk["chunk_id"],
                     embedding=embedding,
-                    embedding_model=embedding_model,
+                    embedding_model=record_model,
                 )
                 if not ok:
                     raise RuntimeError(
                         f"写入 embedding 失败: {chunk['document_id']}/{chunk['chunk_id']}"
                     )
-                await _mark_ready(pool, chunk, embedding_model)
+                await _mark_ready(pool, chunk, record_model)
                 ready += 1
         return {"mode": "embed", "pending": len(chunks) - ready, "ready": ready}
     finally:

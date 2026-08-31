@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import sys
 from collections import defaultdict
@@ -171,6 +172,14 @@ async def _run_eval(
     dataset: str,
     min_similarity: float | None = None,
 ) -> dict:
+    if topk < 1 or topk > 100:
+        raise ValueError("topk 必须在 1 到 100 之间")
+    if limit < 0:
+        raise ValueError("limit 不能为负数")
+    if min_similarity is not None and (
+        not math.isfinite(min_similarity) or not 0.0 <= min_similarity <= 1.0
+    ):
+        raise ValueError("min_similarity 必须在 0 到 1 之间")
     started = monotonic()
     if seed:
         from .seed_demo import _seed
@@ -179,6 +188,7 @@ async def _run_eval(
 
     embedding_endpoint = os.getenv("KNOWLEDGE_EMBEDDING_ENDPOINT", "").strip()
     embedding_model = os.getenv("KNOWLEDGE_EMBEDDING_MODEL", "").strip() or None
+    embedding_token = os.getenv("KNOWLEDGE_EMBEDDING_TOKEN", "").strip() or None
     try:
         embedding_dimension = int(os.getenv("KNOWLEDGE_EMBEDDING_DIMENSION", "1536"))
     except ValueError as exc:
@@ -195,7 +205,12 @@ async def _run_eval(
         repository = KnowledgeRepository(pool)
         vector = None
         if use_embedding:
-            embedder = HttpEmbeddingProvider(embedding_endpoint, dimension=embedding_dimension)
+            embedder = HttpEmbeddingProvider(
+                embedding_endpoint,
+                dimension=embedding_dimension,
+                auth_token=embedding_token,
+                model=embedding_model,
+            )
             vector = PgVectorRetriever(repository, embedder, dimension=embedding_dimension)
 
         # 知识库版本（评测报告用）：文档数与最高版本号
@@ -425,6 +440,15 @@ def main() -> None:
 def _enforce_gate(report: dict, args: argparse.Namespace) -> None:
     """评测门禁：低于阈值时非零退出（CI 用）。"""
     totals = report["totals"]
+    for name, threshold in (
+        ("Top1", args.fail_under_top1),
+        ("Recall", args.fail_under_recall5),
+        ("MRR", args.fail_under_mrr),
+    ):
+        if threshold is not None and (
+            not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0
+        ):
+            raise SystemExit(f"{name} 门禁阈值必须在 0 到 1 之间")
     checks = [
         (args.fail_under_top1, totals["top1"], "Top1"),
         (args.fail_under_recall5, totals["recall"], f"Recall@{report['topk']}"),

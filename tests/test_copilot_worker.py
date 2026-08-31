@@ -103,8 +103,14 @@ class _FakePool:
                 recovered += 1
         return recovered
 
-    async def save_draft(self, **kwargs):
+    async def save_draft_and_complete_run(self, **kwargs):
+        run = self.runs.get(kwargs["run_id"])
+        if not run or run["status"] != "processing" or run["worker_id"] != kwargs["worker_id"]:
+            return False
         self.drafts.append(kwargs)
+        run["status"] = "completed"
+        run["tool_calls"] = kwargs["tool_calls"]
+        return True
 
     async def get_draft_by_run(self, tenant_id, ticket_id, run_id):
         for d in self.drafts:
@@ -233,3 +239,42 @@ def test_worker_recovers_orphaned_processing_run():
     result = asyncio.run(run())
     # 被 recover 回队并重新领取 -> 本 worker 完成
     assert result.completed >= 1 or result.claimed >= 1
+
+
+def test_worker_stops_generation_when_lease_is_lost():
+    """续租返回 False 时取消模型任务，不保存草稿也不伪报完成。"""
+    pool = _FakePool()
+    started = asyncio.Event()
+
+    async def renew_run_lease(**kwargs):
+        return False
+
+    pool.renew_run_lease = renew_run_lease
+
+    class BlockingService(_FakeCopilotService):
+        async def run_with_tenant(self, *, runtime, tenant_id, ticket_id, run_context=None):
+            self.calls.append((tenant_id, ticket_id))
+            started.set()
+            await asyncio.Event().wait()
+
+    service = BlockingService()
+    runtime = SimpleNamespace(copilot=service, copilot_repository=pool, audit=SimpleNamespace(pool=pool))
+    worker = CopilotWorker(runtime=runtime, max_attempts=2, lease_seconds=1)
+
+    async def run():
+        run_id = uuid4().hex
+        await pool.start_run(
+            run_id=run_id,
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            operation_id=f"op-{uuid4().hex}",
+            lease_seconds=1,
+        )
+        task = asyncio.create_task(worker.run_once(limit=1))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        return await asyncio.wait_for(task, timeout=2)
+
+    result = asyncio.run(run())
+    assert result.completed == 0
+    assert result.lease_lost == 1
+    assert pool.drafts == []

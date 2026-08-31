@@ -54,9 +54,9 @@ class FakeRedis:
         if len(arguments) == 1:
             return [int(current < int(arguments[0])), current]
         amount, limit, _expires_at = (int(argument) for argument in arguments)
-        if current + amount > limit:
-            return [0, current]
         self.values[key] = current + amount
+        if self.values[key] > limit:
+            return [0, self.values[key]]
         return [1, self.values[key]]
 
 
@@ -71,6 +71,18 @@ def test_tenant_budget_is_shared_per_tenant_and_enforces_limit() -> None:
         assert not await budget.can_start("tenant-a")
         assert not await budget.record("tenant-a", 0.01)
         assert await budget.can_start("tenant-b")
+
+
+def test_tenant_budget_closes_after_a_single_over_limit_charge() -> None:
+    async def run() -> None:
+        redis = FakeRedis()
+        budget = TenantBudget(redis, daily_limit_usd=1.0)
+        assert await budget.record("tenant-a", 0.9)
+        assert not await budget.record("tenant-a", 0.2)
+        assert not await budget.can_start("tenant-a")
+        assert not await budget.record("tenant-a", 0.1)
+
+    asyncio.run(run())
 
     asyncio.run(run())
 

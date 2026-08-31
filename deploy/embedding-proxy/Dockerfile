@@ -7,11 +7,14 @@
 #     -e EMBEDDING_MODEL="qwen3.7-text-embedding" \
 #     -e EMBEDDING_DIMENSION="1024" \
 #     -e OPENAI_API_KEY="<key>" \
+#     -e EMBEDDING_PROXY_TOKEN="<random-token>" \
 #     -e EMBEDDING_HOST="0.0.0.0" \
 #     embedding-contract-proxy
 #
 # 健康自检（容器内/外部）：
+#   curl http://127.0.0.1:8100/healthz   # => {"status":"ok"}
 #   curl -X POST http://127.0.0.1:8100/ -H "Content-Type: application/json" \
+#     -H "X-Embedding-Proxy-Token: <random-token>" \
 #     -d '{"texts":["你好"]}'   # => {"embeddings":[[...]]}
 
 FROM python:3.12-slim

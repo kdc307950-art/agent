@@ -134,9 +134,13 @@ class _FakeRepo:
                 return record
         return None
 
-    async def approve_draft(self, *, tenant_id, draft_id, approved_by):
+    async def approve_draft(self, *, tenant_id, draft_id, approved_by, ticket_id=None):
         record = self.drafts.get(draft_id)
-        if record is None or record["status"] not in ("generated", "reviewing"):
+        if (
+            record is None
+            or (ticket_id is not None and record.get("ticket_id") != ticket_id)
+            or record["status"] not in ("generated", "reviewing")
+        ):
             return False
         record["status"] = "approved"
         return True

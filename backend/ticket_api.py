@@ -48,6 +48,7 @@ from .ticket_intake import (
     decode_cursor,
     deserialize_commands,
     encode_cursor,
+    ensure_sla_for_ticket_if_needed,
     intake_config,
     intake_outcome_commands,
     pending_intake_interrupt,
@@ -143,6 +144,15 @@ class ReplayOutboxRequest(BaseModel):
     event_id: str = Field(min_length=1, max_length=128)
 
 
+class ReplayInboundRequest(BaseModel):
+    """重放渠道死信；同一外部事件跨渠道时必须指定 channel。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str = Field(min_length=1, max_length=256)
+    channel: str | None = Field(default=None, min_length=1, max_length=64)
+
+
 class SurveyResponseRequest(BaseModel):
     """满意度调查应答：1-5 分 + 可选反馈。"""
 
@@ -229,8 +239,15 @@ async def _webhook_body(request: Request, channel: str) -> bytes:
     source_ip = request.client.host if request.client is not None else "unknown"
     await enforce_rate_limit(request, f"webhook:{channel}:{source_ip}", f"webhook:{channel}")
     content_length = request.headers.get("content-length")
-    if content_length is not None and int(content_length) > 256 * 1024:
-        raise HTTPException(status_code=413, detail="Webhook 请求体超过 256 KB")
+    if content_length is not None:
+        try:
+            declared_length = int(content_length)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="无效的 Content-Length") from exc
+        if declared_length < 0:
+            raise HTTPException(status_code=400, detail="无效的 Content-Length")
+        if declared_length > 256 * 1024:
+            raise HTTPException(status_code=413, detail="Webhook 请求体超过 256 KB")
     body = await request.body()
     if len(body) > 256 * 1024:
         raise HTTPException(status_code=413, detail="Webhook 请求体超过 256 KB")
@@ -470,7 +487,7 @@ async def start_ticket_intake(
         1. operation_id + expected_version 双重校验；已 committed 的 operation 幂等返回
         2. 运行 intake_graph（分类/澄清/路由），产出待执行的工单命令序列
         3. record_workflow_intent 落库意图（供恢复/审计），再 transition_many 原子执行
-        4. 进入 queued/assigned 时按分类创建 SLA 实例
+        4. 进入 queued/assigned 时按分类创建 SLA 实例；幂等重试会补偿暂时失败
 
     若受理中途出现 human_approval 挂起，返回的 interrupt 由客户端展示审批卡片，
     之后通过 POST /{ticket_id}/resume 恢复。
@@ -486,6 +503,9 @@ async def start_ticket_intake(
         )
         if existing is not None and existing["status"] == "committed":
             # 幂等重试：操作已提交，直接返回当前状态，不再重复建单/受理
+            await ensure_sla_for_ticket_if_needed(
+                runtime, ticket, tenant_id=principal.tenant_id
+            )
             return {
                 "ticket": ticket,
                 "state": {},
@@ -507,6 +527,10 @@ async def start_ticket_intake(
         )
         if run["status"] == "committed":
             # 并发下另一个请求已完成同一 operation：幂等返回
+            ticket = await runtime.tickets.get(principal.tenant_id, ticket_id)
+            await ensure_sla_for_ticket_if_needed(
+                runtime, ticket, tenant_id=principal.tenant_id
+            )
             return {
                 "ticket": ticket,
                 "state": {},
@@ -583,14 +607,14 @@ async def start_ticket_intake(
             scopes={"ticket:system"},
             operation_id=payload.operation_id,
         )
-        if ticket.status in {TicketStatus.QUEUED, TicketStatus.ASSIGNED}:
-            # 受理落定后创建 SLA 实例（业务日历计算截止时间）
-            await runtime.ticket_operations.ensure_sla_for_ticket(
-                tenant_id=principal.tenant_id,
-                ticket_id=ticket.ticket_id,
-                channel=getattr(ticket, "channel", "web"),
-                category=getattr(ticket, "category", None),
-            )
+        # 受理落定后创建 SLA 实例（业务日历计算截止时间）。
+        # 该调用幂等，且在后续重试分支再次执行以修复暂时失败。
+        await ensure_sla_for_ticket_if_needed(
+            runtime,
+            ticket,
+            tenant_id=principal.tenant_id,
+            channel=getattr(ticket, "channel", "web"),
+        )
         snapshot = await runtime.intake_graph.aget_state(
             _intake_config(principal.tenant_id, ticket_id)
         )
@@ -625,6 +649,9 @@ async def resume_ticket_intake(
             tenant_id=principal.tenant_id, ticket_id=ticket_id, operation_id=payload.operation_id
         )
         if existing is not None and existing["status"] == "committed":
+            await ensure_sla_for_ticket_if_needed(
+                runtime, ticket, tenant_id=principal.tenant_id
+            )
             return {
                 "ticket": ticket,
                 "state": {},
@@ -705,6 +732,7 @@ async def respond_ticket_survey(
         raise HTTPException(status_code=404, detail="工单不存在")
     updated = await runtime.ticket_operations.respond_survey(
         tenant_id=principal.tenant_id,
+        ticket_id=ticket_id,
         survey_id=survey_id,
         score=payload.score,
         feedback=payload.feedback,
@@ -735,12 +763,6 @@ async def transition_ticket_api(
     if payload.actor_type == ActorType.CUSTOMER and ticket.requester_id != principal.user_id:
         raise HTTPException(status_code=404, detail="工单不存在")
     try:
-        await runtime.ticket_operations.ensure_sla_for_ticket(
-            tenant_id=principal.tenant_id,
-            ticket_id=ticket_id,
-            channel=getattr(ticket, "channel", None),
-            category=getattr(ticket, "category", None),
-        )
         updated = await runtime.tickets.transition(
             principal.tenant_id,
             TicketCommand(
@@ -752,6 +774,13 @@ async def transition_ticket_api(
                 payload=payload.payload,
             ),
             scopes=principal.scopes,
+        )
+        # 只有状态变更成功后才创建 SLA，避免非法/冲突请求污染新工单。
+        await ensure_sla_for_ticket_if_needed(
+            runtime,
+            updated,
+            tenant_id=principal.tenant_id,
+            channel=getattr(updated, "channel", None),
         )
         if updated.status == TicketStatus.AWAITING_CUSTOMER:
             await runtime.ticket_operations.pause_sla(
@@ -796,6 +825,22 @@ async def replay_dead_outbox_event(
     if not replayed:
         raise HTTPException(status_code=404, detail="死信事件不存在")
     return {"event_id": payload.event_id, "status": "pending"}
+
+
+@channel_router.post("/events/replay")
+async def replay_dead_inbound_event(
+    payload: ReplayInboundRequest,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    """重放渠道入站死信；跨渠道同 ID 时拒绝不明确的请求。"""
+    _require_scope(principal, "ticket:channel")
+    replayed = await _runtime(request).tickets.replay_inbound_event(
+        principal.tenant_id, payload.event_id, channel=payload.channel
+    )
+    if not replayed:
+        raise HTTPException(status_code=409, detail="事件不存在、非死信或 channel 不明确")
+    return {"event_id": payload.event_id, "channel": payload.channel, "status": "received"}
 
 
 @channel_router.post("/{channel}/events")

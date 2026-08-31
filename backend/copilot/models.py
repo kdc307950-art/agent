@@ -103,6 +103,8 @@ class CopilotDraft(BaseModel):
     created_at: datetime
     approved_by: str | None = None
     approved_at: datetime | None = None
+    retrieval_mode: str | None = Field(default=None, max_length=16)
+    degraded: bool = False
 
 
 class CopilotRunRecord(BaseModel):
@@ -114,10 +116,19 @@ class CopilotRunRecord(BaseModel):
     tenant_id: str
     ticket_id: str
     agent_name: str
-    status: Literal["running", "completed", "failed", "rejected"]
+    status: Literal["queued", "processing", "completed", "failed", "dead", "expired"]
     operation_id: str
     started_at: datetime
     completed_at: datetime | None = None
     tool_calls: int = 0
     error_code: str | None = None
     latency_ms: int | None = None
+    attempts: int = 0
+    next_attempt_at: datetime | None = None
+    worker_id: str | None = None
+    lease_expires_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    requester_user_id: str | None = None
+    requester_role: str | None = None
+    requester_departments: list[str] = Field(default_factory=list)
+    requester_internal: bool = True

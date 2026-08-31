@@ -126,6 +126,7 @@ class AssetRepository:
         department: str | None = None,
         asset_type: str | None = None,
         status: AssetStatus | None = None,
+        query_text: str | None = None,
         limit: int = 100,
     ) -> list[AssetRecord]:
         """按条件过滤资产列表，按 updated_at 倒序返回。
@@ -152,6 +153,19 @@ class AssetRepository:
         if status is not None:
             clauses.append("status = %s")
             params.append(status.value)
+        if query_text is not None:
+            query_text = query_text.strip()
+            if len(query_text) > 128:
+                raise ValueError("query_text 不能超过 128 字符")
+            if query_text:
+                # 资产检索在数据库侧完成，避免只取前 100 条后再在应用层
+                # 过滤导致大租户漏命中；参数绑定防止通配符注入 SQL。
+                pattern = f"%{query_text}%"
+                clauses.append(
+                    "(asset_id ILIKE %s OR asset_no ILIKE %s OR name ILIKE %s "
+                    "OR hostname ILIKE %s OR department ILIKE %s OR asset_type ILIKE %s)"
+                )
+                params.extend([pattern] * 6)
         params.append(limit)
         query = (
             "SELECT * FROM it_assets WHERE "

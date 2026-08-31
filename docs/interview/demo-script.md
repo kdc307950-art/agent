@@ -13,15 +13,16 @@
 | 3–5 | 企微追问 Resume | 客户回复「字段:值」关联原工单恢复受理，**绝不新建工单** |
 | 5–7 | 202 ACK、幂等、Worker 重试/租约恢复 | 快速 ACK + 异步 Worker；崩溃恢复与死信重放的设计 |
 | 7–8 | **Copilot 生成草稿** | assigned 工单 → 生成 AI 建议（异步 Worker）→ 发起人身份快照持久化 → 统一知识检索（lexical-only，向量缺失自动降级标记）→ 两层门禁 → 客服确认 |
-| 8–9 | 中文检索 52 条基准 + /metrics | 98.1% Top1（内部基准，lexical-only）；hybrid holdout 集已冻结待评测；双轨指标、心跳门禁 |
-| 9–10 | 边界与未完成项 | 企微沙箱待执行、hybrid 未评测、生产长期运行未证明（身份透传与检索接线已完成） |
+| 8–9 | 中文检索 52 条基准 + hybrid holdout + /metrics | lexical-only 98.1% Top1；hybrid holdout Top1 85.7% / Recall@5 96.4% / MRR@5 0.929，CI 门禁通过 |
+| 9–10 | 边界与未完成项 | 企微沙箱待执行、生产知识库泛化/成本/长期运行未证明（身份透传与检索接线已完成） |
 
 ## 必须展示的证据（按优先级）
 
-1. **Docker 全量回归输出**：`341 passed, 3 deselected`（含测试命令与日期，可复现）。
+1. **本地全量回归输出**：`306 passed, 61 skipped`；跳过项为未配置的 PostgreSQL/Redis
+   集成测试和 live_e2e（含测试命令与日期，可复现）。
 2. **52 条评测报告**：lexical-only Top1 98.1%（51/52）、Recall@5 100%、MRR@5 0.990，
    `it.account` 83.3% 及成因说明；hybrid holdout 集已冻结（`eval_holdout_cases.py`），
-   CLI 阈值参数已实现但**尚未接入 CI**、**未配置真实 embedding，未执行**。
+   真实 embedding 通过受保护 CI 验证（Top1 85.7% / Recall@5 96.4% / MRR@5 0.929）。
 3. **Worker 依赖故障注入测试**：`tests/test_worker_fault_isolation.py`
    （替身注入：指标写入失败仍 committed、心跳失败不退出、claim 故障不终止循环）。
 4. **Copilot 异步 Worker 证据**：`tests/test_copilot_worker.py`（领取/完成/退避/dead/
@@ -76,11 +77,11 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/integrations/wecom/ev
 ## 明确不展示为已完成
 
 - ❌ 真实企微沙箱端到端（仅自动化测试 + 步骤手册就绪）。
-- ❌ 真实 embedding 服务的 hybrid 评测（未配置/未执行）。
+- ❌ 生产知识库规模下的 hybrid 效果、成本与长期稳定性（演示库 holdout 已由 CI 验证）。
 - ❌ 生产 SLA 达成或长期稳定性（未证明）。
 - ❌ 独立指标系统容灾（当前与业务同库，故障即整体 503）。
 
 ## 对外统一表述（背熟）
 
-> 已完成本地 Docker、自动化测试和内部基准验证；真实企微端到端及生产长期运行
-> 能力尚未证明。检索指标来自内部 52 条基准集，不等同真实企业知识库泛化结果。
+> 已完成本地 Docker、自动化测试、内部 lexical 基准和受保护 CI 的 hybrid holdout
+> 验证；真实企微端到端、生产知识库泛化及长期运行能力尚未证明。

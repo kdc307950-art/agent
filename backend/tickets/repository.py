@@ -195,6 +195,19 @@ class TicketRepository:
     async def bind_asset(self, tenant_id: str, ticket_id: str, asset_id: str) -> TicketRecord:
         async with self.pool.connection() as connection:
             async with connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
+                # FK 只能保证租户和资产 ID 存在，不能阻止把软删除资产重新绑定。
+                await cursor.execute(
+                    """
+                    SELECT is_deleted
+                    FROM it_assets
+                    WHERE tenant_id = %s AND asset_id = %s
+                    FOR UPDATE
+                    """,
+                    (tenant_id, asset_id),
+                )
+                asset = await cursor.fetchone()
+                if asset is None or bool(asset.get("is_deleted")):
+                    raise AssetBindingError("资产不存在或不属于当前租户")
                 try:
                     await cursor.execute(
                         """
@@ -666,10 +679,60 @@ class TicketRepository:
         actor_type: str,
         actor_id: str,
         payload: dict[str, Any] | None = None,
+        dedupe_key: str | None = None,
     ) -> bool:
-        """追加一条状态流水（不改变工单状态），用于客户回复/恢复受理等中间事件。"""
+        """追加一条状态流水（不改变工单状态）。
+
+        ``dedupe_key`` 用于渠道重试等至少一次投递场景；键写入 payload
+        并在插入前检查，避免同一外部事件重复追加中间流水。
+        """
         async with self.pool.connection() as connection:
             async with connection.transaction(), connection.cursor() as cursor:
+                event_payload = dict(payload or {})
+                if dedupe_key:
+                    event_payload["_dedupe_key"] = dedupe_key[:256]
+                if dedupe_key:
+                    # 锁住父工单后再检查去重键；同一事件的重试即使由两个
+                    # Worker 并行执行，也只能有一个事务通过检查并插入。
+                    await cursor.execute(
+                        """
+                        SELECT 1 FROM tickets
+                        WHERE tenant_id = %s AND ticket_id = %s
+                        FOR UPDATE
+                        """,
+                        (tenant_id, ticket_id),
+                    )
+                    if await cursor.fetchone() is None:
+                        return False
+                    await cursor.execute(
+                        """
+                        INSERT INTO ticket_status_events (
+                            tenant_id, ticket_id, from_status, to_status, action,
+                            actor_type, actor_id, ticket_version, payload
+                        )
+                        SELECT t.tenant_id, t.ticket_id, t.status, t.status, %s, %s, %s,
+                               t.version, %s
+                        FROM tickets AS t
+                        WHERE t.tenant_id = %s AND t.ticket_id = %s
+                          AND NOT EXISTS (
+                              SELECT 1 FROM ticket_status_events AS e
+                              WHERE e.tenant_id = %s AND e.ticket_id = %s
+                                AND e.payload->>'_dedupe_key' = %s
+                          )
+                        """,
+                        (
+                            action,
+                            actor_type,
+                            actor_id,
+                            Jsonb(event_payload),
+                            tenant_id,
+                            ticket_id,
+                            tenant_id,
+                            ticket_id,
+                            dedupe_key[:256],
+                        ),
+                    )
+                    return cursor.rowcount == 1
                 await cursor.execute(
                     """
                     INSERT INTO ticket_status_events (
@@ -677,14 +740,12 @@ class TicketRepository:
                         actor_type, actor_id, ticket_version, payload
                     )
                     SELECT t.tenant_id, t.ticket_id, t.status, t.status, %s, %s, %s,
-                           (SELECT COALESCE(MAX(e.ticket_version), 0) + 1
-                            FROM ticket_status_events AS e
-                            WHERE e.tenant_id = t.tenant_id AND e.ticket_id = t.ticket_id),
+                           t.version,
                            %s
                     FROM tickets AS t
                     WHERE t.tenant_id = %s AND t.ticket_id = %s
                     """,
-                    (action, actor_type, actor_id, Jsonb(payload or {}), tenant_id, ticket_id),
+                    (action, actor_type, actor_id, Jsonb(event_payload), tenant_id, ticket_id),
                 )
                 return cursor.rowcount == 1
 
@@ -909,12 +970,12 @@ class TicketRepository:
                 await cursor.execute(
                     """
                     WITH ready AS (
-                        SELECT tenant_id, external_event_id, status AS previous_status
+                        SELECT tenant_id, channel, external_event_id, status AS previous_status
                         FROM inbound_events
                         WHERE (
                             (status = 'received' AND next_attempt_at <= now())
                             OR (status = 'failed' AND next_attempt_at <= now())
-                            OR (status = 'processing' AND lease_expires_at < now())
+                            OR (status = 'processing' AND (lease_expires_at IS NULL OR lease_expires_at < clock_timestamp()))
                         )
                           AND (%s::TEXT IS NULL OR tenant_id = %s)
                         ORDER BY next_attempt_at, received_at
@@ -924,10 +985,11 @@ class TicketRepository:
                     UPDATE inbound_events AS e
                     SET status = 'processing', claimed_at = now(),
                         attempts = attempts + 1, worker_id = %s,
-                        lease_expires_at = now() + (%s * interval '1 second'),
+                        lease_expires_at = clock_timestamp() + (%s * interval '1 second'),
                         error_code = NULL
                     FROM ready
-                    WHERE e.tenant_id = ready.tenant_id AND e.external_event_id = ready.external_event_id
+                    WHERE e.tenant_id = ready.tenant_id AND e.channel = ready.channel
+                      AND e.external_event_id = ready.external_event_id
                     RETURNING e.*, (ready.previous_status = 'processing') AS lease_recovered
                     """,
                     (tenant_id, tenant_id, limit, worker_id, lease_seconds),
@@ -939,6 +1001,7 @@ class TicketRepository:
         tenant_id: str,
         external_event_id: str,
         *,
+        channel: str | None = None,
         worker_id: str,
         lease_seconds: int = 120,
     ) -> bool:
@@ -947,12 +1010,13 @@ class TicketRepository:
                 await cursor.execute(
                     """
                     UPDATE inbound_events
-                    SET lease_expires_at = now() + (%s * interval '1 second')
+                    SET lease_expires_at = clock_timestamp() + (%s * interval '1 second')
                     WHERE tenant_id = %s AND external_event_id = %s
+                      AND (%s::TEXT IS NULL OR channel = %s)
                       AND status = 'processing' AND worker_id = %s
-                      AND lease_expires_at >= now()
+                      AND lease_expires_at >= clock_timestamp()
                     """,
-                    (lease_seconds, tenant_id, external_event_id, worker_id),
+                    (lease_seconds, tenant_id, external_event_id, channel, channel, worker_id),
                 )
                 return cursor.rowcount == 1
 
@@ -961,6 +1025,7 @@ class TicketRepository:
         tenant_id: str,
         external_event_id: str,
         *,
+        channel: str | None = None,
         ticket_id: str,
         worker_id: str,
     ) -> bool:
@@ -972,10 +1037,11 @@ class TicketRepository:
                     SET status = 'committed', ticket_id = %s, processed_at = now(),
                         worker_id = NULL, lease_expires_at = NULL, error_code = NULL
                     WHERE tenant_id = %s AND external_event_id = %s
+                      AND (%s::TEXT IS NULL OR channel = %s)
                       AND status = 'processing' AND worker_id = %s
-                      AND lease_expires_at >= now()
+                      AND lease_expires_at >= clock_timestamp()
                     """,
-                    (ticket_id, tenant_id, external_event_id, worker_id),
+                    (ticket_id, tenant_id, external_event_id, channel, channel, worker_id),
                 )
                 return cursor.rowcount == 1
 
@@ -984,6 +1050,7 @@ class TicketRepository:
         tenant_id: str,
         external_event_id: str,
         *,
+        channel: str | None = None,
         worker_id: str,
         error_code: str,
         retry_at: Any,
@@ -1000,8 +1067,9 @@ class TicketRepository:
                         claimed_at = NULL, worker_id = NULL, lease_expires_at = NULL,
                         error_code = %s
                     WHERE tenant_id = %s AND external_event_id = %s
+                      AND (%s::TEXT IS NULL OR channel = %s)
                       AND status = 'processing' AND worker_id = %s
-                      AND lease_expires_at >= now()
+                      AND lease_expires_at >= clock_timestamp()
                     """,
                     (
                         target_status == "dead",
@@ -1009,23 +1077,42 @@ class TicketRepository:
                         error_code,
                         tenant_id,
                         external_event_id,
+                        channel,
+                        channel,
                         worker_id,
                     ),
                 )
                 return cursor.rowcount == 1
 
-    async def replay_inbound_event(self, tenant_id: str, external_event_id: str) -> bool:
+    async def replay_inbound_event(
+        self, tenant_id: str, external_event_id: str, *, channel: str | None = None
+    ) -> bool:
         async with self.pool.connection() as connection:
-            async with connection.cursor() as cursor:
+            async with connection.transaction(), connection.cursor() as cursor:
+                if channel is None:
+                    await cursor.execute(
+                        """
+                        SELECT channel FROM inbound_events
+                        WHERE tenant_id = %s AND external_event_id = %s AND status = 'dead'
+                        FOR UPDATE
+                        """,
+                        (tenant_id, external_event_id),
+                    )
+                    rows = await cursor.fetchall()
+                    # Without channel, replay is safe only when the event ID is
+                    # unambiguous within the tenant.
+                    if len(rows) != 1:
+                        return False
+                    channel = str(rows[0][0])
                 await cursor.execute(
                     """
                     UPDATE inbound_events
                     SET status = 'received', next_attempt_at = now(), attempts = 0,
                         claimed_at = NULL, worker_id = NULL, lease_expires_at = NULL,
                         error_code = NULL
-                    WHERE tenant_id = %s AND external_event_id = %s AND status = 'dead'
+                    WHERE tenant_id = %s AND channel = %s AND external_event_id = %s AND status = 'dead'
                     """,
-                    (tenant_id, external_event_id),
+                    (tenant_id, channel, external_event_id),
                 )
                 return cursor.rowcount == 1
 

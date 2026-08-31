@@ -25,6 +25,7 @@ from .ticket_intake import (
     apply_intake_resume,
     apply_operational_routing,
     deserialize_commands,
+    ensure_sla_for_ticket_if_needed,
     intake_config,
     intake_outcome_commands,
     serialize_commands,
@@ -124,9 +125,15 @@ async def _resume_from_customer_reply(
         action="customer_reply_received",
         actor_type="customer",
         actor_id=event.requester_id,
+        dedupe_key=f"inbound:{event.channel}:{event.external_event_id}:customer_reply",
     )
     await runtime.tickets.append_status_event(
-        tenant_id, ticket_id, action="intake_resumed", actor_type="system", actor_id=actor_id
+        tenant_id,
+        ticket_id,
+        action="intake_resumed",
+        actor_type="system",
+        actor_id=actor_id,
+        dedupe_key=f"inbound:{event.channel}:{event.external_event_id}:intake_resumed",
     )
     return {
         "resumed": True,
@@ -202,6 +209,13 @@ async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor
     if run["status"] == "committed":
         # 受理图上一轮已提交（例如崩溃后恢复）：直接复用挂起状态，不再重复跑图。
         snapshot = await runtime.intake_graph.aget_state(config)
+        # transition 与 SLA 不在同一事务；幂等重试时重新补建可能遗漏的 SLA。
+        current_ticket = await runtime.tickets.get(event.tenant_id, ticket.ticket_id)
+        if current_ticket is not None:
+            ticket = current_ticket
+        await ensure_sla_for_ticket_if_needed(
+            runtime, ticket, tenant_id=event.tenant_id, channel=event.channel
+        )
         return {
             "created": created,
             "ticket_id": ticket.ticket_id,
@@ -303,13 +317,9 @@ async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor
         scopes={"ticket:system"},
         operation_id=operation_id,
     )
-    if ticket.status in {TicketStatus.QUEUED, TicketStatus.ASSIGNED}:
-        await runtime.ticket_operations.ensure_sla_for_ticket(
-            tenant_id=event.tenant_id,
-            ticket_id=ticket.ticket_id,
-            channel=event.channel,
-            category=getattr(ticket, "category", None),
-        )
+    await ensure_sla_for_ticket_if_needed(
+        runtime, ticket, tenant_id=event.tenant_id, channel=event.channel
+    )
     snapshot = await runtime.intake_graph.aget_state(config)
     return {
         "created": created,

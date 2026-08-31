@@ -63,6 +63,7 @@ jobs:
       KNOWLEDGE_EMBEDDING_ENDPOINT: ${{ secrets.KNOWLEDGE_EMBEDDING_ENDPOINT }}
       KNOWLEDGE_EMBEDDING_MODEL: ${{ secrets.KNOWLEDGE_EMBEDDING_MODEL }}
       KNOWLEDGE_EMBEDDING_DIMENSION: ${{ secrets.KNOWLEDGE_EMBEDDING_DIMENSION || '1536' }}
+      KNOWLEDGE_EMBEDDING_TOKEN: ${{ secrets.KNOWLEDGE_EMBEDDING_TOKEN }}
     services:
       postgres:
         image: pgvector/pgvector:pg17
@@ -106,8 +107,13 @@ jobs:
         # PaaS 免费实例可能休眠（Render free 空闲即睡），首次请求可能超过
         # 评测 15s 超时；先发最小契约请求唤醒（放宽超时），再进入正式流程。
         run: |
+          auth_args=()
+          if [ -n "$KNOWLEDGE_EMBEDDING_TOKEN" ]; then
+            auth_args=(-H "X-Embedding-Proxy-Token: $KNOWLEDGE_EMBEDDING_TOKEN")
+          fi
           curl -sS -m 120 -X POST "$KNOWLEDGE_EMBEDDING_ENDPOINT" \
             -H "Content-Type: application/json" \
+            "${auth_args[@]}" \
             -d '{"texts":["warmup"]}' \
             -o /dev/null
       - name: Initialize schema

@@ -44,6 +44,17 @@ def test_transform_upstream_rejects_missing_embedding():
         transform_upstream([{"index": 0}], expected_count=1)
 
 
+def test_transform_upstream_rejects_duplicate_or_missing_indexes():
+    with pytest.raises(ValueError, match="index"):
+        transform_upstream(
+            [
+                {"index": 0, "embedding": [1.0, 2.0]},
+                {"index": 0, "embedding": [3.0, 4.0]},
+            ],
+            expected_count=2,
+        )
+
+
 def _app_with_upstream(
     responses: list[httpx.Response],
 ) -> tuple[TestClient, list[dict]]:
@@ -120,9 +131,47 @@ def test_proxy_rejects_dimension_mismatch():
     assert "contract mismatch" in response.json()["detail"]
 
 
+def test_proxy_requires_token_when_configured_and_exposes_healthz():
+    app = create_app(
+        "https://upstream.example/v1/embeddings",
+        "secret-key-123",
+        "test-model",
+        dimension=2,
+        proxy_token="proxy-secret",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200, json={"data": [{"index": 0, "embedding": [1.0, 2.0]}]}
+            )
+        ),
+    )
+    client = TestClient(app)
+    assert client.get("/healthz").status_code == 200
+    assert client.post("/", json={"texts": ["a"]}).status_code == 401
+    assert (
+        client.post(
+            "/",
+            json={"texts": ["a"]},
+            headers={"X-Embedding-Proxy-Token": "proxy-secret"},
+        ).status_code
+        == 200
+    )
+
+
+def test_proxy_rejects_blank_and_oversized_texts():
+    client, _ = _app_with_upstream([])
+    assert client.post("/", json={"texts": [" "]}).status_code == 422
+    assert client.post("/", json={"texts": ["x" * 8193]}).status_code == 422
+
+
 def _empty_args() -> Namespace:
     return Namespace(
-        upstream=None, api_key=None, model=None, dimension=None, host=None, port=None
+        upstream=None,
+        api_key=None,
+        proxy_token=None,
+        model=None,
+        dimension=None,
+        host=None,
+        port=None,
     )
 
 
@@ -133,6 +182,7 @@ def test_resolve_config_prefers_cli_over_env(monkeypatch):
         Namespace(
             upstream="https://cli.example/v1/embeddings",
             api_key="cli-key",
+            proxy_token="proxy-key",
             model="cli-model",
             dimension=1024,
             host="0.0.0.0",
@@ -141,6 +191,7 @@ def test_resolve_config_prefers_cli_over_env(monkeypatch):
     )
     assert config["upstream"] == "https://cli.example/v1/embeddings"
     assert config["api_key"] == "cli-key"
+    assert config["proxy_token"] == "proxy-key"
     assert config["model"] == "cli-model"
     assert config["dimension"] == 1024
     assert config["host"] == "0.0.0.0"
@@ -154,6 +205,7 @@ def test_resolve_config_reads_env_fallbacks(monkeypatch):
     monkeypatch.setenv("EMBEDDING_HOST", "0.0.0.0")
     monkeypatch.setenv("EMBEDDING_PORT", "8200")
     monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+    monkeypatch.setenv("EMBEDDING_PROXY_TOKEN", "proxy-key")
     config = _resolve_config(_empty_args())
     assert config["upstream"] == "https://env.example/v1/embeddings"
     assert config["model"] == "env-model"
@@ -161,6 +213,7 @@ def test_resolve_config_reads_env_fallbacks(monkeypatch):
     assert config["host"] == "0.0.0.0"
     assert config["port"] == 8200
     assert config["api_key"] == "env-key"
+    assert config["proxy_token"] == "proxy-key"
 
 
 def test_resolve_config_falls_back_to_render_port(monkeypatch):

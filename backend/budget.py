@@ -11,6 +11,7 @@ Lua 在 Redis 单线程里整段执行，不会被其他命令插入。
 from __future__ import annotations
 
 import hashlib
+import math
 from datetime import UTC, datetime, timedelta
 
 
@@ -26,15 +27,15 @@ if current >= limit then return {0, current} end
 return {1, current}
 """
 
-# 事后记账：累加本次花费。用 > 判断——加上本次仍不超限才写回，
-# 超限时保留旧值并返回失败，避免把已经溢出的数字固化到账本里。
+# 事后记账：累加本次花费。超限时也写回超额值并返回失败，
+# 让后续 can_start() 看到 >= limit 后持续闭锁，避免通过重复请求绕过预算。
 # EXAT 设成当日 24:00，key 到点自动消失，不需要额外的清理任务。
 _ADD_USAGE = """
 local current = tonumber(redis.call('GET', KEYS[1]) or '0')
 local next_value = current + tonumber(ARGV[1])
 local limit = tonumber(ARGV[2])
-if next_value > limit then return {0, current} end
 redis.call('SET', KEYS[1], tostring(next_value), 'EXAT', ARGV[3])
+if next_value > limit then return {0, next_value} end
 return {1, next_value}
 """
 
@@ -52,7 +53,7 @@ class TenantBudget:
     """
 
     def __init__(self, client, *, daily_limit_usd: float, key_prefix: str = "budget:v1") -> None:
-        if daily_limit_usd <= 0:
+        if not math.isfinite(daily_limit_usd) or daily_limit_usd <= 0:
             raise ValueError("daily_limit_usd must be > 0")
         self.client = client
         self.daily_limit_micro_usd = int(round(daily_limit_usd * 1_000_000))
@@ -84,8 +85,10 @@ class TenantBudget:
         return bool(int(result[0]))
 
     async def record(self, tenant_id: str, cost_usd: float) -> bool:
-        """运行结束后累加实际花费。False 表示这一笔使额度溢出、未被记入。"""
-        amount = max(0, int(round(cost_usd * 1_000_000)))
+        """运行结束后累加实际花费。False 表示已记录超额并闭锁后续运行。"""
+        if not math.isfinite(cost_usd) or cost_usd < 0:
+            raise ValueError("cost_usd 必须是有限的非负数")
+        amount = int(round(cost_usd * 1_000_000))
         # 单价未配置时成本恒为 0，此时不该写 Redis：既省一次往返，
         # 也避免把「预算功能已启用」的假象写进账本。
         if amount == 0:

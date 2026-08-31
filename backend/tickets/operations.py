@@ -148,7 +148,7 @@ class TicketOperationsRepository:
                         FROM outbox_events
                         WHERE (
                             (status = 'pending' AND available_at <= now())
-                            OR (status = 'processing' AND lease_expires_at < now())
+                            OR (status = 'processing' AND (lease_expires_at IS NULL OR lease_expires_at < clock_timestamp()))
                         ) AND (%s::TEXT IS NULL OR tenant_id = %s)
                         ORDER BY available_at, created_at
                         FOR UPDATE SKIP LOCKED
@@ -156,7 +156,7 @@ class TicketOperationsRepository:
                     )
                     UPDATE outbox_events AS o
                     SET status = 'processing', claimed_at = now(), attempts = attempts + 1,
-                        worker_id = %s, lease_expires_at = now() + (%s * interval '1 second')
+                        worker_id = %s, lease_expires_at = clock_timestamp() + (%s * interval '1 second')
                     FROM ready
                     WHERE o.tenant_id = ready.tenant_id AND o.event_id = ready.event_id
                     RETURNING o.*, (ready.previous_status = 'processing') AS lease_recovered
@@ -173,9 +173,9 @@ class TicketOperationsRepository:
                 await cursor.execute(
                     """
                     UPDATE outbox_events
-                    SET lease_expires_at = now() + (%s * interval '1 second')
+                    SET lease_expires_at = clock_timestamp() + (%s * interval '1 second')
                     WHERE tenant_id = %s AND event_id = %s AND status = 'processing'
-                      AND worker_id = %s AND lease_expires_at >= now()
+                      AND worker_id = %s AND lease_expires_at >= clock_timestamp()
                     """,
                     (lease_seconds, tenant_id, event_id, worker_id),
                 )
@@ -190,7 +190,7 @@ class TicketOperationsRepository:
                     SET status = 'delivered', delivered_at = now(), last_error_code = NULL,
                         worker_id = NULL, lease_expires_at = NULL
                     WHERE tenant_id = %s AND event_id = %s AND status = 'processing'
-                      AND worker_id = %s AND lease_expires_at >= now()
+                      AND worker_id = %s AND lease_expires_at >= clock_timestamp()
                     """,
                     (tenant_id, event_id, worker_id),
                 )
@@ -215,7 +215,7 @@ class TicketOperationsRepository:
                         claimed_at = NULL, worker_id = NULL, lease_expires_at = NULL,
                         last_error_code = %s
                     WHERE tenant_id = %s AND event_id = %s AND status = 'processing'
-                      AND worker_id = %s AND lease_expires_at >= now()
+                      AND worker_id = %s AND lease_expires_at >= clock_timestamp()
                     """,
                     (target_status, retry_at, error_code, tenant_id, event_id, worker_id),
                 )
@@ -240,7 +240,8 @@ class TicketOperationsRepository:
                     """
                     UPDATE outbox_events
                     SET status = 'pending', available_at = now(), claimed_at = NULL,
-                        worker_id = NULL, lease_expires_at = NULL, last_error_code = NULL
+                        worker_id = NULL, lease_expires_at = NULL, last_error_code = NULL,
+                        attempts = 0
                     WHERE tenant_id = %s AND event_id = %s AND status = 'dead'
                     """,
                     (tenant_id, event_id),
@@ -639,6 +640,7 @@ class TicketOperationsRepository:
         *,
         tenant_id: str,
         survey_id: str,
+        ticket_id: str | None = None,
         score: int,
         feedback: str | None = None,
     ) -> bool:
@@ -651,9 +653,10 @@ class TicketOperationsRepository:
                     UPDATE satisfaction_surveys
                     SET status = 'responded', score = %s, feedback = %s, responded_at = now()
                     WHERE tenant_id = %s AND survey_id = %s
+                      AND (%s::TEXT IS NULL OR ticket_id = %s)
                       AND status IN ('pending', 'sent') AND expires_at > now()
                     """,
-                    (score, feedback, tenant_id, survey_id),
+                    (score, feedback, tenant_id, survey_id, ticket_id, ticket_id),
                 )
                 return cursor.rowcount == 1
 

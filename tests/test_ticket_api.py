@@ -217,6 +217,7 @@ class FakeOperations:
         self.responses = []
         self.outbound = []
         self.sla_calls = []
+        self.fail_sla_once = False
 
     async def append_outbound_message(self, **kwargs):
         self.outbound.append(kwargs)
@@ -227,6 +228,9 @@ class FakeOperations:
 
     async def ensure_sla_for_ticket(self, **kwargs):
         self.sla_calls.append(kwargs)
+        if self.fail_sla_once:
+            self.fail_sla_once = False
+            raise RuntimeError("injected SLA failure")
         return False
 
     async def pause_sla(self, tenant_id, ticket_id, *, reason):
@@ -700,6 +704,29 @@ def test_intake_operation_retries_recorded_intent_without_rerunning_graph(monkey
         tickets.workflow_runs[("tenant-a", "ticket-1", "op-fault-injection")]["status"]
         == "committed"
     )
+
+
+def test_intake_retry_repairs_sla_after_transition_was_committed(monkeypatch):
+    """SLA 暂时失败不能让已提交 operation 永久缺 SLA；幂等重试应再次补建。"""
+    module, tickets, intake = load_app(monkeypatch)
+    tickets.items[("tenant-a", "ticket-1")] = SimpleNamespace(
+        ticket_id="ticket-1", requester_id="user-1", version=0, status=TicketStatus.NEW
+    )
+    tickets.operations.fail_sla_once = True
+    body = {
+        "operation_id": "op-sla-retry",
+        "text": "SSO login failure",
+        "fields": {"title": "SSO", "description": "failure"},
+        "expected_version": 0,
+    }
+    with TestClient(module.app) as client:
+        first = client.post("/tickets/ticket-1/intake", headers=headers("ticket:customer"), json=body)
+        second = client.post("/tickets/ticket-1/intake", headers=headers("ticket:customer"), json=body)
+
+    assert first.status_code == 500
+    assert second.status_code == 200
+    assert len(tickets.operations.sla_calls) == 2
+    assert len(intake.inputs) == 1
 
 
 def test_intake_synchronizes_interrupt_to_awaiting_customer(monkeypatch):

@@ -83,10 +83,11 @@ class CopilotRepository:
                         tool_calls = 0,
                         latency_ms = NULL,
                         worker_id = NULL,
-                        lease_expires_at = now() + (%s * interval '1 second'),
+                        lease_expires_at = clock_timestamp() + (%s * interval '1 second'),
                         heartbeat_at = now(),
                         next_attempt_at = NULL,
-                        attempts = copilot_runs.attempts + 1,
+                        claimed_at = NULL,
+                        attempts = 0,
                         completed_at = NULL,
                         requester_user_id = EXCLUDED.requester_user_id,
                         requester_role = EXCLUDED.requester_role,
@@ -208,7 +209,31 @@ class CopilotRepository:
                 original = await cursor.fetchone()
                 if original is None:
                     return None
+                # 管理员重复点击重放必须返回同一新运行，不能为同一死信
+                # 无界地产生多个并发模型任务。前缀查询只匹配本仓储生成的
+                # ``#replay:<run_id>`` 操作号；原始 operation_id 先做 LIKE 转义。
+                operation_prefix = (
+                    str(original["operation_id"])
+                    .replace("\\", "\\\\")
+                    .replace("%", "\\%")
+                    .replace("_", "\\_")
+                    + "#replay:%"
+                )
+                await cursor.execute(
+                    """
+                    SELECT run_id
+                    FROM copilot_runs
+                    WHERE tenant_id = %s AND operation_id LIKE %s ESCAPE '\\'
+                    ORDER BY started_at DESC, run_id DESC
+                    LIMIT 1
+                    """,
+                    (tenant_id, operation_prefix),
+                )
+                existing_replay = await cursor.fetchone()
+                if existing_replay is not None:
+                    return str(existing_replay["run_id"])
                 new_run_id = uuid4().hex
+                replay_operation_id = f"{original['operation_id']}#replay:{new_run_id}"
                 await cursor.execute(
                     """
                     INSERT INTO copilot_runs (
@@ -216,12 +241,12 @@ class CopilotRepository:
                         lease_expires_at, heartbeat_at, attempts,
                         requester_user_id, requester_role, requester_departments, requester_internal
                     ) SELECT %s, tenant_id, ticket_id, agent_name, 'queued',
-                             operation_id || '#replay', now() + (%s * interval '1 second'), now(), 0,
+                             %s, now() + (%s * interval '1 second'), now(), 0,
                              requester_user_id, requester_role, requester_departments, requester_internal
                     FROM copilot_runs
                     WHERE tenant_id = %s AND run_id = %s
                     """,
-                    (new_run_id, lease_seconds, tenant_id, run_id),
+                    (new_run_id, replay_operation_id, lease_seconds, tenant_id, run_id),
                 )
                 return new_run_id
 
@@ -248,7 +273,7 @@ class CopilotRepository:
                         WHERE (
                             (status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= now()))
                             OR (status = 'failed' AND next_attempt_at IS NOT NULL AND next_attempt_at <= now())
-                            OR (status = 'processing' AND lease_expires_at < now())
+                            OR (status = 'processing' AND (lease_expires_at IS NULL OR lease_expires_at < clock_timestamp()))
                         )
                         ORDER BY started_at, run_id
                         FOR UPDATE SKIP LOCKED
@@ -257,7 +282,7 @@ class CopilotRepository:
                     UPDATE copilot_runs AS r
                     SET status = 'processing', claimed_at = now(),
                         attempts = attempts + 1, worker_id = %s,
-                        lease_expires_at = now() + (%s * interval '1 second'),
+                        lease_expires_at = clock_timestamp() + (%s * interval '1 second'),
                         heartbeat_at = now(), error_code = NULL
                     FROM ready
                     WHERE r.tenant_id = ready.tenant_id AND r.run_id = ready.run_id
@@ -281,10 +306,10 @@ class CopilotRepository:
                 await cursor.execute(
                     """
                     UPDATE copilot_runs
-                    SET lease_expires_at = now() + (%s * interval '1 second'),
+                    SET lease_expires_at = clock_timestamp() + (%s * interval '1 second'),
                         heartbeat_at = now()
                     WHERE tenant_id = %s AND run_id = %s AND status = 'processing'
-                      AND worker_id = %s AND lease_expires_at >= now()
+                      AND worker_id = %s AND lease_expires_at >= clock_timestamp()
                     """,
                     (lease_seconds, tenant_id, run_id, worker_id),
                 )
@@ -309,11 +334,92 @@ class CopilotRepository:
                         latency_ms = %s, error_code = NULL, worker_id = NULL,
                         lease_expires_at = NULL
                     WHERE tenant_id = %s AND run_id = %s AND status = 'processing'
-                      AND worker_id = %s AND lease_expires_at >= now()
+                      AND worker_id = %s AND lease_expires_at >= clock_timestamp()
                     """,
                     (tool_calls, latency_ms, tenant_id, run_id, worker_id),
                 )
                 return cursor.rowcount == 1
+
+    async def save_draft_and_complete_run(
+        self,
+        *,
+        draft_id: str,
+        tenant_id: str,
+        ticket_id: str,
+        run_id: str,
+        worker_id: str,
+        draft_answer: str | None,
+        steps: list[str],
+        citations: list[dict[str, Any]],
+        confidence: float,
+        needs_human_review: bool,
+        tool_calls: int,
+        latency_ms: int,
+        retrieval_mode: str | None = None,
+        degraded: bool = False,
+    ) -> bool:
+        """在有效租约栅栏内原子写入草稿并完成运行。
+
+        草稿写入和 ``processing -> completed`` 必须属于同一事务。先锁定并
+        校验运行行，避免旧 Worker 在租约丢失后仍留下可见草稿；锁也让新的
+        Worker 无法在本事务提交前回收同一运行。
+        """
+        async with self.pool.connection() as connection:
+            async with connection.transaction(), connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    SELECT 1
+                    FROM copilot_runs
+                    WHERE tenant_id = %s AND ticket_id = %s AND run_id = %s
+                      AND status = 'processing' AND worker_id = %s
+                      AND lease_expires_at >= clock_timestamp()
+                    FOR UPDATE
+                    """,
+                    (tenant_id, ticket_id, run_id, worker_id),
+                )
+                if await cursor.fetchone() is None:
+                    return False
+
+                await cursor.execute(
+                    """
+                    INSERT INTO copilot_drafts (
+                        draft_id, tenant_id, ticket_id, run_id, draft_answer,
+                        steps, citations, confidence, needs_human_review,
+                        retrieval_mode, degraded
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        draft_id,
+                        tenant_id,
+                        ticket_id,
+                        run_id,
+                        draft_answer,
+                        Jsonb(steps),
+                        Jsonb(citations),
+                        confidence,
+                        needs_human_review,
+                        retrieval_mode,
+                        degraded,
+                    ),
+                )
+                await cursor.execute(
+                    """
+                    UPDATE copilot_runs
+                    SET status = 'completed', completed_at = now(),
+                        tool_calls = %s, latency_ms = %s, error_code = NULL,
+                        worker_id = NULL, lease_expires_at = NULL,
+                        next_attempt_at = NULL
+                    WHERE tenant_id = %s AND run_id = %s
+                      AND status = 'processing' AND worker_id = %s
+                      AND lease_expires_at >= clock_timestamp()
+                    """,
+                    (tool_calls, latency_ms, tenant_id, run_id, worker_id),
+                )
+                if cursor.rowcount != 1:
+                    # 租约可能在 SELECT 与 UPDATE 之间过期；抛错让事务回滚，
+                    # 不能留下已经插入但没有合法 completed 运行的草稿。
+                    raise RuntimeError("copilot_lease_lost")
+                return True
 
     async def fail_copilot_run(
         self,
@@ -336,7 +442,7 @@ class CopilotRepository:
                         worker_id = NULL, lease_expires_at = NULL,
                         next_attempt_at = COALESCE(%s, next_attempt_at)
                     WHERE tenant_id = %s AND run_id = %s AND status = 'processing'
-                      AND worker_id = %s AND lease_expires_at >= now()
+                      AND worker_id = %s AND lease_expires_at >= clock_timestamp()
                     """,
                     (target, error_code, retry_at, tenant_id, run_id, worker_id),
                 )
@@ -375,7 +481,8 @@ class CopilotRepository:
                     WHERE (r.tenant_id, r.run_id) IN (
                         SELECT sub.tenant_id, sub.run_id
                         FROM copilot_runs AS sub
-                        WHERE sub.status = 'processing' AND sub.lease_expires_at < %s
+                        WHERE sub.status = 'processing'
+                          AND (sub.lease_expires_at IS NULL OR sub.lease_expires_at < %s)
                         ORDER BY sub.started_at, sub.run_id
                         LIMIT %s
                     )
@@ -497,6 +604,7 @@ class CopilotRepository:
         tenant_id: str,
         draft_id: str,
         approved_by: str,
+        ticket_id: str | None = None,
         expected_status: str = "generated",
     ) -> bool:
         """审批通过草稿（generated -> approved）。
@@ -510,9 +618,10 @@ class CopilotRepository:
                     UPDATE copilot_drafts
                     SET status = 'approved', approved_by = %s, approved_at = now()
                     WHERE tenant_id = %s AND draft_id = %s
+                      AND (%s::TEXT IS NULL OR ticket_id = %s)
                       AND status IN ('generated', 'reviewing')
                     """,
-                    (approved_by, tenant_id, draft_id),
+                    (approved_by, tenant_id, draft_id, ticket_id, ticket_id),
                 )
                 return cursor.rowcount == 1
 

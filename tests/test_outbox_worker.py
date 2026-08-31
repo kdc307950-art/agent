@@ -38,6 +38,21 @@ class Sender:
             raise self.error
 
 
+class LeaseLosingRepository(FakeRepository):
+    async def renew_outbox_lease(self, tenant_id, event_id, *, worker_id, lease_seconds):
+        return False
+
+
+class TrackingRepository(FakeRepository):
+    def __init__(self, events):
+        super().__init__(events)
+        self.renewed: list[str] = []
+
+    async def renew_outbox_lease(self, tenant_id, event_id, *, worker_id, lease_seconds):
+        self.renewed.append(event_id)
+        return True
+
+
 def event(event_id, event_type="ticket_message.send", attempts=1):
     return {
         "tenant_id": "tenant-a",
@@ -117,3 +132,64 @@ def test_worker_run_forever_stops_without_busy_wait():
         )
 
     asyncio.run(run())
+
+
+def test_worker_stops_sender_when_lease_is_lost():
+    """租约丢失时取消发送协程，不调用 complete/fail 伪造终态。"""
+    repository = LeaseLosingRepository([event("lease-lost")])
+    started = asyncio.Event()
+
+    class BlockingSender:
+        async def send(self, payload):
+            started.set()
+            await asyncio.Event().wait()
+
+    worker = OutboxWorker(
+        repository,
+        {"ticket_message.send": BlockingSender()},
+        lease_seconds=1,
+    )
+
+    async def run():
+        task = asyncio.create_task(worker.run_once(limit=1))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        return await asyncio.wait_for(task, timeout=2)
+
+    result = asyncio.run(run())
+    assert result.claimed == 1
+    assert result.lease_lost == 1
+    assert result.delivered == 0
+    assert repository.completed == []
+    assert repository.failed == []
+
+
+def test_batch_claim_starts_heartbeats_for_waiting_events():
+    """前一事件阻塞时，后排已领取事件仍会被续租。"""
+    repository = TrackingRepository([event("first"), event("second")])
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    class OrderedSender:
+        async def send(self, payload):
+            if payload["event_id"] == "first":
+                first_started.set()
+                await release_first.wait()
+
+    worker = OutboxWorker(
+        repository,
+        {"ticket_message.send": OrderedSender()},
+        lease_seconds=1,
+    )
+
+    async def run():
+        task = asyncio.create_task(worker.run_once(limit=2))
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        await asyncio.sleep(0.45)
+        second_renewed_while_waiting = "second" in repository.renewed
+        release_first.set()
+        result = await asyncio.wait_for(task, timeout=2)
+        return result, second_renewed_while_waiting
+
+    result, second_renewed_while_waiting = asyncio.run(run())
+    assert second_renewed_while_waiting is True
+    assert result.delivered == 2

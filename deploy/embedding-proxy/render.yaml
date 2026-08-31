@@ -7,6 +7,7 @@
 #        EMBEDDING_MODEL    = qwen3.7-text-embedding
 #        EMBEDDING_DIMENSION= 1024
 #        OPENAI_API_KEY     = <你的 DashScope API key>
+#        EMBEDDING_PROXY_TOKEN = <供评测客户端访问代理的随机令牌>
 #   3. 部署完成后拿到 https://<服务名>.onrender.com，
 #      自检 POST https://<服务名>.onrender.com/ {"texts":["你好"]}
 #      返回 {"embeddings":[[...]]} 即成功；该 URL 填入
@@ -18,7 +19,7 @@ services:
     runtime: docker
     plan: free
     dockerfilePath: deploy/embedding-proxy/Dockerfile
-    healthCheckPath: /
+    healthCheckPath: /healthz
     envVars:
       - key: EMBEDDING_UPSTREAM
         sync: false
@@ -27,6 +28,8 @@ services:
       - key: EMBEDDING_DIMENSION
         value: "1024"
       - key: OPENAI_API_KEY
+        sync: false
+      - key: EMBEDDING_PROXY_TOKEN
         sync: false
       - key: EMBEDDING_HOST
         value: "0.0.0.0"

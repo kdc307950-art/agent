@@ -108,6 +108,8 @@ class LlmAnswerGenerator:
                 ]
             )
             payload = _extract_json(str(response.content))
+            if not isinstance(payload, dict):
+                raise ValueError("模型 JSON 顶层必须是对象")
         except Exception as exc:
             # 兜底：生成失败绝不能把错误暴露给客服链路，转 abstained 拒绝作答
             logger.warning("答案生成失败，转为 abstained: %s", exc)
@@ -115,7 +117,10 @@ class LlmAnswerGenerator:
         citations = []
         # 逐条解析引用，字段缺失 / 类型错误的分支直接跳过：
         # 宁可少一条引用，也不让一条坏引用污染整个答案
-        for item in payload.get("citations") or []:
+        raw_citations = payload.get("citations")
+        if not isinstance(raw_citations, list):
+            raw_citations = []
+        for item in raw_citations:
             try:
                 citations.append(
                     GeneratedCitation(
@@ -126,9 +131,10 @@ class LlmAnswerGenerator:
                 )
             except (KeyError, TypeError, ValueError):
                 continue
-        text = str(payload.get("text") or "").strip()
+        raw_text = payload.get("text")
+        text = raw_text.strip() if isinstance(raw_text, str) else ""
         # 模型明确 abstained 或文本为空，都视为放弃作答
-        abstained = bool(payload.get("abstained")) or not text
+        abstained = payload.get("abstained") is True or not text
         return GeneratedAnswer(text=text, citations=tuple(citations), abstained=abstained)
 
 
@@ -185,10 +191,15 @@ class LlmRetrievalPlanner:
                 ]
             )
             payload = _extract_json(str(response.content))
+            if not isinstance(payload, dict):
+                raise ValueError("模型 JSON 顶层必须是对象")
         except Exception as exc:
             # 兜底：规划失败就停止补充检索，不把异常上抛给主流程
             logger.warning("检索规划失败，停止补充检索: %s", exc)
             return []
         # 过滤空串与纯空白查询，避免空查询浪费一轮检索
-        queries = [str(item).strip() for item in payload.get("queries") or [] if str(item).strip()]
+        raw_queries = payload.get("queries")
+        if not isinstance(raw_queries, list):
+            return []
+        queries = [item.strip() for item in raw_queries if isinstance(item, str) and item.strip()]
         return queries

@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from psycopg import AsyncConnection
 
 APP_SCHEMA_NAME = "langgraph_agent"
-APP_SCHEMA_VERSION = 20
+APP_SCHEMA_VERSION = 21
 MIGRATION_LOCK_KEY = 891274631
 
 # These are the tables created by the pinned LangGraph PostgreSQL adapters and
@@ -493,6 +493,16 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 ON outbox_events (lease_expires_at)
                 WHERE status = 'processing'
                 """)
+            # Rows created by pre-lease schemas have NULL lease metadata. Reset
+            # them so an upgrade cannot strand events permanently in processing.
+            await cursor.execute(
+                """
+                UPDATE outbox_events
+                SET status = 'pending', worker_id = NULL, lease_expires_at = NULL,
+                    available_at = LEAST(available_at, now())
+                WHERE status = 'processing' AND lease_expires_at IS NULL
+                """
+            )
             current = 8
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
@@ -808,6 +818,16 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
             await cursor.execute(
                 "ALTER TABLE inbound_events ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ"
             )
+            # 兼容曾在租约字段加入前中断的 processing 记录，避免 NULL 租约
+            # 永久不可领取；恢复为 received 由 Worker 重新处理。
+            await cursor.execute(
+                """
+                UPDATE inbound_events
+                SET status = 'received', worker_id = NULL, lease_expires_at = NULL,
+                    claimed_at = NULL, next_attempt_at = LEAST(next_attempt_at, now())
+                WHERE status = 'processing' AND lease_expires_at IS NULL
+                """
+            )
             await cursor.execute("""
                 ALTER TABLE inbound_events
                 DROP CONSTRAINT IF EXISTS inbound_events_status_check
@@ -1074,6 +1094,34 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 "ALTER TABLE copilot_drafts ADD COLUMN IF NOT EXISTS degraded BOOLEAN NOT NULL DEFAULT FALSE"
             )
             current = 20
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 21:
+            # 非状态事件（客户回复、受理恢复等）可以发生在同一工单版本内，
+            # 不能与状态事件共享 ticket_version 唯一约束。
+            await cursor.execute(
+                "ALTER TABLE ticket_status_events DROP CONSTRAINT IF EXISTS ticket_status_events_version_unique"
+            )
+            # 每个运行最多一份可见草稿；草稿写入与运行完成由同一事务保护。
+            # 约束也防止旧 Worker 在租约丢失后留下重复结果。历史版本没有
+            # 该唯一约束，先按创建时间保留每个运行最新一份，保证升级可重复执行。
+            await cursor.execute(
+                """
+                DELETE FROM copilot_drafts AS stale
+                USING copilot_drafts AS keep
+                WHERE stale.tenant_id = keep.tenant_id
+                  AND stale.run_id = keep.run_id
+                  AND (stale.created_at, stale.draft_id) < (keep.created_at, keep.draft_id)
+                """
+            )
+            await cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_copilot_drafts_tenant_run
+                ON copilot_drafts (tenant_id, run_id)
+                """)
+            current = 21
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
                 (current, APP_SCHEMA_NAME),

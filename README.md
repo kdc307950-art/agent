@@ -384,7 +384,7 @@ uv run python -m backend.run_knowledge_eval --embed
 
 全文检索使用 **jieba + 自定义 IT 词典**（`backend/knowledge/tokenizer.py`）在入库与查询两侧做同一分词，`search_text` 存分词文本，`search_vector` 基于分词结果生成（schema v12），pg_trgm 提供错别字/短词兜底。查询侧为三路召回：`plainto_tsquery`（AND 精确）∪ `to_tsquery`（OR 覆盖率）∪ `trigram` 相似度，排序按命中 token 数（子串匹配，对中文分词上下文不一致鲁棒）→ ts_rank → 相似度。所有召回均强制 tenant / published / 有效期 / visibility / 部门 ACL 过滤。
 
-当前内置 52 条评测集（8 个 IT 子分类 + 跨文档 + 口语改写）在演示数据上的 **lexical-only 基线（2026-08-28 实测）：Top1 98.1%（51/52）、Recall@5 100%、MRR@5 0.990、无命中 0 条**。分项中 `it.account` Top1 为 83.3%（6 中 1 条口语改写未排到首位，属语义改写场景，需 embedding 提升，不代表实现错误）。配置 embedding 后 `--embed` 出 hybrid（RRF 融合 + 分类加权）对比。
+当前内置 52 条评测集（8 个 IT 子分类 + 跨文档 + 口语改写）在演示数据上的 **lexical-only 基线（2026-08-28 实测）：Top1 98.1%（51/52）、Recall@5 100%、MRR@5 0.990、无命中 0 条**。分项中 `it.account` Top1 为 83.3%（6 中 1 条口语改写未排到首位，属语义改写场景，需 embedding 提升，不代表实现错误）。冻结的 `hybrid_holdout@2026-08-30-v1` 已通过受保护 CI 验证：Top1 85.7%、Recall@5 96.4%、MRR@5 0.929；生产默认仍走 lexical-only，不能外推演示库指标。
 
 ## 渠道沙箱验证（企业微信）
 
@@ -415,7 +415,7 @@ uv run pytest tests -q -m "not live_e2e"
 
 命令行的环境变量优先于 `.env`（`conftest.py` 的 `load_dotenv()` 不覆盖已存在的变量），所以不必改本地配置。
 
-CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。本地还在 PostgreSQL 14 + pgvector 0.8.1 / Redis 6 上执行过兼容验证：schema v9 和 HNSW 迁移成功，全部非 live 测试 `192 passed`。真实 HTTP 工单 E2E 验证了创建、缺字段中断、补充恢复、分类派单、处理、解决、回访和关闭，最终事件版本连续到 v9。
+CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。本次无外部依赖本地回归为 `306 passed, 61 skipped`（跳过 PostgreSQL/Redis 集成与 live_e2e）；启用集成栈后应执行同一命令验证数据库租约、ACL 与迁移语义。真实 HTTP 工单 E2E 验证了创建、缺字段中断、补充恢复、分类派单、处理、解决、回访和关闭，最终事件版本连续到 v9。
 
 真实 DeepSeek E2E 默认不运行，以免普通 CI 产生费用。手动 workflow `Live Agent E2E` 需要受保护环境中的 `DEEPSEEK_API_KEY`、`LIVE_AGENT_TOKEN` 和 `TENANT_TOKEN_SECRET`，覆盖文本 SSE、工具调用和同线程续聊。
 
@@ -427,7 +427,7 @@ CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` �
 |---|---|
 | 工作流存库 + 热编译 | 改 JSON 工作流仍需重启服务，所有租户共用一份定义 |
 | 挂起任务 TTL | 工单信息补全和旧审批尚未实现自动过期/取消策略 |
-| Embedding 供应商 | pgvector、HNSW、入库流水线和 Agentic RAG 已实现；生产仍需选择 embedding 模型、固定维度并完成离线评测，默认建议回复而不自动发送 |
+| Embedding 供应商 | pgvector、HNSW、入库流水线和 Agentic RAG 已实现；演示库 hybrid holdout 已完成受保护 CI 评测，生产仍需小范围观察效果、P95、成本与降级率，默认建议回复而不自动发送 |
 | 附件安全链路 | 尚未接对象存储、病毒扫描、临时授权下载和内容解析隔离 |
 | PostgreSQL RLS | Repository 全部强制 tenant 条件，但数据库行级安全尚未启用 |
 | 工作台认证 | 本地 Vite 代理使用单个开发令牌；生产需接 IdP 并按客户/客服/审批人分配 scope |

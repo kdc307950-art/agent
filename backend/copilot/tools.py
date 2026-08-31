@@ -82,7 +82,7 @@ async def search_knowledge(
     输出 JSON：{"content", "evidence", "retrieval_mode", "degraded"}。
     引用门禁只接受 evidence 中的三元组。
     """
-    if not query or len(query) > 1_024:
+    if not query or not query.strip() or len(query) > 1_024:
         return json.dumps(
             {
                 "content": "错误：查询不能为空且不能超过 1024 字符",
@@ -130,10 +130,23 @@ async def search_assets(
         return "错误：limit 必须在 1 到 50 之间"
     runtime = _runtime(config)
     context = _context(config)
-    assets = await runtime.assets.list_assets(
-        context.tenant_id, owner_user_id=owner_user_id, limit=max(limit, 100)
-    )
     keyword = (query or "").strip().lower()
+    list_assets = runtime.assets.list_assets
+    try:
+        assets = await list_assets(
+            context.tenant_id,
+            owner_user_id=owner_user_id,
+            query_text=keyword or None,
+            limit=max(limit, 100),
+        )
+    except TypeError as exc:
+        # 兼容尚未升级的注入仓储桩；生产仓储支持 query_text，
+        # 应用层仍保留一次精确过滤作为防御。
+        if "query_text" not in str(exc):
+            raise
+        assets = await list_assets(
+            context.tenant_id, owner_user_id=owner_user_id, limit=max(limit, 100)
+        )
     if keyword:
         assets = [
             a

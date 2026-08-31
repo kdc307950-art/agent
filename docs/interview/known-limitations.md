@@ -14,7 +14,8 @@
    新追问取消旧追问。多工单选择、模糊匹配、短链接系统未实现（无真实需求）。
 
 3. **embedding 可选**：pgvector 后端依赖外部 embedding 服务与维度配置；
-   未配置时检索为 lexical-only。hybrid 评测（真实 embedding 模型）未完成。
+   未配置时检索为 lexical-only。演示库的 hybrid holdout 已由受保护 CI 验证，
+   生产知识库规模下的效果、成本与长期可靠性仍未验证。
 
 4. **生产长期运行未证明**：未经历生产流量、故障演练与容量验证；
    退避/租约参数（30s 基数、120s 租约、90s 心跳 TTL）为默认值，未按负载调优。
@@ -56,10 +57,10 @@
     恢复真实身份执行部门级 ACL（身份缺失闭锁，不默认全权限）。
     **已验证到集成测试层面；多 Worker 并发与生产环境透传未做压力验证。**
 
-14. **Copilot 检索为 lexical-only 基线**：统一 `KnowledgeRetriever` 入口就绪
-    （lexical-only / hybrid 双模式 + retrieval_mode 标记 + degraded 降级标记），
-    但真实 embedding 服务未配置，Copilot 实际走 lexical-only。
-    **不能说"Copilot 已完全 hybrid 化"。**
+14. **Copilot 生产默认走 lexical-only**：统一 `KnowledgeRetriever` 入口就绪
+    （lexical-only / hybrid 双模式 + retrieval_mode 标记 + degraded 降级标记）；
+    hybrid 路径已在演示库 holdout CI 验证，但生产配置仍未启用，不能据演示指标
+    推断生产效果。
 
 15. **Copilot 异步 Worker 化已完成核心链路**：POST 只入队返回 202、
     Worker 领取/租约续期/退避/dead/恢复、GET 状态轮询、崩溃恢复测试通过；

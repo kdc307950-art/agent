@@ -18,9 +18,9 @@ LangGraph 注入 config；``config["configurable"]["runtime"]`` 为 AgentRuntime
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
-from uuid import uuid4
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
@@ -57,10 +57,22 @@ async def search_assets(
         return "错误：limit 必须在 1 到 50 之间"
     runtime = _runtime(config)
     context = _context(config)
-    assets = await runtime.assets.list_assets(
-        context.tenant_id, owner_user_id=owner_user_id, limit=max(limit, 100)
-    )
     keyword = (query or "").strip().lower()
+    list_assets = runtime.assets.list_assets
+    try:
+        assets = await list_assets(
+            context.tenant_id,
+            owner_user_id=owner_user_id,
+            query_text=keyword or None,
+            limit=max(limit, 100),
+        )
+    except TypeError as exc:
+        # 兼容尚未升级的注入仓储桩；生产仓储支持 query_text。
+        if "query_text" not in str(exc):
+            raise
+        assets = await list_assets(
+            context.tenant_id, owner_user_id=owner_user_id, limit=max(limit, 100)
+        )
     if keyword:
         assets = [
             a
@@ -90,27 +102,46 @@ async def search_knowledge(
     limit: int = 5,
     config: RunnableConfig | None = None,
 ) -> str:
-    """搜索当前租户的知识库（lexical 检索，含部门 ACL），返回统一结构化证据。
+    """搜索当前租户的知识库（统一检索，含部门 ACL），返回结构化证据。
 
     输出为 JSON：{"content": 展示文本, "evidence": [{document_id, document_version,
     chunk_id, title, content}...]}。Agent 看到 content（可读），系统保留
     evidence（引用白名单唯一来源），不再从展示文本反向解析引用。
     租户隔离由检索 SQL 强制（published + 有效期 + ACL），跨租户/未发布文档不可见。
     """
-    if not query or len(query) > 1_024:
+    if not query or not query.strip() or len(query) > 1_024:
         return json.dumps(
-            {"content": "错误：查询不能为空且不能超过 1024 字符", "evidence": []},
+            {
+                "content": "错误：查询不能为空且不能超过 1024 字符",
+                "evidence": [],
+                "retrieval_mode": "lexical-only",
+                "degraded": False,
+            },
             ensure_ascii=False,
         )
     if limit < 1 or limit > 20:
         return json.dumps(
-            {"content": "错误：limit 必须在 1 到 20 之间", "evidence": []},
+            {
+                "content": "错误：limit 必须在 1 到 20 之间",
+                "evidence": [],
+                "retrieval_mode": "lexical-only",
+                "degraded": False,
+            },
             ensure_ascii=False,
         )
     runtime = _runtime(config)
     context = _context(config)
     principal = retrieval_principal(context)
-    hits = await runtime.knowledge.lexical_search(principal, query, limit=limit)
+    retriever = getattr(runtime, "knowledge_retriever", None)
+    if retriever is None:
+        # 兼容旧装配/轻量测试运行时；生产 runtime 总是注入统一门面。
+        hits = await runtime.knowledge.lexical_search(principal, query, limit=limit)
+        retrieval_mode, degraded = "lexical-only", False
+    else:
+        result = await retriever.search(principal=principal, query=query, limit=limit)
+        hits = result.hits
+        retrieval_mode = result.retrieval_mode
+        degraded = bool(getattr(result, "degraded", False))
     evidence = [
         {
             "document_id": h.document_id,
@@ -128,7 +159,15 @@ async def search_knowledge(
             f"- [{h.document_id}] {h.title}: {h.content[:80]}{'…' if len(h.content) > 80 else ''}"
             for h in hits
         )
-    return json.dumps({"content": content, "evidence": evidence}, ensure_ascii=False)
+    return json.dumps(
+        {
+            "content": content,
+            "evidence": evidence,
+            "retrieval_mode": retrieval_mode,
+            "degraded": degraded,
+        },
+        ensure_ascii=False,
+    )
 
 
 @tool
@@ -211,26 +250,37 @@ async def send_message(
     """
     if not ticket_id or len(ticket_id) > 64:
         return "错误：ticket_id 不能为空且不能超过 64 字符"
-    if not content or len(content) > 4_096:
+    if not content or not content.strip() or len(content) > 4_096:
         return "错误：content 不能为空且不能超过 4096 字符"
     runtime = _runtime(config)
     context = _context(config)
-    message_id = f"tool-{uuid4().hex}"
-    idempotency_key = f"tool-send:{context.tenant_id}:{ticket_id}:{message_id}"
+    ticket_get = getattr(runtime.tickets, "get", None)
+    ticket = await ticket_get(context.tenant_id, ticket_id) if callable(ticket_get) else None
+    if callable(ticket_get) and ticket is None:
+        return "错误：工单不存在"
+    raw_channel = getattr(ticket, "channel", "web")
+    channel = getattr(raw_channel, "value", raw_channel) or "web"
+    # 以运行、工单和正文形成稳定键：Worker/请求恢复重跑时不会再次入队，
+    # 而不同运行仍可发送同一正文。message_id 同样稳定，避免事务重试产生重复消息。
+    fingerprint = hashlib.sha256(
+        f"{context.run_id}:{context.tenant_id}:{ticket_id}:{channel}:{content}".encode()
+    ).hexdigest()
+    message_id = f"tool-{fingerprint[:32]}"
+    idempotency_key = f"tool-send:{context.tenant_id}:{ticket_id}:{fingerprint}"
     created = await runtime.ticket_operations.append_outbound_message(
         tenant_id=context.tenant_id,
         ticket_id=ticket_id,
         message_id=message_id,
         actor_type="agent",
         actor_id=context.user_id,
-        channel="wecom",
+        channel=str(channel),
         content=content,
         event_id=f"tool-msg-{message_id}",
         idempotency_key=idempotency_key,
         payload={
             "ticket_id": ticket_id,
             "content": content,
-            "channel": "wecom",
+            "channel": str(channel),
             "message_id": message_id,
             "source": "agent_tool",
         },

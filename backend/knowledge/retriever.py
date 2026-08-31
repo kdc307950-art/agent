@@ -82,6 +82,12 @@ class KnowledgeRetriever:
         未配置 embedding：仅 lexical（标记 lexical-only）；
         配置 embedding：lexical + vector 双路 + RRF 融合（标记 hybrid）。
         """
+        if not query or not query.strip():
+            return KnowledgeRetrievalResult(
+                hits=[], retrieval_mode=self.retrieval_mode, lexical_hits=[], vector_hits=[]
+            )
+        if limit < 1 or limit > 100:
+            raise ValueError("limit 必须在 1 到 100 之间")
         lexical = await self.repository.lexical_search(principal, query, limit=limit)
         if not self.vector_enabled:
             return KnowledgeRetrievalResult(

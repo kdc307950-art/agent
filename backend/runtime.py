@@ -165,6 +165,8 @@ async def runtime_context(
                     HttpEmbeddingProvider(
                         settings.knowledge_embedding_endpoint,
                         dimension=settings.knowledge_embedding_dimension,
+                        auth_token=settings.knowledge_embedding_token,
+                        model=settings.knowledge_embedding_model,
                     ),
                     dimension=settings.knowledge_embedding_dimension,
                 )

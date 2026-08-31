@@ -24,6 +24,8 @@ from src.my_agent.helpdesk import (
     validate_resume_command,
 )
 
+_SLA_START_STATUSES = frozenset({TicketStatus.QUEUED, TicketStatus.ASSIGNED})
+
 
 def intake_config(tenant_id: str, ticket_id: str) -> dict[str, Any]:
     return {
@@ -233,6 +235,35 @@ def pending_from_snapshot(snapshot: object, interrupt_id: str) -> PendingTicketI
     raise ValueError("恢复标识已失效，请刷新后重试")
 
 
+async def ensure_sla_for_ticket_if_needed(
+    runtime,
+    ticket,
+    *,
+    tenant_id: str,
+    channel: str | None = None,
+) -> bool:
+    """为已进入排队/指派状态的工单幂等补建 SLA。
+
+    状态流转和 SLA 使用不同仓储事务，SLA 插入可能在状态提交后暂时失败。
+    所有幂等重试路径都调用本函数，确保后续重试能够修复这个可恢复缺口；
+    ``ON CONFLICT DO NOTHING`` 使并发调用安全。
+    """
+    if ticket is None:
+        return False
+    try:
+        status = TicketStatus(getattr(ticket, "status", ""))
+    except (TypeError, ValueError):
+        return False
+    if status not in _SLA_START_STATUSES:
+        return False
+    return await runtime.ticket_operations.ensure_sla_for_ticket(
+        tenant_id=tenant_id,
+        ticket_id=ticket.ticket_id,
+        channel=channel if channel is not None else getattr(ticket, "channel", None),
+        category=getattr(ticket, "category", None),
+    )
+
+
 async def apply_intake_resume(
     runtime,
     *,
@@ -261,6 +292,9 @@ async def apply_intake_resume(
     if run["status"] == "committed":
         snapshot = await runtime.intake_graph.aget_state(config)
         ticket = await runtime.tickets.get(tenant_id, ticket_id)
+        await ensure_sla_for_ticket_if_needed(
+            runtime, ticket, tenant_id=tenant_id, channel=channel
+        )
         return {
             "ticket": ticket,
             "result": {},
@@ -302,13 +336,7 @@ async def apply_intake_resume(
         scopes=scopes | {"ticket:system"},
         operation_id=operation_id,
     )
-    if ticket.status in {TicketStatus.QUEUED, TicketStatus.ASSIGNED}:
-        await runtime.ticket_operations.ensure_sla_for_ticket(
-            tenant_id=tenant_id,
-            ticket_id=ticket.ticket_id,
-            channel=channel,
-            category=getattr(ticket, "category", None),
-        )
+    await ensure_sla_for_ticket_if_needed(runtime, ticket, tenant_id=tenant_id, channel=channel)
     snapshot = await runtime.intake_graph.aget_state(config)
     return {
         "ticket": ticket,

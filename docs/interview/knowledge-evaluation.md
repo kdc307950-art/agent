@@ -82,11 +82,11 @@ python -m backend.run_knowledge_eval --dataset hybrid_holdout --embed `
 - `--dataset hybrid_holdout --embed` 在未配置 `KNOWLEDGE_EMBEDDING_ENDPOINT`
   时**直接失败**（`resolve_eval_mode` 抛错），禁止降级成 lexical-only 后
   继续产出"hybrid 成绩"。
-- 已实现 CLI 阈值参数（`--fail-under-*`），**尚未接入 CI 自动执行**；
-  受保护的手动触发 workflow（`workflow_dispatch` + secrets 注入）设计见
-  `.github/workflows/hybrid-eval.yml`，不随 PR 自动跑。
-- 当前状态：**未执行**——本地未配置真实 embedding 服务，hybrid 数字空缺，
-  不得以占位或外推值填表。
+- 已实现 CLI 阈值参数（`--fail-under-*`），并接入受保护的手动触发 workflow
+  （`workflow_dispatch` + secrets 注入）；workflow 不随 PR 自动跑，以隔离
+  外部 embedding 成本和波动。
+- 当前状态：演示库的真实 embedding holdout 已由 CI 验证并达标；生产知识库
+  泛化、容量、长期稳定性和成本仍未验证，不得外推为生产效果。
 - **完整操作手册**：接入/验证/固化/上线四部分的逐条可执行命令与验收标准见
   `docs/HYBRID_EVAL_RUNBOOK.md`（含 embedding 服务契约、Secrets 配置、
   本地验证、CI 触发、失败处理顺序、通过/未通过后的文档动作）。
@@ -137,5 +137,6 @@ python -m backend.run_knowledge_eval --dataset hybrid_holdout --embed `
 ## 明确局限（对外表述须一致）
 
 - 指标来自**内部脱敏基准集**，不等同于真实企业知识库的泛化结果。
-- embedding 端到端（真实模型服务）未接入本地评测链路，hybrid 指标待补。
+- 真实 embedding 端到端已在受保护 CI 的演示库 holdout 上验证；本地默认配置
+  仍为 lexical-only，生产数据分布下的 hybrid 效果与成本待观察。
 - 当前数字只证明演示库上的检索质量，不证明生产数据分布下的表现。

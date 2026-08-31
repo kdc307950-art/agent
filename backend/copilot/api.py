@@ -80,6 +80,15 @@ async def _lookup_agent_identity(runtime, tenant_id: str, user_id: str) -> dict:
     try:
         audit = getattr(runtime, "audit", None)
         pool = getattr(audit, "pool", None)
+        if audit is not None and pool is None:
+            # 生产运行时必须提供可查询 support_members 的审计仓储；
+            # 只有显式未装配 audit 的轻量测试桩才保留兼容行为。
+            return {
+                "role": "agent",
+                "departments": [],
+                "internal": True,
+                "lookup_error": True,
+            }
         if pool is not None:
             async with pool.connection() as connection:
                 async with connection.cursor() as cursor:
@@ -131,18 +140,8 @@ async def generate_copilot(
     ticket = await runtime.tickets.get(principal.tenant_id, ticket_id)
     if ticket is None:
         raise HTTPException(status_code=404, detail="工单不存在")
-    if ticket.status.value not in {"assigned", "in_progress"}:
-        raise HTTPException(
-            status_code=409,
-            detail=f"工单状态 {ticket.status.value} 不支持生成处理建议（仅 assigned/in_progress）",
-        )
-    if payload.expected_version != ticket.version:
-        # 版本已变：工单可能被并发修改；不重试生成，要求刷新后重试
-        raise HTTPException(status_code=409, detail="工单版本已变化，请刷新后重试")
-
-    # 僵尸运行恢复由 CopilotWorker 定期执行（阶段六），HTTP 请求不承担恢复职责
-
-    # operation_id 幂等：按 run 状态分派（阶段二异步 Worker 状态机）
+    # 先处理 operation 幂等结果。重试请求可能携带旧 expected_version，且工单
+    # 状态可能已变化；已存在的运行不应因这些并发变化而无法查询/复放。
     existing_run = await runtime.copilot_repository.get_run_by_operation(
         principal.tenant_id, ticket_id, payload.operation_id
     )
@@ -183,6 +182,17 @@ async def generate_copilot(
             )
         # expired（僵尸运行租约过期）：允许同一 operation 重新运行，
         # 由下方 start_run 的 ON CONFLICT 分支把 expired 重置为 queued
+
+    if ticket.status.value not in {"assigned", "in_progress"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"工单状态 {ticket.status.value} 不支持生成处理建议（仅 assigned/in_progress）",
+        )
+    if payload.expected_version != ticket.version:
+        # 新 operation 的版本已变：工单可能被并发修改，要求刷新后重试。
+        raise HTTPException(status_code=409, detail="工单版本已变化，请刷新后重试")
+
+    # 僵尸运行恢复由 CopilotWorker 定期执行，HTTP 请求不承担恢复职责。
 
     run_id = uuid4().hex
     # 阶段一：入队时保存发起人身份快照（服务端查询，禁止请求体提交）
@@ -258,6 +268,10 @@ async def get_copilot_run_status(
     run = await runtime.copilot_repository.get_run(principal.tenant_id, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="运行记录不存在")
+    if run.get("ticket_id") != ticket_id:
+        # run_id 是租户级标识，但 URL 还声明了父工单；两者必须一致，
+        # 否则可借用一个工单路径读取另一工单的运行/草稿。
+        raise HTTPException(status_code=404, detail="运行记录不存在")
     draft = None
     if run["status"] == "completed":
         draft = await runtime.copilot_repository.get_draft_by_run(
@@ -309,7 +323,10 @@ async def approve_copilot_draft(
     if ticket is None:
         raise HTTPException(status_code=404, detail="工单不存在")
     approved = await runtime.copilot_repository.approve_draft(
-        tenant_id=principal.tenant_id, draft_id=draft_id, approved_by=principal.user_id
+        tenant_id=principal.tenant_id,
+        ticket_id=ticket_id,
+        draft_id=draft_id,
+        approved_by=principal.user_id,
     )
     if not approved:
         raise HTTPException(status_code=409, detail="草稿不存在或已处理")
@@ -337,6 +354,11 @@ def _require_copilot_scope(principal: Principal) -> None:
         raise HTTPException(status_code=403, detail="缺少 ticket:agent 权限")
 
 
+def _require_copilot_admin_scope(principal: Principal) -> None:
+    if "security:admin" not in principal.scopes:
+        raise HTTPException(status_code=403, detail="缺少 security:admin 权限")
+
+
 # ========== 管理员死信管理（阶段三） ==========
 
 admin_copilot_router = APIRouter(prefix="/admin/copilot", tags=["admin-copilot"])
@@ -350,7 +372,7 @@ async def admin_list_copilot_runs(
     principal: Principal = Depends(rate_limit_dependency),
 ):
     """管理员查看 Copilot 运行（可按状态过滤，如 status=dead）。"""
-    _require_copilot_scope(principal)
+    _require_copilot_admin_scope(principal)
     runtime = _copilot_runtime(request)
     items = await runtime.copilot_repository.list_runs(
         tenant_id=principal.tenant_id,
@@ -371,7 +393,7 @@ async def admin_replay_copilot_run(
     幂等：原始 run 标记为 replayed（保留 dead 审计），创建新的 queued 运行
     关联同一 operation_id（新 run_id），由 Worker 重新领取执行。
     """
-    _require_copilot_scope(principal)
+    _require_copilot_admin_scope(principal)
     runtime = _copilot_runtime(request)
     run = await runtime.copilot_repository.get_run(principal.tenant_id, run_id)
     if run is None:

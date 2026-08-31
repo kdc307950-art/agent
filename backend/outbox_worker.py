@@ -23,8 +23,10 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import time
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -55,18 +57,26 @@ class TransientDeliveryError(RuntimeError):
     pass
 
 
+class OutboxLeaseLost(TransientDeliveryError):
+    """投递期间 Worker 失去事件租约。"""
+
+    error_code = "outbox_lease_lost"
+
+
 @dataclass(frozen=True, slots=True)
 class OutboxRunResult:
     """单轮投递结果统计（不可变快照，供测试断言与指标上报）。
 
     claimed：本轮领取的事件数；delivered：成功投递数；
-    retried：瞬时失败已排重试数；dead：进入死信数。
+    retried：瞬时失败已排重试数；dead：进入死信数；lease_lost：租约 fencing
+    失败或续租异常数（不代表事件已进入终态）。
     """
 
     claimed: int = 0
     delivered: int = 0
     retried: int = 0
     dead: int = 0
+    lease_lost: int = 0
 
 
 class HttpOutboxSender:
@@ -79,7 +89,12 @@ class HttpOutboxSender:
     """
 
     def __init__(self, endpoint: str, *, shared_secret: str, timeout_seconds: float = 10.0) -> None:
-        if not endpoint.startswith(("http://", "https://")) or len(shared_secret) < 16:
+        if (
+            not endpoint.startswith(("http://", "https://"))
+            or len(shared_secret) < 16
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
             # 拒绝非 HTTP 端点与过短密钥，避免误配置把事件发到任意协议。
             raise ValueError("Outbox endpoint 或共享密钥无效")
         self.endpoint = endpoint
@@ -155,6 +170,11 @@ class OutboxWorker:
         # 为 None 时跳过 DB 打点/心跳（测试或未启用可观测性）。
         self.worker_metrics = worker_metrics
 
+    @staticmethod
+    def _lease_key(event: Mapping[str, Any]) -> tuple[str, str]:
+        """返回租户/事件复合键，避免跨租户同 event_id 覆盖心跳任务。"""
+        return (str(event["tenant_id"]), str(event["event_id"]))
+
     async def run_forever(
         self,
         *,
@@ -169,7 +189,7 @@ class OutboxWorker:
         设计：单轮异常不退出进程——计数 + 指数退避（封顶 30 秒）后继续；
         每轮结束后上报心跳与死信水位指标。
         """
-        if poll_interval_seconds <= 0:
+        if not math.isfinite(poll_interval_seconds) or poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds 必须为正数")
         stop_event = stop_event or asyncio.Event()
         consecutive_failures = 0
@@ -221,43 +241,133 @@ class OutboxWorker:
         """投递单个事件，同时后台心跳续租，租约丢失则中止投递。
 
         设计：心跳间隔 = lease_seconds / 3（保证租约过期前至少续 3 次）；
-        续租失败置 lease_lost，投递结束后据此抛 TransientDeliveryError，
-        避免本 worker 已失去所有权后还继续占用事件。
+        续租失败立即取消投递任务，避免本 worker 已失去所有权后继续产生副作用。
         """
-        stop = asyncio.Event()
-        lease_lost = asyncio.Event()
-
-        async def heartbeat() -> None:
-            interval = max(0.1, self.lease_seconds / 3)
-            while not stop.is_set():
-                try:
-                    # 每隔 interval 尝试续租一次；stop 置位即退出协程。
-                    await asyncio.wait_for(stop.wait(), timeout=interval)
-                    break
-                except TimeoutError:
-                    renewed = await self.repository.renew_outbox_lease(
-                        event["tenant_id"],
-                        event["event_id"],
-                        worker_id=self.worker_id,
-                        lease_seconds=self.lease_seconds,
-                    )
-                    if not renewed:
-                        # 租约已被其它 worker 抢走或已过期：标记并退出心跳。
-                        lease_lost.set()
-                        break
-
-        task = asyncio.create_task(heartbeat())
+        lease_task = asyncio.create_task(self._keep_lease_alive(event))
         try:
-            await sender.send(event)
+            await self._send_with_existing_lease(event, sender, lease_task)
         finally:
-            # 无论成败都停止心跳协程，避免任务泄漏。
-            stop.set()
-            await task
-        if lease_lost.is_set():
-            # 投递期间租约丢失：事件可能已被他人重新领取，按瞬时错误处理
-            # 让本事件重新进入调度（fail_outbox 会走重试/死信逻辑）。
-            self.metrics.increment("outbox_lease_lost_total")
-            raise TransientDeliveryError("lease_lost")
+            if not lease_task.done():
+                lease_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await lease_task
+
+    async def _keep_lease_alive(self, event: Mapping[str, Any]) -> None:
+        """续租单个已领取事件；异常或 False 结果都表示 fencing 失败。"""
+        interval = max(0.1, self.lease_seconds / 3)
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                renewed = await self.repository.renew_outbox_lease(
+                    event["tenant_id"],
+                    event["event_id"],
+                    worker_id=self.worker_id,
+                    lease_seconds=self.lease_seconds,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                raise OutboxLeaseLost("outbox_lease_lost") from exc
+            if not renewed:
+                raise OutboxLeaseLost("outbox_lease_lost") from None
+
+    async def _fenced_complete(self, event: Mapping[str, Any]) -> bool:
+        """完成写入失败时保守返回 False，不让单条 DB 故障中断整批处理。"""
+        try:
+            return await self.repository.complete_outbox(
+                event["tenant_id"], event["event_id"], worker_id=self.worker_id
+            )
+        except Exception:
+            logger.exception(
+                "outbox_complete_failed",
+                extra={"tenant_id": event.get("tenant_id"), "event_id": event.get("event_id")},
+            )
+            return False
+
+    async def _fenced_fail(
+        self,
+        event: Mapping[str, Any],
+        *,
+        error_code: str,
+        retry_at: datetime | None,
+    ) -> bool:
+        """失败状态写入采用 fencing；DB 异常按失租处理并继续下一事件。"""
+        try:
+            return await self.repository.fail_outbox(
+                event["tenant_id"],
+                event["event_id"],
+                worker_id=self.worker_id,
+                error_code=error_code,
+                retry_at=retry_at,
+            )
+        except Exception:
+            logger.exception(
+                "outbox_failure_update_failed",
+                extra={"tenant_id": event.get("tenant_id"), "event_id": event.get("event_id")},
+            )
+            return False
+
+    async def _send_with_existing_lease(
+        self,
+        event: Mapping[str, Any],
+        sender: OutboxSender,
+        lease_task: asyncio.Task,
+    ) -> None:
+        """使用调用方从 claim 时启动的续租任务执行投递。"""
+        if lease_task.done():
+            # 事件可能在批内等待期间已失租；检查后再创建 sender，避免旧 owner
+            # 在取消协程前向下游发出请求。
+            try:
+                lease_task.result()
+            except asyncio.CancelledError as exc:
+                raise OutboxLeaseLost("outbox_lease_lost") from exc
+            except Exception as exc:
+                if isinstance(exc, OutboxLeaseLost):
+                    raise
+                raise OutboxLeaseLost("outbox_lease_lost") from exc
+            raise OutboxLeaseLost("outbox_lease_lost")
+        sender_task = asyncio.create_task(sender.send(event))
+        try:
+            done, _ = await asyncio.wait(
+                {sender_task, lease_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            # 同一调度点两个任务都可能完成；租约失败优先，避免把失租投递报成功。
+            if lease_task in done:
+                try:
+                    lease_task.result()
+                except asyncio.CancelledError:
+                    raise
+                except OutboxLeaseLost:
+                    sender_task.cancel()
+                    with suppress(asyncio.CancelledError, Exception):
+                        await sender_task
+                    raise
+                except Exception as exc:
+                    sender_task.cancel()
+                    with suppress(asyncio.CancelledError, Exception):
+                        await sender_task
+                    raise OutboxLeaseLost("outbox_lease_lost") from exc
+
+            if sender_task in done:
+                # 发送完成与心跳失败同时发生时仍以失租为准。
+                if lease_task.done():
+                    try:
+                        lease_task.result()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        if isinstance(exc, OutboxLeaseLost):
+                            raise
+                        raise OutboxLeaseLost("outbox_lease_lost") from exc
+                sender_task.result()
+                return
+
+            raise OutboxLeaseLost("outbox_lease_lost")
+        finally:
+            if not sender_task.done():
+                sender_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await sender_task
 
     async def run_once(
         self,
@@ -270,69 +380,95 @@ class OutboxWorker:
 
         参数：limit 领取上限；now 注入当前时间（测试用，影响退避计算）；
             tenant_id 限定只处理某租户的事件（测试/定向重放用）。
-        返回：OutboxRunResult(claimed, delivered, retried, dead)。
+        返回：OutboxRunResult(claimed, delivered, retried, dead, lease_lost)。
         设计：单事件隔离失败——一个事件投递失败不影响同批其它事件；
         按 event_type 路由 sender，路由缺失直接判死信（unsupported_event_type）。
         """
         reference = now or datetime.now(UTC)
+        if limit < 1 or limit > 100:
+            raise ValueError("limit 必须在 1 到 100 之间")
+        # 批量领取后立即为每条事件启动心跳；后排事件即使等待前排发送，也会持续续租。
         events = await self.repository.claim_outbox(
             worker_id=self.worker_id,
             lease_seconds=self.lease_seconds,
             limit=limit,
             tenant_id=tenant_id,
         )
-        delivered = retried = dead = 0
-        for event in events:
-            sender = self.senders.get(str(event["event_type"]))
-            if sender is None:
-                # 未注册的 event_type：无法投递且重试无意义，直接进死信。
-                await self.repository.fail_outbox(
-                    event["tenant_id"],
-                    event["event_id"],
-                    worker_id=self.worker_id,
-                    error_code="unsupported_event_type",
-                    retry_at=None,
-                )
-                dead += 1
-                continue
-            try:
-                await self._send_with_heartbeat(event, sender)
-            except TransientDeliveryError as exc:
-                attempts = int(event.get("attempts", 1))
-                # 指数退避：第 n 次失败后等待 2^(n-1) 秒，封顶 300 秒；
-                # 已达 max_attempts 则不再排重试（retry_at=None → 死信）。
-                retry_at = (
-                    reference + timedelta(seconds=min(2 ** (attempts - 1), 300))
-                    if attempts < self.max_attempts
-                    else None
-                )
-                await self.repository.fail_outbox(
-                    event["tenant_id"],
-                    event["event_id"],
-                    worker_id=self.worker_id,
-                    error_code=type(exc).__name__,
-                    retry_at=retry_at,
-                )
-                if retry_at is None:
-                    dead += 1
+        delivered = retried = dead = lease_lost = 0
+        lease_tasks = {
+            self._lease_key(event): asyncio.create_task(self._keep_lease_alive(event))
+            for event in events
+        }
+        try:
+            for event in events:
+                lease_task = lease_tasks[self._lease_key(event)]
+                sender = self.senders.get(str(event["event_type"]))
+                if sender is None:
+                    # 未注册的 event_type：无法投递且重试无意义，直接进死信。
+                    updated = await self._fenced_fail(
+                        event,
+                        error_code="unsupported_event_type",
+                        retry_at=None,
+                    )
+                    if updated:
+                        dead += 1
+                    else:
+                        lease_lost += 1
+                    lease_task.cancel()
+                    with suppress(asyncio.CancelledError, Exception):
+                        await lease_task
+                    continue
+                try:
+                    await self._send_with_existing_lease(event, sender, lease_task)
+                except OutboxLeaseLost:
+                    # 租约已丢失：不要再调用 fail_outbox（旧 owner 无权改状态），
+                    # 让事件自然过期后由恢复 Worker 重新领取。
+                    lease_lost += 1
+                except TransientDeliveryError as exc:
+                    attempts = int(event.get("attempts", 1))
+                    retry_at = (
+                        reference + timedelta(seconds=min(2 ** (attempts - 1), 300))
+                        if attempts < self.max_attempts
+                        else None
+                    )
+                    updated = await self._fenced_fail(
+                        event,
+                        error_code=getattr(exc, "error_code", type(exc).__name__),
+                        retry_at=retry_at,
+                    )
+                    if not updated:
+                        lease_lost += 1
+                    elif retry_at is None:
+                        dead += 1
+                    else:
+                        retried += 1
+                except Exception as exc:
+                    # 非 TransientDeliveryError 的异常：视为致命失败，直接进死信。
+                    updated = await self._fenced_fail(
+                        event,
+                        error_code=getattr(exc, "error_code", type(exc).__name__),
+                        retry_at=None,
+                    )
+                    if updated:
+                        dead += 1
+                    else:
+                        lease_lost += 1
                 else:
-                    retried += 1
-            except Exception as exc:
-                # 非 TransientDeliveryError 的异常：视为致命失败，直接进死信。
-                await self.repository.fail_outbox(
-                    event["tenant_id"],
-                    event["event_id"],
-                    worker_id=self.worker_id,
-                    error_code=type(exc).__name__,
-                    retry_at=None,
-                )
-                dead += 1
-            else:
-                # 投递成功：标记完成（complete_outbox），从待投递集合移除。
-                await self.repository.complete_outbox(
-                    event["tenant_id"], event["event_id"], worker_id=self.worker_id
-                )
-                delivered += 1
+                    # 只有仍持租约并成功写入终态，才报告 delivered。
+                    completed = await self._fenced_complete(event)
+                    if completed:
+                        delivered += 1
+                    else:
+                        lease_lost += 1
+                finally:
+                    lease_task.cancel()
+                    with suppress(asyncio.CancelledError, Exception):
+                        await lease_task
+        finally:
+            for task in lease_tasks.values():
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*lease_tasks.values(), return_exceptions=True)
         # 双通道指标上报：RuntimeMetrics（进程内）+ WorkerMetricsDB（数据库）。
         self.metrics.increment("outbox_claimed_total", len(events))
         self.metrics.increment(
@@ -342,6 +478,7 @@ class OutboxWorker:
         self.metrics.increment("outbox_delivered_total", delivered)
         self.metrics.increment("outbox_retried_total", retried)
         self.metrics.increment("outbox_dead_total", dead)
+        self.metrics.increment("outbox_lease_lost_total", lease_lost)
         await safe_incr(self.worker_metrics, "outbox_claimed_total", amount=len(events))
         await safe_incr(
             self.worker_metrics,
@@ -351,4 +488,5 @@ class OutboxWorker:
         await safe_incr(self.worker_metrics, "outbox_delivered_total", amount=delivered)
         await safe_incr(self.worker_metrics, "outbox_retried_total", amount=retried)
         await safe_incr(self.worker_metrics, "outbox_dead_total", amount=dead)
-        return OutboxRunResult(len(events), delivered, retried, dead)
+        await safe_incr(self.worker_metrics, "outbox_lease_lost_total", amount=lease_lost)
+        return OutboxRunResult(len(events), delivered, retried, dead, lease_lost)

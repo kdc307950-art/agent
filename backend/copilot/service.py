@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 from .agent import ResolutionCopilot
@@ -104,21 +105,29 @@ class CopilotService:
             runtime=runtime, tenant_id=tenant_id, ticket_id=ticket_id
         )
         raw = await self.generate(request, runtime=runtime, run_context=run_context)
+        if not isinstance(raw, dict):
+            raw = {"error_code": "invalid_agent_result"}
 
         # 第一层：从实际工具证据收集引用白名单（search_knowledge 命中）
         allowed: set[tuple[str, int, str]] = set()
-        for item in raw.get("tool_evidence") or []:
-            if (
-                item.get("document_id")
-                and item.get("document_version") is not None
-                and item.get("chunk_id")
-            ):
+        raw_evidence = raw.get("tool_evidence")
+        if isinstance(raw_evidence, list):
+            for item in raw_evidence[:256]:
+                if not isinstance(item, dict):
+                    continue
+                if not item.get("document_id") or not item.get("chunk_id"):
+                    continue
+                try:
+                    raw_version = item.get("document_version")
+                    if isinstance(raw_version, bool) or not isinstance(raw_version, (int, str)):
+                        continue
+                    version = int(raw_version)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if version < 1:
+                    continue
                 allowed.add(
-                    (
-                        str(item["document_id"]),
-                        int(item["document_version"]),
-                        str(item["chunk_id"]),
-                    )
+                    (str(item["document_id"]), version, str(item["chunk_id"]))
                 )
 
         gated = self.apply_gate(raw, request=request, allowed_citations=allowed)
@@ -174,8 +183,23 @@ class CopilotService:
             - 引用不在工具检索证据白名单内 -> 拒绝该引用
             - 工具异常/模型失败 -> 禁止生成确定性结论
         """
+        # 模型输出是不可信输入；格式错误必须转成可审计的拒绝结果，
+        # 不能让 int/float/list 转换异常冒泡成 API 500。
+        if not isinstance(result, dict):
+            result = {}
         reasons: list[str] = []
-        error_code = result.get("error_code")
+        raw_error_code = result.get("error_code")
+        error_code = str(raw_error_code)[:64] if raw_error_code else None
+        raw_trace = result.get("tool_trace")
+        trace = (
+            [item for item in raw_trace if isinstance(item, dict)][:64]
+            if isinstance(raw_trace, list)
+            else []
+        )
+        raw_mode = result.get("retrieval_mode")
+        retrieval_mode = str(raw_mode)[:16] if raw_mode else None
+        raw_degraded = result.get("degraded")
+        degraded: bool = raw_degraded if isinstance(raw_degraded, bool) else False
 
         if error_code:
             reasons.append(error_code)
@@ -186,10 +210,10 @@ class CopilotService:
                 confidence=0.0,
                 needs_human_review=True,
                 reason_codes=reasons,
-                tool_trace=result.get("tool_trace", []),
+                tool_trace=trace,
                 error_code=error_code,
-                retrieval_mode=result.get("retrieval_mode"),
-                degraded=bool(result.get("degraded")),
+                retrieval_mode=retrieval_mode,
+                degraded=degraded,
             )
 
         raw_citations = result.get("citations") or []
@@ -198,9 +222,21 @@ class CopilotService:
             for item in raw_citations:
                 if not isinstance(item, dict):
                     continue
+                raw_version = item.get("document_version")
+                if isinstance(raw_version, bool) or not isinstance(raw_version, (int, str)):
+                    reasons.append("invalid_citation")
+                    continue
+                try:
+                    version = int(raw_version)
+                except (TypeError, ValueError, OverflowError):
+                    reasons.append("invalid_citation")
+                    continue
+                if version < 1:
+                    reasons.append("invalid_citation")
+                    continue
                 key = (
                     str(item.get("document_id") or ""),
-                    int(item.get("document_version") or 0),
+                    version,
                     str(item.get("chunk_id") or ""),
                 )
                 # 引用白名单：只接受工具检索证据中的 (文档, 版本, 分块)
@@ -218,7 +254,15 @@ class CopilotService:
                     )
                 )
 
-        confidence = float(result.get("confidence") or 0.0)
+        raw_confidence = result.get("confidence")
+        try:
+            confidence = float(raw_confidence or 0.0)
+        except (TypeError, ValueError, OverflowError):
+            confidence = 0.0
+            reasons.append("invalid_confidence")
+        if not math.isfinite(confidence):
+            confidence = 0.0
+            reasons.append("invalid_confidence")
         if not citations:
             reasons.append("missing_citations")
         if request.category and any(
@@ -227,16 +271,28 @@ class CopilotService:
             reasons.append("sensitive_category")
         if confidence < MIN_CONFIDENCE:
             reasons.append("low_confidence")
+        if degraded:
+            # 配置了向量检索却发生降级时，答案仍可展示给坐席，但不能被
+            # 误当作完整 hybrid 证据通过自动化门控。
+            reasons.append("retrieval_degraded")
 
         needs_human_review = bool(reasons) or bool(result.get("needs_human_review"))
+        raw_answer = result.get("draft_answer")
+        draft_answer = raw_answer[:8_000] if isinstance(raw_answer, str) else None
+        raw_steps = result.get("troubleshooting_steps")
+        steps = (
+            [str(step)[:1_000] for step in raw_steps if step is not None][:20]
+            if isinstance(raw_steps, list)
+            else []
+        )
         return CopilotResult(
-            draft_answer=result.get("draft_answer") if isinstance(result.get("draft_answer"), str) else None,
-            troubleshooting_steps=list(result.get("troubleshooting_steps") or [])[:20],
+            draft_answer=draft_answer,
+            troubleshooting_steps=steps,
             citations=citations[:20],
             confidence=round(confidence, 4),
             needs_human_review=needs_human_review,
             reason_codes=list(dict.fromkeys(reasons)) or ["gate_passed"],
-            tool_trace=list(result.get("tool_trace") or [])[:64],
-            retrieval_mode=result.get("retrieval_mode"),
-            degraded=bool(result.get("degraded")),
+            tool_trace=trace,
+            retrieval_mode=retrieval_mode,
+            degraded=degraded,
         )

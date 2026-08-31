@@ -42,7 +42,15 @@ class HttpEmbeddingProvider:
     # 单批最多嵌入条数（阶段三：批量约束 ≤32）
     EMBED_BATCH_SIZE = 32
 
-    def __init__(self, endpoint: str, *, dimension: int, timeout_seconds: float = 15.0) -> None:
+    def __init__(
+        self,
+        endpoint: str,
+        *,
+        dimension: int,
+        auth_token: str | None = None,
+        model: str | None = None,
+        timeout_seconds: float = 15.0,
+    ) -> None:
         """构造嵌入客户端。
 
         参数：
@@ -53,8 +61,12 @@ class HttpEmbeddingProvider:
         """
         if not endpoint.startswith(("http://", "https://")):
             raise ValueError("Embedding endpoint 必须是 http(s) URL")
+        if dimension < 1 or timeout_seconds <= 0:
+            raise ValueError("Embedding dimension/timeout 配置无效")
         self.endpoint = endpoint
         self.dimension = dimension
+        self.auth_token = auth_token.strip() if auth_token else None
+        self.model = model.strip() if model else None
         self.timeout = timeout_seconds
 
     async def embed_query(self, text: str) -> Sequence[float]:
@@ -82,23 +94,52 @@ class HttpEmbeddingProvider:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             for start in range(0, len(texts), self.EMBED_BATCH_SIZE):
                 batch = list(texts[start : start + self.EMBED_BATCH_SIZE])
+                headers = {"Content-Type": "application/json"}
+                if self.auth_token:
+                    headers["X-Embedding-Proxy-Token"] = self.auth_token
+                request_payload: dict[str, object] = {"texts": batch}
+                if self.model:
+                    request_payload["model"] = self.model
                 response = await client.post(
                     self.endpoint,
-                    json={"texts": batch},
-                    headers={"Content-Type": "application/json"},
+                    json=request_payload,
+                    headers=headers,
                 )
                 response.raise_for_status()
                 payload = response.json()
+                if not isinstance(payload, dict):
+                    raise RuntimeError("embedding 响应必须是 JSON 对象")
                 embeddings = payload.get("embeddings") or payload.get("data") or []
+                # 兼容 OpenAI embeddings 形态：data=[{index, embedding}, ...]。
+                if isinstance(embeddings, list) and embeddings and all(
+                    isinstance(item, dict) for item in embeddings
+                ):
+                    try:
+                        indices = [int(item["index"]) for item in embeddings]
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise RuntimeError("embedding data 项缺少有效 index/embedding") from exc
+                    if any(isinstance(item.get("index"), bool) for item in embeddings):
+                        raise RuntimeError("embedding data index 类型无效")
+                    if sorted(indices) != list(range(len(batch))):
+                        raise RuntimeError("embedding data index 不连续或重复")
+                    embeddings = [
+                        item["embedding"]
+                        for item in sorted(embeddings, key=lambda item: int(item["index"]))
+                    ]
                 if len(embeddings) != len(batch):
                     raise RuntimeError(
                         f"embedding 返回数量 {len(embeddings)} 与请求数量 {len(batch)} 不一致"
                     )
                 for vector in embeddings:
                     # 维度校验在写入 / 查询前拦截，防止维度错配的脏向量进入 pgvector
+                    if not isinstance(vector, Sequence) or isinstance(vector, (str, bytes)):
+                        raise ValueError("embedding 向量格式无效")
                     if len(vector) != self.dimension:
                         raise ValueError("embedding 维度与配置不一致")
-                    results.append([float(value) for value in vector])
+                    values = [float(value) for value in vector]
+                    if not all(math.isfinite(value) for value in values):
+                        raise ValueError("embedding 向量包含非有限数")
+                    results.append(values)
         return results
 
 

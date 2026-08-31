@@ -85,7 +85,11 @@ class AgenticRAGService:
         self.answer_service = answer_service
         self.planner = planner
         self.policy = policy or AgenticRAGPolicy()
-        if self.policy.max_rounds < 1 or self.policy.max_queries_per_round < 1:
+        if (
+            self.policy.max_rounds < 1
+            or self.policy.max_queries_per_round < 1
+            or self.policy.max_contexts < 1
+        ):
             raise ValueError("Agentic RAG policy 必须为正数")
 
     async def answer(
@@ -135,7 +139,10 @@ class AgenticRAGService:
                 break
             next_queries = await self.planner.next_queries(question, all_hits, round_number)
             # 清洗规划器输出：去空白、过滤空串；空列表表示规划器认为无需继续
-            queries = [str(item).strip() for item in next_queries if str(item).strip()]
+            if isinstance(next_queries, (str, bytes)):
+                queries = []
+            else:
+                queries = [str(item).strip() for item in next_queries if str(item).strip()]
             if not queries:
                 break
         if best is not None:

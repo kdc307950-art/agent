@@ -71,6 +71,8 @@ export default function AssistantView() {
 
   // 当前流式请求的取消控制器：切换请求前先取消旧的，卸载时统一取消
   const abortRef = useRef<AbortController | null>(null)
+  // SSE 终态由服务端事件决定；流关闭本身不等于成功（error 事件后也会正常 close）。
+  const terminalEventRef = useRef<'end' | 'error' | 'interrupt' | null>(null)
   // 对话滚动容器引用：新消息/工具状态变化后自动滚到底部
   const threadRef = useRef<HTMLDivElement | null>(null)
 
@@ -114,6 +116,7 @@ export default function AssistantView() {
         case 'interrupt':
           // 中断事件：Agent 挂起等待审批，消息标记完成并弹出审批卡片
           patch({ status: 'done', toolActive: false })
+          terminalEventRef.current = 'interrupt'
           setPendingApproval({
             interruptId: event.interrupt_id,
             resumedFrom: event.run_id,
@@ -123,11 +126,13 @@ export default function AssistantView() {
         case 'end':
           // 结束事件：对话完成，清除待审批状态
           patch({ status: 'done', toolActive: false })
+          terminalEventRef.current = 'end'
           setPendingApproval(null)
           break
         case 'error':
           // 错误事件：后端流式报错，写入错误内容并标记消息为 error
           patch({ status: 'error', content: event.content, toolActive: false })
+          terminalEventRef.current = 'error'
           break
       }
     }
@@ -140,6 +145,7 @@ export default function AssistantView() {
   ) => {
     // 每条消息用 uuid 作为稳定标识，事件回调通过闭包绑定它
     const id = crypto.randomUUID()
+    terminalEventRef.current = null
     const handleEvent = makeEventHandler(id)
     setMessages((items) => [
       ...items,
@@ -150,13 +156,15 @@ export default function AssistantView() {
     abortRef.current = controller
     try {
       await runner(controller.signal, handleEvent)
-      // 流正常结束但没有收到 end（例如只返回 interrupt），则把 streaming 标为 done
-      patchBy(id, { status: 'done' })
+      // 只有未收到服务端 error 才把无终态的正常关闭视为完成。
+      if (terminalEventRef.current !== 'error') {
+        patchBy(id, { status: 'done' })
+      }
     } catch (err) {
       // 主动中断（用户取消）与 ChatAbortError 都标记为 aborted；其余为真实错误
       if (controller.signal.aborted || err instanceof ChatAbortError) {
         patchBy(id, { status: 'aborted', content: formatError(err), toolActive: false })
-      } else {
+      } else if (terminalEventRef.current !== 'error') {
         patchBy(id, { status: 'error', content: formatError(err), toolActive: false })
       }
     } finally {

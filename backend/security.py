@@ -159,11 +159,14 @@ class OIDCVerifier:
         if not _valid_identifier(tenant_id) or not _valid_identifier(user_id):
             raise ValueError("OIDC token 缺少有效租户身份")
         raw_scopes = claims.get("scope", claims.get("scp", claims.get("roles", [])))
-        scopes = frozenset(
-            raw_scopes.split()
-            if isinstance(raw_scopes, str)
-            else (str(item) for item in raw_scopes)
-        )
+        if isinstance(raw_scopes, str):
+            scope_values = raw_scopes.split()
+        elif isinstance(raw_scopes, (list, tuple, set, frozenset)):
+            scope_values = [str(item) for item in raw_scopes if item is not None]
+        else:
+            # 不接受 dict/int 等可迭代或标量伪造的 scope 形态，统一按缺少权限处理。
+            scope_values = []
+        scopes = frozenset(scope_values)
         if not self.required_scopes.issubset(scopes):
             raise PermissionError("OIDC token 缺少所需 scope")
         return Principal(tenant_id=tenant_id, user_id=user_id, scopes=scopes)
@@ -223,6 +226,7 @@ DEV_SCOPE_PROFILES: dict[str, tuple[str, ...]] = {
     "helpdesk-approver": ("ticket:agent", "ticket:approve"),
     "helpdesk-it-admin": (
         "ticket:agent",
+        "security:admin",
         "asset:read",
         "asset:write",
         "it-policy:read",

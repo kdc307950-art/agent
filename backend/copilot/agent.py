@@ -20,7 +20,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from time import monotonic
 from typing import Any
@@ -56,6 +58,20 @@ class CopilotLimits:
     max_context_items: int = MAX_CONTEXT_ITEMS
     single_tool_timeout_seconds: float = SINGLE_TOOL_TIMEOUT_SECONDS
     total_timeout_seconds: float = TOTAL_TIMEOUT_SECONDS
+
+    def __post_init__(self) -> None:
+        if (
+            self.max_rounds < 1
+            or self.max_tool_calls < 1
+            or self.max_tool_calls_per_round < 1
+            or self.max_tool_calls_per_round > self.max_tool_calls
+            or self.max_context_items < 1
+            or not math.isfinite(self.single_tool_timeout_seconds)
+            or self.single_tool_timeout_seconds <= 0
+            or not math.isfinite(self.total_timeout_seconds)
+            or self.total_timeout_seconds <= 0
+        ):
+            raise ValueError("Copilot 限制参数必须为正数且为有限值")
 
 
 def _truncate(text: str, limit: int = MAX_TOOL_RESULT_CHARS) -> str:
@@ -103,6 +119,50 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 def _runtime_config(runtime) -> dict[str, Any]:
     return {"configurable": {"runtime": runtime}}
+
+
+def _normalise_tool_calls(response: Any, round_number: int) -> tuple[Any, list[dict[str, Any]]]:
+    """规范化模型工具调用，保证每个 AI call 都有唯一 ID 和字典参数。
+
+    兼容部分 OpenAI 代理返回的缺失/重复 ID 或字符串参数；规范化后的
+    ``AIMessage`` 会与后续 ``ToolMessage`` 使用同一组 ID，避免下一轮请求因
+    tool-call 配对不完整而被上游拒绝。
+    """
+    raw_calls = list(getattr(response, "tool_calls", []) or [])
+    calls: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(raw_calls):
+        call = dict(raw) if isinstance(raw, Mapping) else {}
+        supplied_id = str(call.get("id") or "")
+        call_id = supplied_id if supplied_id and supplied_id not in seen else ""
+        if not call_id:
+            call_id = f"call-r{round_number}-{index}"
+            while call_id in seen:
+                call_id += "-x"
+        seen.add(call_id)
+        call["id"] = call_id
+        call["type"] = str(call.get("type") or "tool_call")
+        call["name"] = str(call.get("name") or "")
+        if not isinstance(call.get("args"), dict):
+            call["args"] = {}
+            call["_malformed_args"] = True
+        calls.append(call)
+
+    if calls and calls != raw_calls:
+        message_calls = [
+            {key: value for key, value in call.items() if key != "_malformed_args"}
+            for call in calls
+        ]
+        copier = getattr(response, "model_copy", None)
+        if callable(copier):
+            response = copier(update={"tool_calls": message_calls})
+        else:
+            # 测试桩/第三方消息对象可能不是 Pydantic；尽力就地同步 ID。
+            try:
+                response.tool_calls = message_calls
+            except Exception:
+                pass
+    return response, calls
 
 
 class ResolutionCopilot:
@@ -196,20 +256,60 @@ class ResolutionCopilot:
                 error_code = "model_failed"
                 break
 
+            response, tool_calls = _normalise_tool_calls(response, rounds)
             messages.append(response)
-            tool_calls = list(getattr(response, "tool_calls", []) or [])
             if not tool_calls:
                 final_draft = _extract_json(getattr(response, "content", "") or "")
                 break
 
-            # 本轮工具调用数限制：最多 max_tool_calls_per_round 个
-            tool_calls = tool_calls[: self.limits.max_tool_calls_per_round]
-            for call in tool_calls:
-                if tool_call_count >= self.limits.max_tool_calls:
-                    error_code = "tool_call_limit_exceeded"
-                    break
+            # 同时约束单轮与总调用数。模型消息中声明的每个 tool_call 都必须有
+            # 对应 ToolMessage；否则下一轮 OpenAI 兼容接口会拒绝整段消息历史。
+            remaining_capacity = max(0, self.limits.max_tool_calls - tool_call_count)
+            allowed_count = min(
+                len(tool_calls),
+                self.limits.max_tool_calls_per_round,
+                remaining_capacity,
+            )
+            allowed_calls = tool_calls[:allowed_count]
+            omitted_calls = tool_calls[allowed_count:]
+            if omitted_calls:
+                error_code = "tool_call_limit_exceeded"
+                for _offset, call in enumerate(omitted_calls, start=allowed_count):
+                    tool_name = str(call.get("name") or "")
+                    call_id = str(call["id"])
+                    tool_trace.append(
+                        {
+                            "tool": tool_name,
+                            "status": "denied",
+                            "reason": "tool_call_limit_exceeded",
+                        }
+                    )
+                    messages.append(
+                        ToolMessage(
+                            content="工具调用超过本轮或总量上限，未执行",
+                            tool_call_id=call_id,
+                            name=tool_name,
+                            status="error",
+                        )
+                    )
+
+            for call in allowed_calls:
                 tool_name = str(call.get("name") or "")
-                call_id = str(call.get("id") or f"call-{tool_call_count}")
+                call_id = str(call["id"])
+                tool_call_count += 1
+                if call.get("_malformed_args"):
+                    tool_trace.append(
+                        {"tool": tool_name, "status": "denied", "reason": "malformed_tool_call"}
+                    )
+                    messages.append(
+                        ToolMessage(
+                            content="工具参数格式无效，未执行",
+                            tool_call_id=call_id,
+                            name=tool_name,
+                            status="error",
+                        )
+                    )
+                    continue
                 if tool_name not in self.tools:
                     # 模型请求了未注册工具：拒绝并记录，不执行
                     tool_trace.append(
@@ -224,7 +324,6 @@ class ResolutionCopilot:
                         )
                     )
                     continue
-                tool_call_count += 1
                 args = dict(call.get("args") or {})
                 tool_call_started = monotonic()
 
@@ -289,6 +388,10 @@ class ResolutionCopilot:
                     )
                 if invocation.ok:
                     evidence.extend(invocation.evidence)
+                    if len(evidence) > self.limits.max_context_items:
+                        # 证据白名单与注入模型的上下文都必须有硬上限，避免
+                        # 大结果把后续模型请求撑爆；保留最先返回的高排名命中。
+                        del evidence[self.limits.max_context_items :]
                     if invocation.retrieval_mode:
                         retrieval_modes.append(invocation.retrieval_mode)
                         degraded_flags.append(invocation.degraded)
@@ -301,7 +404,9 @@ class ResolutionCopilot:
                         }
                     )
                     messages.append(
-                        ToolMessage(content=invocation.content, tool_call_id=call_id)
+                        ToolMessage(
+                            content=_truncate(invocation.content), tool_call_id=call_id
+                        )
                     )
                 else:
                     # ACL 拒绝指标：scope/租户权限不足（治理层 denied）
@@ -320,7 +425,7 @@ class ResolutionCopilot:
                     )
                     messages.append(
                         ToolMessage(
-                            content=invocation.content,
+                            content=_truncate(invocation.content),
                             tool_call_id=call_id,
                             name=tool_name,
                             status="error",

@@ -10,6 +10,7 @@ Settings 是不可变 dataclass，from_env() 做类型转换 + 生产环境强�
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -43,7 +44,7 @@ def _float_setting(name: str, default: float, minimum: float) -> float:
         value = float(raw)
     except ValueError as exc:
         raise RuntimeError(f"环境变量 {name} 必须是数字") from exc
-    if value < minimum:
+    if not math.isfinite(value) or value < minimum:
         raise RuntimeError(f"环境变量 {name} 必须 >= {minimum}")
     return value
 
@@ -139,6 +140,7 @@ class Settings:
     knowledge_embedding_model: str | None
     knowledge_embedding_dimension: int | None
     knowledge_embedding_endpoint: str | None
+    knowledge_embedding_token: str | None
     worker_heartbeat_ttl_seconds: int
     readiness_check_workers: bool
 
@@ -296,6 +298,7 @@ class Settings:
             ),
             knowledge_embedding_endpoint=os.getenv("KNOWLEDGE_EMBEDDING_ENDPOINT", "").strip()
             or None,
+            knowledge_embedding_token=os.getenv("KNOWLEDGE_EMBEDDING_TOKEN", "").strip() or None,
             worker_heartbeat_ttl_seconds=_int_setting("WORKER_HEARTBEAT_TTL_SECONDS", 90, 5),
             readiness_check_workers=os.getenv("READINESS_CHECK_WORKERS", "false").strip().lower()
             in ("1", "true", "yes"),

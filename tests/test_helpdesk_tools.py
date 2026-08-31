@@ -374,9 +374,9 @@ def test_send_message_writes_outbox_with_unique_idempotency_key():
     assert len(messages) == 2
     assert all(m["tenant_id"] == "tenant-a" for m in messages)
     assert all(m["actor_type"] == "agent" for m in messages)
-    # 每次调用幂等键唯一（含 message_id），重复调用不会产生相同键。
+    # 同一运行、同一工单和正文使用稳定幂等键，恢复重跑不会重复入队。
     keys = [m["idempotency_key"] for m in messages]
-    assert len(set(keys)) == 2
+    assert len(set(keys)) == 1
     assert all(key.startswith("tool-send:tenant-a:t-1:") for key in keys)
     assert all(m["payload"]["source"] == "agent_tool" for m in messages)
 
