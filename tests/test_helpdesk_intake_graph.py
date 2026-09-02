@@ -390,6 +390,23 @@ def test_compose_answer_receives_identity_departments_from_config():
     assert result["auto_reply"] is True
 
 
+def test_compose_answer_respects_internal_flag_from_config():
+    """Day 4：internal 不再固定 False，来自认证主体/渠道身份目录。"""
+    rag = FakeRagService()
+    classifier = FixedClassifier(TicketCategory.IT, subcategory="vpn")
+    graph = build_helpdesk_intake_graph(
+        classifier=classifier, checkpointer=MemorySaver(), rag_service=rag
+    )
+    run_config = config()
+    run_config["configurable"]["tenant_id"] = "tenant-a"
+    run_config["configurable"]["user_id"] = "internal-user"
+    run_config["configurable"]["internal"] = True
+
+    invoke(graph, base_input(), run_config)
+
+    assert rag.principals[0].internal is True
+
+
 def test_missing_identity_tightens_permissions_and_hands_off():
     """无身份时不得默认全库检索权限：空部门 + internal=False + 转人工。"""
     rag = FakeRagService()

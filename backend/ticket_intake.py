@@ -34,6 +34,7 @@ def intake_config(
     user_id: str | None = None,
     departments: tuple[str, ...] | list[str] | frozenset[str] = (),
     asset_id: str | None = None,
+    internal: bool | None = None,
 ) -> dict[str, Any]:
     """构造受理图 config；身份上下文（user/departments/asset）仅来自服务端。
 
@@ -51,6 +52,8 @@ def intake_config(
         configurable["departments"] = [str(item) for item in departments if item]
     if asset_id:
         configurable["asset_id"] = asset_id
+    if internal is not None:
+        configurable["internal"] = internal
     return {"configurable": configurable}
 
 
@@ -295,6 +298,7 @@ async def apply_intake_resume(
     user_id: str | None = None,
     departments: tuple[str, ...] | list[str] | frozenset[str] = (),
     asset_id: str | None = None,
+    internal: bool | None = None,
 ) -> dict[str, Any]:
     """执行一次受理恢复（Web 与企微回复共用）：
 
@@ -307,6 +311,7 @@ async def apply_intake_resume(
         user_id=user_id,
         departments=departments,
         asset_id=asset_id,
+        internal=internal,
     )
     run = await runtime.tickets.start_workflow_operation(
         tenant_id=tenant_id,

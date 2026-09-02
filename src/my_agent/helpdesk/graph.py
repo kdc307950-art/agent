@@ -251,7 +251,7 @@ def build_helpdesk_intake_graph(
         主体构造（Day 4）：tenant_id / user_id / departments / asset_id 均从
         config（认证主体或渠道入站事件注入）读取，不使用空部门集；
         身份缺失（无 tenant_id 或 user_id）时收紧权限并转人工：
-          - 检索主体 departments 保持空集且 internal=False（只允许 public 文档）
+          - 检索主体 departments 保持空集，internal 由认证主体/渠道身份目录决定
           - answer_status=handoff_high_risk，auto_reply=False，
             answer_reason_codes 追加 identity_missing
         """
@@ -272,10 +272,11 @@ def build_helpdesk_intake_graph(
         identity_missing = bool(state.get("channel_identity_missing", False)) or not bool(
             tenant_id and user_id
         )
+        # Day 4：internal 不再固定 False，来自认证主体/渠道身份目录
         principal = RetrievalPrincipal(
             tenant_id=tenant_id or "unknown",
             departments=departments,
-            internal=False,
+            internal=bool(configurable.get("internal", False)),
         )
         decision = await rag_service.answer(
             principal,

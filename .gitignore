@@ -15,12 +15,12 @@ frontend/dist/
 chat_history.json
 artifacts/
 
-# 本地沙箱工具与令牌(含真实企微凭据,禁止提交)
+# 本地沙箱工具与令牌（含真实企微凭据，禁止提交）
 .tools/
 
-# GraphFlow 工作台缓存与产物(本地生成目录,不提交)
+# GraphFlow 工作台缓存与产物（本地生成目录，不提交）
 .graphflow-cache/
 graphflow-out/
 
-# ͨ�� node_modules����ֹ������ţ�
+# 通用 node_modules（避免误提交依赖）
 node_modules/

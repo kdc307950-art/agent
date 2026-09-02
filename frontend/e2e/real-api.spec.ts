@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto'
 const base = process.env.E2E_WEB_BASE
 const token = process.env.E2E_API_TOKEN
 
-test.describe('真实 API 冒烟（需 E2E_WEB_BASE / E2E_API_TOKEN）', () => {
+test.describe('@real-api 真实 API 冒烟（需 E2E_WEB_BASE / E2E_API_TOKEN）', () => {
   test('创建并读取 /api/tickets', async ({ request }) => {
     test.skip(!base || !token, 'E2E_WEB_BASE / E2E_API_TOKEN 未配置，跳过真实 API 测试')
     const headers = { Authorization: `Bearer ${token}` }

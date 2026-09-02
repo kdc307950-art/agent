@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/kdc307950-art/agent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kdc307950-art/agent/actions/workflows/ci.yml)
 
-面向中小企业客服、IT、行政支持部门的多租户工单自动处置系统骨架，首个落地形态是**内部 IT 服务台**：员工通过 Web / 企业微信提交工单，系统自动分类（`it.vpn` / `it.account` / `it.network` 等子分类）、按租户 IT 策略追问必填字段、加载对应 SLA、规则派单，Agent 检索知识库生成带引用的建议，客服在响应式工作台上完成接单、处理、回访与关闭。
+面向中小企业客服、IT、行政支持部门的多租户工单自动处置系统骨架，首个落地形态是**内部 IT 服务台（V1 仅 Web 闭环）**：员工通过 Web 提交工单，系统自动分类（`it.vpn` / `it.account` / `it.network` 等子分类）、按租户 IT 策略追问必填字段、加载对应 SLA、规则派单，Agent 检索知识库生成带引用的建议，客服在响应式工作台上完成接单、处理、回访与关闭。企业微信等渠道代码保留为**非 V1 能力**，未纳入演示与验收。
 
 技术底座：确定性工单状态机 + LangGraph 受理/补全/分类/派单图 + Agentic RAG 引用门禁，运行在多租户隔离、PostgreSQL Checkpoint、审计、Redis 限流、预算和 Outbox 之上。
 
-**V1 产品边界（一句话）**：面向中小企业内部 IT 服务台，员工从 Web / 企业微信报 VPN、账号/权限、网络故障，系统自动分类、补字段、加载 SLA、派单并给出带引用的建议，人工确认后解决关闭。完整范围见 [docs/product/v1-scope.md](docs/product/v1-scope.md)：目标客户、三类工单、主链路、非目标功能与人工介入规则；验证指标与未验证边界见 [docs/evaluation/v1-report.md](docs/evaluation/v1-report.md)。
+**V1 产品边界（一句话）**：面向中小企业内部 IT 服务台，员工从 Web 报 VPN、账号/权限、网络故障，系统自动分类、补字段、加载 SLA、派单并给出带引用的建议，人工确认后解决关闭；企业微信等渠道保留代码但**非 V1 能力**。完整范围见 [docs/product/v1-scope.md](docs/product/v1-scope.md)：目标客户、三类工单、主链路（Web 闭环）、非目标功能与人工介入规则；验证指标与未验证边界见 [docs/evaluation/v1-report.md](docs/evaluation/v1-report.md)。
 
 **三档验证口径（请勿混淆）**：
 1. **本地演示**：`docker compose -f infra/compose.demo.yml up --build -d` → 浏览器访问 `http://127.0.0.1:8000` → 页面粘贴 `docker compose exec agent ... issue_dev_token` 输出；只验证“能跑通闭环”，不产生评测数字。
@@ -395,9 +395,9 @@ uv run python -m backend.run_knowledge_eval --embed
 
 当前内置 52 条评测集（8 个 IT 子分类 + 跨文档 + 口语改写）在演示数据上的 **lexical-only 基线（2026-08-28 实测）：Top1 98.1%（51/52）、Recall@5 100%、MRR@5 0.990、无命中 0 条**。分项中 `it.account` Top1 为 83.3%（6 中 1 条口语改写未排到首位，属语义改写场景，需 embedding 提升，不代表实现错误）。冻结的 `hybrid_holdout@2026-08-30-v1` 已通过受保护 CI 验证：Top1 85.7%、Recall@5 96.4%、MRR@5 0.929；生产默认仍走 lexical-only，不能外推演示库指标。
 
-## 渠道沙箱验证（企业微信）
+## 渠道能力（企业微信/钉钉，非 V1）
 
-验签/解密/幂等/追问/门禁的自动化测试覆盖见 `tests/test_channel_adapters.py` 与 `tests/test_ticket_api.py`（`test_wecom_webhook_*`、`test_dingtalk_webhook_*`）。真实沙箱端到端验证步骤、验证矩阵与验收清单见 [docs/CHANNEL_SANDBOX.md](docs/CHANNEL_SANDBOX.md)：企业微信自建应用回调 URL 校验（echostr）、文本建单、同 `MsgId` 幂等、缺字段追问进 Outbox、`run_outbox_worker` 回调投递、无引用/高风险转人工。
+验签/解密/幂等/追问/门禁的自动化测试覆盖见 `tests/test_channel_adapters.py` 与 `tests/test_ticket_api.py`（`test_wecom_webhook_*`、`test_dingtalk_webhook_*`）。真实沙箱端到端验证步骤、验证矩阵与验收清单见 [docs/CHANNEL_SANDBOX.md](docs/CHANNEL_SANDBOX.md)。**该能力保留代码但不在 V1 演示/验收范围**：本地演示走 Web 闭环，渠道闭环未执行 Docker 真链验证，简历表述按“Mock/单测已覆盖，真实渠道未验证”。
 
 ## 测试
 
@@ -424,7 +424,7 @@ uv run pytest tests -q -m "not live_e2e"
 
 命令行的环境变量优先于 `.env`（`conftest.py` 的 `load_dotenv()` 不覆盖已存在的变量），所以不必改本地配置。
 
-CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。本次无外部依赖本地回归为 `328 passed, 64 skipped`（跳过 PostgreSQL/Redis 集成与 live_e2e）；启用集成栈后应执行同一命令验证数据库租约、ACL 与迁移语义。`test_ticket_api.py::test_full_lifecycle_http_regression_vpn` 为 **HTTP 路由回归（Fake runtime）**，真实仓储闭环以 `tests/test_ticket_lifecycle_postgres.py` 为准；V1 固定 90 条工单评测只有 CI 的 `run_ticket_eval --require-db` 真实检索结果才能进入 [docs/evaluation/v1-report.md](docs/evaluation/v1-report.md)（本地未配置数据库时指标为 N/A）。
+CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。本次无外部依赖本地回归为 `330 passed, 64 skipped`（跳过 PostgreSQL/Redis 集成与 live_e2e）；启用集成栈后应执行同一命令验证数据库租约、ACL 与迁移语义。`test_ticket_api.py::test_full_lifecycle_http_regression_vpn` 为 **HTTP 路由回归（Fake runtime）**，真实仓储闭环以 `tests/test_ticket_lifecycle_postgres.py` 为准；V1 固定 90 条工单评测只有 CI 的 `run_ticket_eval --require-db` 真实检索结果才能进入 [docs/evaluation/v1-report.md](docs/evaluation/v1-report.md)（本地未配置数据库时指标为 N/A）。
 
 真实 DeepSeek E2E 默认不运行，以免普通 CI 产生费用。手动 workflow `Live Agent E2E` 需要受保护环境中的 `DEEPSEEK_API_KEY`、`LIVE_AGENT_TOKEN` 和 `TENANT_TOKEN_SECRET`，覆盖文本 SSE、工具调用和同线程续聊。
 
@@ -440,5 +440,5 @@ CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` �
 | 附件安全链路 | 尚未接对象存储、病毒扫描、临时授权下载和内容解析隔离 |
 | PostgreSQL RLS | Repository 全部强制 tenant 条件，但数据库行级安全尚未启用 |
 | 工作台认证 | 本地 Vite 代理使用单个开发令牌；生产需接 IdP 并按客户/客服/审批人分配 scope |
-| 企微追问闭环 | 企业微信文本消息建单并追问后，客户按「字段:值」回复（如 `device: laptop-001`）会**关联原工单恢复受理**（`ticket_customer_pending_intake` 唯一待补全索引），不新建工单；无待补全记录时按普通新消息建单。恢复后自动分类/SLA/派单，状态流水记录 `customer_reply_received → intake_resumed → classified → assigned`；`GET /tickets/{id}/intake-status` 可查待补全与 resume 次数 |
+| 企微追问闭环（非 V1） | 企业微信文本消息建单并追问、恢复受理等代码保留（`ticket_customer_pending_intake`），但**未纳入 V1 演示与验收**；本地演示仅 Web 闭环，真实渠道未做 Docker 真链验证 |
 | 成本统计 | 单价配置默认为 0，接入真实供应商价格前，成本与预算功能不产生实际数值 |

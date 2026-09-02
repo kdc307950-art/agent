@@ -56,12 +56,13 @@ def _first_interrupt_id(snapshot: object) -> str | None:
 
 async def _event_identity(
     runtime, event: NormalizedChannelEvent
-) -> tuple[str, list[str], str | None, bool]:
+) -> tuple[str, list[str], str | None, bool, bool]:
     """从可信渠道身份目录读取身份上下文（Day 3-4 加固）。
 
-    - 完全忽略请求体/事件 payload 中的 departments / asset_id（防止伪造）；
+    - 完全忽略请求体/事件 payload 中的 departments / asset_id / internal（防止伪造）；
     - 只读 channel_identities 目录（由管理员或专用 Webhook 验签后写入）；
-    - 无映射或失效 -> 空部门 + 空资产 + identity_missing=True（受理图转人工）。
+    - 无映射或失效 -> 空部门 + 空资产 + identity_missing=True（受理图转人工）；
+    - 返回 (requester_id, departments, asset_id, identity_missing, internal)。
     """
     repo = getattr(runtime, "channel_identities", None)
     identity = None
@@ -71,12 +72,13 @@ async def _event_identity(
         except Exception:
             identity = None
     if identity is None or not identity.active:
-        return event.requester_id, [], None, True
+        return event.requester_id, [], None, True, False
     return (
         event.requester_id,
         list(identity.departments),
         identity.asset_id,
         False,
+        bool(identity.internal),
     )
 
 
@@ -116,7 +118,7 @@ async def _resume_from_customer_reply(
             "ticket": ticket,
         }
 
-    requester_id, departments, asset_id, _identity_missing = await _event_identity(
+    requester_id, departments, asset_id, _identity_missing, internal = await _event_identity(
         runtime, event
     )
     config = intake_config(
@@ -125,6 +127,7 @@ async def _resume_from_customer_reply(
         user_id=requester_id,
         departments=departments,
         asset_id=asset_id,
+        internal=internal,
     )
     snapshot = await runtime.intake_graph.aget_state(config)
     state_fields = dict((getattr(snapshot, "values", None) or {}).get("fields") or {})
@@ -154,6 +157,7 @@ async def _resume_from_customer_reply(
         user_id=requester_id,
         departments=departments,
         asset_id=asset_id,
+        internal=internal,
     )
     await runtime.tickets.mark_pending_intake_resumed(tenant_id, ticket_id)
     # 状态流水在 transition 之后追加，避免与状态事件的 ticket_version 唯一约束冲突。
@@ -235,7 +239,7 @@ async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor
     created = existing["ticket_id"] is None
 
     operation_id = f"channel:{event.external_event_id}"
-    requester_id, departments, asset_id, identity_missing = await _event_identity(
+    requester_id, departments, asset_id, identity_missing, internal = await _event_identity(
         runtime, event
     )
     config = intake_config(
@@ -244,6 +248,7 @@ async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor
         user_id=requester_id,
         departments=departments,
         asset_id=asset_id,
+        internal=internal,
     )
     run = await runtime.tickets.start_workflow_operation(
         tenant_id=event.tenant_id,

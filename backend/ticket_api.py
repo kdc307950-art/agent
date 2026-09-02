@@ -542,6 +542,7 @@ async def start_ticket_intake(
                 user_id=principal.user_id,
                 departments=principal.departments,
                 asset_id=getattr(ticket, "asset_id", None),
+                internal=principal.internal,
             )["configurable"]["thread_id"],
         )
         if run["status"] == "committed":
@@ -570,6 +571,7 @@ async def start_ticket_intake(
                 user_id=principal.user_id,
                 departments=principal.departments,
                 asset_id=getattr(ticket, "asset_id", None),
+                internal=principal.internal,
             )
             # 首次受理：运行 LangGraph 受理图（分类 + 澄清 + 决策）
             result = await runtime.intake_graph.ainvoke(
@@ -700,6 +702,7 @@ async def resume_ticket_intake(
             user_id=principal.user_id,
             departments=principal.departments,
             asset_id=getattr(ticket, "asset_id", None),
+            internal=principal.internal,
         )
         return {
             "ticket": outcome["ticket"],

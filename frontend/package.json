@@ -14,6 +14,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:e2e:mock": "playwright test --grep-invert @real-api",
+    "test:e2e:real": "playwright test --grep @real-api",
     "preview": "vite preview"
   },
   "dependencies": {

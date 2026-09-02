@@ -87,6 +87,10 @@ jobs:
         run: uv run mypy backend src
       - name: Run Python tests
         run: uv run pytest -q
+      - name: Frontend lint
+        run: npm --prefix frontend run lint
+      - name: Frontend unit tests
+        run: npm --prefix frontend test -- --run
       - name: Build frontend
         run: npm --prefix frontend ci && npm --prefix frontend run build
       - name: Build backend image

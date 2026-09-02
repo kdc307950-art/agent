@@ -34,10 +34,11 @@ def _event(payload):
     )
 
 
-def _identity(departments=(), asset_id=None):
+def _identity(departments=(), asset_id=None, internal=False):
     return SimpleNamespace(
         departments=tuple(departments),
         asset_id=asset_id,
+        internal=internal,
         active=True,
     )
 
@@ -45,13 +46,14 @@ def _identity(departments=(), asset_id=None):
 def test_event_identity_ignores_payload_and_reads_directory():
     """payload 声称 finance 部门，只要目录未登记，结果仍是空部门（伪造无效）。"""
     runtime = SimpleNamespace(channel_identities=FakeChannelIdentities(None))
-    requester, departments, asset_id, missing = asyncio.run(
+    requester, departments, asset_id, missing, internal = asyncio.run(
         _event_identity(runtime, _event({"departments": ["finance"], "asset_id": "asset-1"}))
     )
     assert requester == "u-1"
     assert departments == []
     assert asset_id is None
     assert missing is True
+    assert internal is False
 
 
 def test_event_identity_uses_registered_mapping():
@@ -59,21 +61,37 @@ def test_event_identity_uses_registered_mapping():
     runtime = SimpleNamespace(
         channel_identities=FakeChannelIdentities(_identity(["finance"], "asset-1"))
     )
-    requester, departments, asset_id, missing = asyncio.run(
+    requester, departments, asset_id, missing, internal = asyncio.run(
         _event_identity(runtime, _event({"departments": ["other"]}))
     )
     assert requester == "u-1"
     assert departments == ["finance"]
     assert asset_id == "asset-1"
     assert missing is False
+    assert internal is False
+
+
+def test_event_identity_uses_registered_internal_flag():
+    runtime = SimpleNamespace(
+        channel_identities=FakeChannelIdentities(_identity(["it"], internal=True))
+    )
+    requester, departments, asset_id, missing, internal = asyncio.run(
+        _event_identity(runtime, _event({}))
+    )
+    assert requester == "u-1"
+    assert departments == ["it"]
+    assert asset_id is None
+    assert missing is False
+    assert internal is True
 
 
 def test_event_identity_when_repository_unavailable_is_tightened():
     runtime = SimpleNamespace(channel_identities=None)
-    requester, departments, asset_id, missing = asyncio.run(
+    requester, departments, asset_id, missing, internal = asyncio.run(
         _event_identity(runtime, _event({}))
     )
     assert requester == "u-1"
     assert departments == []
     assert asset_id is None
     assert missing is True
+    assert internal is False
