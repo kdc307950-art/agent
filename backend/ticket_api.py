@@ -40,6 +40,7 @@ from .channel_adapters import (
     WebhookVerificationError,
     WeComWebhookAdapter,
 )
+from .channel_identities import UpsertChannelIdentity
 from .security import Principal, enforce_rate_limit, rate_limit_dependency
 from .ticket_intake import (
     apply_intake_resume,
@@ -71,6 +72,8 @@ from .tickets import (
 router = APIRouter(prefix="/tickets", tags=["tickets"])
 channel_router = APIRouter(prefix="/integrations", tags=["integrations"])
 admin_router = APIRouter(prefix="/admin/it", tags=["admin-it"])
+# 可信渠道身份目录隶属于租户管理面，放在 /admin 而非 /admin/it（避免歧义）。
+identity_router = APIRouter(prefix="/admin", tags=["admin-channel-identities"])
 
 
 class BindAssetRequest(BaseModel):
@@ -173,6 +176,18 @@ class InboundChannelRequest(BaseModel):
     title: str = Field(min_length=1, max_length=512)
     content: str = Field(min_length=1, max_length=8_000)
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+def _dump_channel_identity(item: object) -> dict[str, Any]:
+    """序列化渠道身份：真实仓储返回 Pydantic 模型，测试桩可能返回命名对象。"""
+    model_dump = getattr(item, "model_dump", None)
+    if callable(model_dump):
+        return dict(model_dump(mode="json"))
+    return {
+        key: value
+        for key, value in vars(item).items()
+        if not key.startswith("_")
+    }
 
 
 def _runtime(request: Request):
@@ -1129,6 +1144,81 @@ async def upsert_it_policy(
             detail={"policy_id": payload.policy_id},
         )
     return result
+
+
+# ========== 可信渠道身份目录（/admin/channel-identities） ==========
+
+
+@identity_router.get("/channel-identities")
+async def list_channel_identities(
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    """列出可信渠道身份映射（仅 security:admin）。"""
+    _require_scope(principal, "security:admin")
+    runtime = _runtime(request)
+    items = await runtime.channel_identities.list_admin(principal.tenant_id, limit=limit)
+    return {"items": [_dump_channel_identity(item) for item in items]}
+
+
+@identity_router.put("/channel-identities/{channel}/{requester_id}")
+async def upsert_channel_identity(
+    channel: str,
+    requester_id: str,
+    payload: UpsertChannelIdentity,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    """写入/更新可信渠道身份；asset_id 必须属于该租户且归请求人所有。"""
+    _require_scope(principal, "security:admin")
+    if payload.channel != channel or payload.requester_id != requester_id:
+        raise HTTPException(status_code=409, detail="路径与请求体身份不一致")
+    runtime = _runtime(request)
+    if payload.asset_id is not None:
+        asset = await runtime.assets.get(principal.tenant_id, payload.asset_id)
+        if asset is None or getattr(asset, "owner_user_id", None) != payload.requester_id:
+            raise HTTPException(status_code=404, detail="资产不存在或不属于该渠道用户")
+    identity = payload.model_copy(update={"channel": channel, "requester_id": requester_id})
+    result = await runtime.channel_identities.upsert(principal.tenant_id, identity)
+    audit = getattr(runtime, "audit", None)
+    if audit is not None:
+        await audit.record_admin_event(
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            action="channel_identity.upsert",
+            resource_type="channel_identity",
+            resource_id=f"{channel}:{requester_id}",
+            detail={"departments": list(payload.departments), "asset_id": payload.asset_id},
+        )
+    return result
+
+
+@identity_router.delete("/channel-identities/{channel}/{requester_id}")
+async def delete_channel_identity(
+    channel: str,
+    requester_id: str,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    """删除可信渠道身份映射。"""
+    _require_scope(principal, "security:admin")
+    runtime = _runtime(request)
+    deleted = await runtime.channel_identities.delete(
+        principal.tenant_id, channel, requester_id
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="渠道身份不存在")
+    audit = getattr(runtime, "audit", None)
+    if audit is not None:
+        await audit.record_admin_event(
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            action="channel_identity.delete",
+            resource_type="channel_identity",
+            resource_id=f"{channel}:{requester_id}",
+        )
+    return {"channel": channel, "requester_id": requester_id, "deleted": True}
 
 
 # ========== 工单资产绑定（POST/DELETE /tickets/{ticket_id}/asset） ==========

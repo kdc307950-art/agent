@@ -124,10 +124,11 @@ async def _evaluate_case(
     team_actual = decision.team_id if team_checked else None
     team_ok = bool(team_checked and team_actual == case.get("expected_team"))
 
-    # 知识/引用：db 模式做真实词法检索；static 模式按预期文档存在性判定
-    forbidden_leak = False
+    # 知识/引用：仅 db 模式做真实词法检索并产生指标；
+    # static 模式 reference_supported / forbidden_leak 保持 None（N/A，不参与通过判定）。
+    forbidden_leak: bool | None = None
     retrieved: list[str] = []
-    reference_supported = None
+    reference_supported: bool | None = None
     if repository is not None:
         principal = RetrievalPrincipal(
             tenant_id=tenant_id,
@@ -141,10 +142,9 @@ async def _evaluate_case(
         expected = set(case.get("expected_document_ids") or ())
         if expected:
             reference_supported = expected.issubset(retrieved)
-    else:
-        expected = set(case.get("expected_document_ids") or ())
-        forbidden = set(case.get("forbidden_document_ids") or ())
-        reference_supported = bool(expected) and not forbidden
+        else:
+            # 无预期文档（no_knowledge / ACL）不参与引用支撑率分母
+            reference_supported = None
 
     status = answer_status(
         decision.reason_codes if not has_evidence else ("gate_passed",),
@@ -172,6 +172,7 @@ async def _evaluate_case(
         "retrieved_document_ids": retrieved,
         "reference_supported": reference_supported,
         "forbidden_leak": forbidden_leak,
+        "knowledge_mode": "db" if repository is not None else "static",
         "answer_status": status,
         "reasonable_expected": bool(case.get("expected_document_ids")),
         "latency_ms": latency_ms,
@@ -180,6 +181,7 @@ async def _evaluate_case(
 
 def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
     total = len(results)
+    mode = str(results[0].get("knowledge_mode") or "static") if results else "static"
     by_scenario_counts: dict[str, int] = defaultdict(int)
     by_scenario_top1: dict[str, int] = defaultdict(int)
     by_scenario_manual: dict[str, int] = defaultdict(int)
@@ -201,8 +203,14 @@ def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
             reasons.append("manual_takeover")
         if item["team_checked"] and not item["team_ok"]:
             reasons.append("team")
-        if item["forbidden_leak"]:
+        if mode == "db" and item["forbidden_leak"]:
             reasons.append("acl_leak")
+        if (
+            mode == "db"
+            and item["reasonable_expected"]
+            and item["reference_supported"] is False
+        ):
+            reasons.append("reference_miss")
         if reasons:
             failures.append({
                 "index": item["index"],
@@ -259,13 +267,18 @@ def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
             ),
         },
         "knowledge": {
-            "mode": "db" if any(item["retrieved_document_ids"] for item in results) else "static",
-            "reference_support_rate": 
+            "mode": mode,
+            "reference_support_rate": (
                 _rate(support_numerator, support_denominator)
-                if support_denominator
-                else None,
-            "reference_support_denominator": support_denominator,
-            "acl_leaks": sum(int(item["forbidden_leak"]) for item in results),
+                if mode == "db" and support_denominator
+                else None
+            ),
+            "reference_support_denominator": support_denominator if mode == "db" else None,
+            "acl_leaks": (
+                sum(int(item["forbidden_leak"]) for item in results)
+                if mode == "db"
+                else None
+            ),
         },
         "latency_ms": {
             "p50": round(_percentile(latencies, 0.50), 3),
@@ -320,9 +333,17 @@ def main() -> int:
         help="可选 PostgreSQL 连接串；配置后执行真实词法检索",
     )
     parser.add_argument("--tenant", default="demo", help="知识库租户（db 模式使用）")
+    parser.add_argument("--require-db", action="store_true", help="只允许 PostgreSQL 真实检索模式通过")
     parser.add_argument("--fail-under-classification", type=float, default=0.0)
     parser.add_argument("--fail-under-field-rate", type=float, default=0.0)
+    parser.add_argument("--fail-under-reference", type=float, default=1.0)
+    parser.add_argument("--max-acl-leaks", type=int, default=0)
     args = parser.parse_args()
+    if args.require_db and not args.database_url:
+        raise SystemExit(
+            "--require-db 需要配置 --database-url 或 TEST_DATABASE_URL；"
+            "static 模式不产生引用/ACL 指标，不允许作为数据库评测通过"
+        )
 
     report = asyncio.run(_run_eval(args.database_url, args.tenant))
     _write_report(report, args.json)
@@ -332,6 +353,18 @@ def main() -> int:
         ok = False
     if report["field_completion"]["detection_rate"] < args.fail_under_field_rate:
         ok = False
+    if report["knowledge"]["mode"] == "db":
+        reference = report["knowledge"]["reference_support_rate"]
+        acl_leaks = report["knowledge"]["acl_leaks"]
+        if reference is None or reference < args.fail_under_reference:
+            ok = False
+            print(f"引用支撑率未达标: {reference} < {args.fail_under_reference}")
+        if acl_leaks is None or acl_leaks > args.max_acl_leaks:
+            ok = False
+            print(f"ACL 泄露数未达标: {acl_leaks} > {args.max_acl_leaks}")
+    elif args.require_db:
+        ok = False
+        print("--require-db 模式下报告必须为 db 模式")
     return 0 if ok else 1
 
 

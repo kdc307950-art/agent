@@ -409,3 +409,18 @@ def test_missing_identity_tightens_permissions_and_hands_off():
     assert result["answer_status"] == "handoff_high_risk"
     assert result["auto_reply"] is False
     assert "identity_missing" in result["answer_reason_codes"]
+
+
+def test_channel_identity_missing_routes_to_service_desk_manual_queue():
+    """Day 3-4：渠道身份目录无映射时，即便分类为 IT 也转服务台人工队列。"""
+    classifier = FixedClassifier(TicketCategory.IT, subcategory="vpn")
+    graph = build_helpdesk_intake_graph(classifier=classifier, checkpointer=MemorySaver())
+
+    result = invoke(
+        graph,
+        base_input(text="VPN 无法连接", channel_identity_missing=True),
+        config(),
+    )
+
+    assert result["dispatch_team_id"] == "team-service-desk"
+    assert "channel_identity_missing" in result["dispatch_reason_codes"]

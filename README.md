@@ -8,6 +8,11 @@
 
 **V1 产品边界（一句话）**：面向中小企业内部 IT 服务台，员工从 Web / 企业微信报 VPN、账号/权限、网络故障，系统自动分类、补字段、加载 SLA、派单并给出带引用的建议，人工确认后解决关闭。完整范围见 [docs/product/v1-scope.md](docs/product/v1-scope.md)：目标客户、三类工单、主链路、非目标功能与人工介入规则；验证指标与未验证边界见 [docs/evaluation/v1-report.md](docs/evaluation/v1-report.md)。
 
+**三档验证口径（请勿混淆）**：
+1. **本地演示**：`docker compose -f infra/compose.demo.yml up --build -d` → 浏览器访问 `http://127.0.0.1:8000` → 页面粘贴 `docker compose exec agent ... issue_dev_token` 输出；只验证“能跑通闭环”，不产生评测数字。
+2. **CI 集成验证**：GitHub Actions 启动 PostgreSQL/Redis → 迁移 → 种子 → `run_ticket_eval --require-db`（90 条真实检索评测）→ 真实仓储生命周期测试（`test_ticket_lifecycle_postgres.py`）。只有这一档的数字能进 `docs/evaluation/v1-report.md`。
+3. **未验证（不写“已完成”）**：真实企业微信自建应用回调解密/消息收发、真实模型生成的引用与 P95/成本、演示视频、生产长期运行。
+
 > `legacy-demo/` 目录下的 `main.py` / `main_supervisor.py` / `main_workflow.py` 与 `workflows/legacy-demo.json` 是早期通用聊天/天气/计算 Demo，统一标记为 **legacy-demo**，仅供试跑图结构，与生产工单链路无关；产品定位与入口见下文。
 
 ## 5 分钟跑起来
@@ -18,14 +23,16 @@
 docker compose -f infra/compose.demo.yml up --build
 ```
 
-起 4 个容器（postgres / redis / migrate / agent），只暴露 `127.0.0.1:8000`。就绪后：
+起 6 个容器（postgres / redis / migrate / seed / agent / web），只暴露 `127.0.0.1:8000`（web/Nginx）。就绪后：
 
 ```bash
-curl http://127.0.0.1:8000/readyz
+docker compose -f infra/compose.demo.yml ps
+docker compose -f infra/compose.demo.yml exec agent \
+  python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3).status==200 else 1)"
 ```
 
-预期 `{"status": "ready", "checks": {"agent": "ok", "postgres": "ok", "redis": "ok"}}`。
-接口文档在 http://127.0.0.1:8000/docs ，指标在 `/metrics`。
+浏览器访问 http://127.0.0.1:8000（Nginx 托管前端，`/api/*` 去掉 `/api` 前缀后代理给 agent）。
+healthcheck 已保证 `agent /readyz`、`seed` 退出码 0、`web` 首页可达。
 
 没填 `DEEPSEEK_API_KEY` 也能起来——服务健康、接口可看，只是自动分类和知识建议会失败。想完整演示就在 shell 里 `export DEEPSEEK_API_KEY=sk-xxx` 再 `up`。
 
@@ -33,21 +40,21 @@ curl http://127.0.0.1:8000/readyz
 
 ## 10 分钟演示：跑通 IT 服务台完整闭环
 
-一条命令生成幂等演示数据（租户 `demo`：SLA、`it.vpn` 策略、客服团队/成员/排班/路由、8 篇知识文档、5 台资产）：
+compose 的 `seed` 服务会自动生成幂等演示数据（租户 `demo`：SLA、`it.vpn` 策略、客服团队/成员/排班/路由、8 篇知识文档、5 台资产）；容器内重跑：
 
 ```powershell
-uv run python -m backend.seed_demo
+docker compose -f infra/compose.demo.yml exec agent python -m backend.seed_demo
 ```
 
-演示账号（签发开发令牌，`AUTH_MODE=dev`）：
+演示账号（在 agent 容器内签发短期开发令牌，`AUTH_MODE=dev`）：
 
 ```powershell
-uv run python -m backend.issue_dev_token demo customer-1 --role helpdesk-customer   # 员工
-uv run python -m backend.issue_dev_token demo agent-1    --role helpdesk-agent       # IT 客服
-uv run python -m backend.issue_dev_token demo admin-1    --role helpdesk-it-admin    # IT 管理员
+docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo customer-1 --role helpdesk-customer   # 员工
+docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo agent-1    --role helpdesk-agent       # IT 客服
+docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo admin-1    --role helpdesk-it-admin    # IT 管理员
 ```
 
-把令牌分别粘贴到工作台，演示脚本与验收检查点见 [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md)：客户提交「VPN 无法连接」→ 自动分类 `it.vpn` → 追问缺失字段 → 命中 `sla-vpn` → 派单给 team-it → 知识建议带引用 → 客服接单处理 → 回访关闭。
+把令牌分别粘贴到浏览器页面顶部「演示令牌」输入框（sessionStorage；生产接 OIDC/BFF），演示脚本与验收检查点见 [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md)：客户提交「VPN 无法连接」→ 自动分类 `it.vpn` → 追问缺失字段 → 命中 `sla-vpn` → 派单给 team-it → 知识建议带引用 → 客服接单处理 → 回访关闭。
 
 ## 仓库里的入口
 
@@ -417,7 +424,7 @@ uv run pytest tests -q -m "not live_e2e"
 
 命令行的环境变量优先于 `.env`（`conftest.py` 的 `load_dotenv()` 不覆盖已存在的变量），所以不必改本地配置。
 
-CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。本次无外部依赖本地回归为 `324 passed, 62 skipped`（跳过 PostgreSQL/Redis 集成与 live_e2e）；启用集成栈后应执行同一命令验证数据库租约、ACL 与迁移语义。真实 HTTP 工单 E2E 验证了创建、缺字段中断、补充恢复、分类派单、处理、解决、回访和关闭，最终事件版本连续到 v9；V1 固定 90 条工单评测集（`backend/knowledge/ticket_eval_cases.py`）静态模式全部门禁达标（见 [docs/evaluation/v1-report.md](docs/evaluation/v1-report.md)）。
+CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。本次无外部依赖本地回归为 `328 passed, 64 skipped`（跳过 PostgreSQL/Redis 集成与 live_e2e）；启用集成栈后应执行同一命令验证数据库租约、ACL 与迁移语义。`test_ticket_api.py::test_full_lifecycle_http_regression_vpn` 为 **HTTP 路由回归（Fake runtime）**，真实仓储闭环以 `tests/test_ticket_lifecycle_postgres.py` 为准；V1 固定 90 条工单评测只有 CI 的 `run_ticket_eval --require-db` 真实检索结果才能进入 [docs/evaluation/v1-report.md](docs/evaluation/v1-report.md)（本地未配置数据库时指标为 N/A）。
 
 真实 DeepSeek E2E 默认不运行，以免普通 CI 产生费用。手动 workflow `Live Agent E2E` 需要受保护环境中的 `DEEPSEEK_API_KEY`、`LIVE_AGENT_TOKEN` 和 `TENANT_TOKEN_SECRET`，覆盖文本 SSE、工具调用和同线程续聊。
 

@@ -65,6 +65,20 @@ jobs:
         env:
           KNOWLEDGE_EMBEDDING_DIMENSION: "8"
         run: uv run python -m backend.vector_migrations
+      - name: Seed demo data (idempotent)
+        run: uv run python -m backend.seed_demo
+      - name: Run V1 ticket eval with real PostgreSQL retrieval
+        # 真实检索评测：引用支撑率与 ACL 泄露只在 db 模式计算；不达标即失败。
+        run: >-
+          uv run python -m backend.run_ticket_eval
+          --json docs/evaluation/ticket-eval-report.json
+          --require-db
+          --fail-under-classification 0.9
+          --fail-under-field-rate 0.95
+          --fail-under-reference 1.0
+          --max-acl-leaks 0
+      - name: Validate demo compose config
+        run: docker compose -f infra/compose.demo.yml config -q
       - name: Lint with ruff
         run: uv run ruff check .
       - name: Format check with black

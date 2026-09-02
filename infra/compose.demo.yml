@@ -1,21 +1,18 @@
 name: langgraph-demo
 
-# 一条命令跑起完整后端栈，供演示和首次上手使用：
+# 一条命令跑起完整演示栈（后端 + 种子数据 + Nginx 托管前端）：
 #
 #   docker compose -f infra/compose.demo.yml up --build
 #
 # 与 compose.dev.yml 的分工：
 #   - compose.dev.yml  开发时用的依赖栈（含 Prometheus / Jaeger / Grafana），应用跑在宿主机
-#   - compose.demo.yml 应用本身也在容器里，只暴露 8000 一个端口，起 4 个容器
+#   - compose.demo.yml 应用、种子数据、前端都在容器里，只暴露 8000 一个端口
 #
 # 刻意的取舍：
-#   1. 不暴露 5432 / 6379 到宿主机。demo 只需要 8000，少暴露一个端口就少一次
-#      与本机已有 Postgres/Redis 的端口冲突。
-#   2. 密码是写死的弱口令。这里的容器不对外暴露端口，且数据卷是匿名的，
-#      随 down -v 一起消失。任何联网环境都不要用这份文件。
-#   3. DEEPSEEK_API_KEY 允许缺省。缺省时服务照样起得来、/readyz 返回 200、
-#      /docs 与 /metrics 可访问，只是真发消息会失败 —— 让人先看到系统跑起来，
-#      再决定要不要填自己的 key。
+#   1. 不暴露 5432 / 6379 到宿主机。demo 只需要 8000。
+#   2. 密码是写死的弱口令。容器不对外暴露端口，数据卷匿名，down -v 即消失。任何联网环境都不要用这份文件。
+#   3. DEEPSEEK_API_KEY 允许缺省。缺省时系统可建单/分类/追问/派单，知识建议为空并转人工。
+#   4. 开发令牌不写入镜像：前端从 sessionStorage 读取用户在页面粘贴的短期令牌。
 
 services:
   postgres:
@@ -39,14 +36,11 @@ services:
       retries: 20
 
   # 建表是一次性任务，不是应用启动的一部分。
-  # 应用有 2 个副本时并发建表会互相踩，所以生产也是这个顺序：先迁移，再放流量。
   migrate:
     build:
       context: ..
       dockerfile: Dockerfile
     command: ["python", "-m", "backend.migrations"]
-    # 镜像的 HEALTHCHECK 探的是 HTTP /livez，而这个容器跑的是一次性迁移、
-    # 没有 HTTP 服务。不关掉的话它会一直显示 unhealthy，看的人会以为迁移失败了。
     healthcheck:
       disable: true
     environment:
@@ -57,25 +51,43 @@ services:
       postgres:
         condition: service_healthy
 
+  # 种子数据：一次性任务，agent 等待 seed 成功后才会启动，保证打开页面即有数据。
+  seed:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["python", "-m", "backend.seed_demo"]
+    healthcheck:
+      disable: true
+    environment:
+      DATABASE_URL: postgresql://langgraph:demo_only_not_a_secret@postgres:5432/langgraph
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-demo-placeholder-key}
+      TENANT_TOKEN_SECRET: demo_only_not_a_secret
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   agent:
     build:
       context: ..
       dockerfile: Dockerfile
-    ports:
-      - "127.0.0.1:8000:8000"
     environment:
       APP_ENV: development
       AUTH_MODE: dev
       DATABASE_URL: postgresql://langgraph:demo_only_not_a_secret@postgres:5432/langgraph
       REDIS_URL: redis://redis:6379/0
       RATE_LIMIT_BACKEND: redis
-      # 表已由 migrate 建好，应用只做 schema 就绪检查，不自己建表
       LANGGRAPH_AUTO_SETUP: "false"
       TENANT_TOKEN_SECRET: demo_only_not_a_secret
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-demo-placeholder-key}
-      # 想看 supervisor 路由 + 人工审批，把下面两行的注释去掉再 up
-      # AGENT_GRAPH_MODE: workflow
-      # AGENT_WORKFLOW_PATH: legacy-demo/workflows/legacy-demo.json
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3).status==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      start_period: 15s
+      retries: 20
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,3 +95,22 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+
+  # 前端：Nginx 托管静态文件，/api/* 去掉 /api 前缀后代理给 agent。
+  # 外部只暴露 127.0.0.1:8000（web），agent 不再对宿主机开端口。
+  web:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:8000:80"
+    depends_on:
+      agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 5s
+      timeout: 3s
+      retries: 20

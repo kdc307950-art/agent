@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from psycopg import AsyncConnection
 
 APP_SCHEMA_NAME = "langgraph_agent"
-APP_SCHEMA_VERSION = 21
+APP_SCHEMA_VERSION = 22
 MIGRATION_LOCK_KEY = 891274631
 
 # These are the tables created by the pinned LangGraph PostgreSQL adapters and
@@ -40,6 +40,7 @@ REQUIRED_RELATIONS: tuple[str, ...] = (
     "ticket_sla",
     "satisfaction_surveys",
     "ticket_workflow_runs",
+    "channel_identities",
     "support_teams",
     "support_members",
     "support_schedules",
@@ -1122,6 +1123,36 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 ON copilot_drafts (tenant_id, run_id)
                 """)
             current = 21
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 22:
+            # v22: 可信渠道身份目录 —— 渠道身份不可由请求体/事件 payload 伪造。
+            # (tenant_id, channel, requester_id) 唯一；departments / asset_id 只来自
+            # 管理员映射或专用 Webhook 验签后的内部写入，受理流程按目录读取。
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS channel_identities (
+                    tenant_id TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    requester_id TEXT NOT NULL,
+                    external_user_id TEXT,
+                    departments TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+                    asset_id TEXT,
+                    internal BOOLEAN NOT NULL DEFAULT FALSE,
+                    mapping_source TEXT NOT NULL DEFAULT 'admin',
+                    active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (tenant_id, channel, requester_id)
+                )
+                """)
+            await cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_channel_identities_tenant_channel
+                ON channel_identities (tenant_id, channel)
+                """)
+            current = 22
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
                 (current, APP_SCHEMA_NAME),

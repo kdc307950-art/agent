@@ -1,5 +1,7 @@
 /** 统一 API 客户端：JSON 请求封装 + SSE 底层读取。 */
 
+import { getDevToken } from '../lib/devToken'
+
 const API_PREFIX = '/api'
 
 export class ApiError extends Error {
@@ -17,9 +19,14 @@ export class ApiError extends Error {
  * 支持 options.signal 取消请求；被取消时原样抛出 AbortError，调用方可据此判断是否静默处理。
  */
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = getDevToken()
   const response = await fetch(`${API_PREFIX}${path}`, {
     ...options,
-    headers: { 'Content-Type': 'application/json', ...(options.headers ?? {}) },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers ?? {}),
+    },
   })
   if (response.status === 204) {
     return {} as T
@@ -36,9 +43,13 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 }
 
 export function sseFetch(path: string, body: unknown, signal?: AbortSignal): Promise<Response> {
+  const token = getDevToken()
   return fetch(`${API_PREFIX}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     body: JSON.stringify(body),
     signal,
   })

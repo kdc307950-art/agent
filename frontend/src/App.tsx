@@ -26,7 +26,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      {/* 侧栏：mobileOpen 控制展开；onClose 由侧栏内部（点击导航项 / 按 Escape）触发收起 */}
+      {/* 侧栏（含 Dev 演示令牌输入条）：mobileOpen 控制展开；onClose 由侧栏内部触发收起 */}
       <Sidebar mobileOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <Routes>
         {/* 根路径与未知路径都重定向到工单队列，保证任何 URL 都有可用页面 */}

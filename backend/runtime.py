@@ -23,6 +23,7 @@ from src.my_agent.workflow import build_workflow_from_json
 
 from .assets import AssetRepository
 from .audit import AuditRepository, audit_context
+from .channel_identities import ChannelIdentityRepository
 from .copilot.agent import ResolutionCopilot
 from .copilot.repository import CopilotRepository
 from .copilot.service import CopilotService
@@ -65,6 +66,7 @@ class AgentRuntime:
     routing: RoutingRepository
     assets: AssetRepository
     it_policies: ItPolicyRepository
+    channel_identities: ChannelIdentityRepository
     knowledge: KnowledgeRepository
     agentic_rag: AgenticRAGService | None
     tool_governance: ToolGovernance
@@ -235,6 +237,7 @@ async def runtime_context(
             routing=RoutingRepository(audit.pool),
             assets=AssetRepository(audit.pool),
             it_policies=ItPolicyRepository(audit.pool),
+            channel_identities=ChannelIdentityRepository(audit.pool),
             knowledge=knowledge,
             agentic_rag=agentic_rag,
             tool_governance=tool_governance,

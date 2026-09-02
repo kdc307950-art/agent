@@ -55,7 +55,7 @@ from .security import (
 )
 from .settings import Settings
 from .telemetry import Telemetry
-from .ticket_api import admin_router, channel_router
+from .ticket_api import admin_router, channel_router, identity_router
 from .ticket_api import router as ticket_router
 from .usage import extract_model_usage, usage_cost_usd
 from .worker_metrics import WorkerMetricsDB, prometheus_text
@@ -318,6 +318,7 @@ app = FastAPI(title="LangGraph Agent API", lifespan=lifespan)
 app.include_router(ticket_router)
 app.include_router(channel_router)
 app.include_router(admin_router)
+app.include_router(identity_router)
 app.include_router(asset_router)
 app.include_router(knowledge_router)
 app.include_router(copilot_router)

@@ -1,6 +1,6 @@
 # 10 分钟演示脚本：中小企业 IT 服务台闭环
 
-> 适用环境：`infra/compose.demo.yml` 一键启动 + `backend.seed_demo` 种子数据。
+> 适用环境：`infra/compose.demo.yml` 一键启动（migrate → seed → agent → web 自动按依赖顺序执行）；浏览器访问 http://127.0.0.1:8000。
 > 前置：`DEEPSEEK_API_KEY` 已配置（自动分类 / 知识建议依赖模型；不配置时流程可走到派单，知识建议为空并转人工）。
 > 产品边界（目标客户 / 三类工单 / 主链路 / 非目标 / 人工介入规则）见 [docs/product/v1-scope.md](docs/product/v1-scope.md)。
 
@@ -8,18 +8,19 @@
 
 | 账号 | 角色 | 令牌命令 |
 |---|---|---|
-| `demo / customer-1` | 员工（客户） | `uv run python -m backend.issue_dev_token demo customer-1 --role helpdesk-customer` |
-| `demo / agent-1` | IT 客服 | `uv run python -m backend.issue_dev_token demo agent-1 --role helpdesk-agent` |
-| `demo / admin-1` | IT 管理员 | `uv run python -m backend.issue_dev_token demo admin-1 --role helpdesk-it-admin` |
+| `demo / customer-1` | 员工（客户） | `docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo customer-1 --role helpdesk-customer` |
+| `demo / agent-1` | IT 客服 | `docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo agent-1 --role helpdesk-agent` |
+| `demo / admin-1` | IT 管理员 | `docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo admin-1 --role helpdesk-it-admin` |
 
-三个令牌分别粘贴到前端页面顶部的令牌输入框（或 Vite 代理的 `DEV_TENANT_TOKEN`）。
+三个令牌分别粘贴到浏览器页面顶部「演示令牌」输入框（保存在 sessionStorage，关闭标签页即失效；生产接 OIDC/BFF，不复用此方案）。
 
 ## 准备（约 2 分钟）
 
 ```powershell
 docker compose -f infra/compose.demo.yml up --build -d
-uv run python -m backend.seed_demo
-# 迁移已由 compose 的 migrate 服务完成；seed 幂等，可重复执行
+docker compose -f infra/compose.demo.yml ps
+docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo customer-1 --role helpdesk-customer
+# migrate → seed → agent → web 由 compose 依赖顺序自动完成；seed 幂等，可重复执行
 ```
 
 预期输出：`✅ 演示种子完成（租户 demo）`，包含 SLA ×4、IT 策略 ×2、团队/成员/排班/路由、知识文档 ×8、资产 ×5。

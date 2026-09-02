@@ -29,6 +29,7 @@ import {
   UserCheck,
   type LucideIcon,
 } from 'lucide-react'
+import { clearDevToken, getDevToken, setDevToken } from '../lib/devToken'
 
 // 导航图标统一尺寸
 const ICON_SIZE = 18
@@ -77,6 +78,41 @@ function useMediaQuery(query: string): boolean {
     return () => mql.removeEventListener('change', onChange)
   }, [query])
   return matches
+}
+
+function DevTokenBar() {
+  const [value, setValue] = useState<string>(getDevToken() ?? '')
+  const [saved, setSaved] = useState<boolean>(Boolean(getDevToken()))
+
+  const save = () => {
+    setDevToken(value)
+    setSaved(true)
+  }
+
+  const clear = () => {
+    clearDevToken()
+    setValue('')
+    setSaved(false)
+  }
+
+  return (
+    <div className="dev-token-bar">
+      <span>演示令牌（AUTH_MODE=dev）</span>
+      <input
+        type="password"
+        value={value}
+        placeholder="粘贴 backend.issue_dev_token 输出"
+        onChange={(event) => {
+          setValue(event.target.value)
+          setSaved(false)
+        }}
+      />
+      <button onClick={save}>保存</button>
+      <button onClick={clear}>清除</button>
+      {saved && <span className="dev-token-ok">已保存到 sessionStorage</span>}
+      <span className="dev-token-note">生产接 OIDC/BFF</span>
+    </div>
+  )
 }
 
 export default function Sidebar({
@@ -193,6 +229,8 @@ export default function Sidebar({
           </div>
         </div>
       </div>
+      {/* Dev 演示令牌输入：仅 AUTH_MODE=dev；令牌只存 sessionStorage */}
+      <DevTokenBar />
       </aside>
     </>
   )

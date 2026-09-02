@@ -358,6 +358,43 @@ class FakeItPolicies:
         return self.items.pop((tenant_id, category), None) is not None
 
 
+
+
+class FakeChannelIdentities:
+    def __init__(self):
+        self.items = {}
+
+    async def get(self, tenant_id, channel, requester_id):
+        return self.items.get((tenant_id, channel, requester_id))
+
+    async def upsert(self, tenant_id, identity):
+        record = SimpleNamespace(
+            tenant_id=tenant_id,
+            channel=identity.channel,
+            requester_id=identity.requester_id,
+            departments=identity.departments,
+            asset_id=identity.asset_id,
+            internal=identity.internal,
+            mapping_source=identity.mapping_source,
+            active=identity.active,
+        )
+        self.items[(tenant_id, identity.channel, identity.requester_id)] = record
+        return record
+
+    async def list_admin(self, tenant_id, *, limit=100):
+        return [
+            record
+            for (tid, _channel, _requester), record in self.items.items()
+            if tid == tenant_id
+        ][:limit]
+
+    async def delete(self, tenant_id, channel, requester_id):
+        key = (tenant_id, channel, requester_id)
+        if key not in self.items:
+            return False
+        del self.items[key]
+        return True
+
 class FakeKnowledge:
     def __init__(self):
         self.put = []
@@ -414,6 +451,7 @@ def load_app(monkeypatch, *, dingtalk=False, wecom=False):
         ticket_operations=operations,
         assets=assets,
         it_policies=FakeItPolicies(),
+        channel_identities=FakeChannelIdentities(),
         knowledge=FakeKnowledge(),
         audit=FakeAudit(),
     )
@@ -1535,6 +1573,43 @@ def test_admin_operations_are_audited(monkeypatch):
     assert "knowledge.document.create" in actions
     assert all(event["tenant_id"] == "tenant-a" for event in audit.admin_events)
 
+
+
+
+def test_channel_identity_admin_api_rejects_foreign_asset_and_requires_admin(monkeypatch):
+    """Day 3-4：可信渠道身份只允许 security:admin 管理；资产必须归属该渠道用户。"""
+    module, _tickets, _intake = load_app(monkeypatch)
+    admin = headers(
+        "security:admin",
+        "ticket:agent",
+        "asset:read",
+        "asset:write",
+    )
+    with TestClient(module.app) as client:
+        client.post(
+            "/assets",
+            headers=admin,
+            json={"asset_id": "asset-1", "asset_no": "A-1", "asset_type": "laptop", "owner_user_id": "user-1"},
+        )
+
+        forbidden = client.get("/admin/channel-identities", headers=headers("ticket:agent"))
+        foreign_asset = client.put(
+            "/admin/channel-identities/wecom/ext-user-1",
+            headers=admin,
+            json={"channel": "wecom", "requester_id": "ext-user-1", "departments": ["finance"], "asset_id": "asset-1"},
+        )
+        own_asset = client.put(
+            "/admin/channel-identities/wecom/user-1",
+            headers=admin,
+            json={"channel": "wecom", "requester_id": "user-1", "departments": ["finance"], "asset_id": "asset-1"},
+        )
+        listed = client.get("/admin/channel-identities", headers=admin)
+
+    assert forbidden.status_code == 403
+    assert foreign_asset.status_code == 404
+    assert own_asset.status_code == 200
+    assert own_asset.json()["departments"] == ["finance"]
+    assert [item["requester_id"] for item in listed.json()["items"]] == ["user-1"]
 
 def test_full_lifecycle_http_regression_vpn(monkeypatch):
     """Day 6：VPN 主链路完整 HTTP 回归（创建→追问→补全→分类→派单→接单→处理→解决→回访→关闭）。"""

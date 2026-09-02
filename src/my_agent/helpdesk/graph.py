@@ -63,6 +63,8 @@ class HelpdeskIntakeState(TypedDict, total=False):
     departments: list[str]
     asset_id: str
     identity_missing: bool
+    # 渠道身份目录无映射（Day 3-4）：空部门/空资产且转人工
+    channel_identity_missing: bool
     # ItPolicyProvider 应用结果（动态租户策略，非启动时预编译）
     policy_category: str | None
     policy_required_fields: list[str]
@@ -226,8 +228,15 @@ def build_helpdesk_intake_graph(
         reason_codes = list(decision.reason_codes)
         if state.get("approval_required"):
             reason_codes.append("approval_required")
+        identity_missing = bool(state.get("channel_identity_missing", False))
+        if identity_missing:
+            reason_codes.append("channel_identity_missing")
+        target_team = decision.team_id
+        if identity_missing:
+            # 渠道身份目录无映射：即便分类为 IT 也转服务台人工队列
+            target_team = policy.team_by_category[TicketCategory.OTHER]
         return {
-            "dispatch_team_id": decision.team_id,
+            "dispatch_team_id": target_team,
             "priority": priority,
             "risk_level": decision.risk_level.value,
             "dispatch_reason_codes": reason_codes,
@@ -260,7 +269,9 @@ def build_helpdesk_intake_graph(
             if isinstance(raw_departments, (list, tuple, set, frozenset))
             else frozenset()
         )
-        identity_missing = not bool(tenant_id and user_id)
+        identity_missing = bool(state.get("channel_identity_missing", False)) or not bool(
+            tenant_id and user_id
+        )
         principal = RetrievalPrincipal(
             tenant_id=tenant_id or "unknown",
             departments=departments,

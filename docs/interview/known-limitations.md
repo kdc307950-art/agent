@@ -38,10 +38,10 @@
 8. **live_e2e 测试排除**：真实模型/外部服务的端到端用例带 `live_e2e` 标记，
    默认回归不执行（可能产生外部调用成本）。
 
-8b. **引用支撑率统计口径**：`run_ticket_eval.py` 默认 static 模式只验证
-   预期知识文档存在性与门禁规则（引用支撑率按“应有依据”计 100%）；
-   真实词法检索需 `TEST_DATABASE_URL` 配置后执行 db 模式，生产级
-   hybrid 检索与 LLM 生成引用仍未见真实企业知识库证据。
+8b. **引用支撑率统计口径**：`run_ticket_eval.py` 的 static 模式把
+   引用支撑率与 ACL 泄露计为 **N/A**（`--require-db` 会直接拒绝 static 通过）；
+   只有配置 `TEST_DATABASE_URL` 的 db 模式执行真实词法检索后才产生数字。
+   生产级 hybrid 检索与 LLM 生成引用仍未见真实企业知识库证据。
 
 9. **已知 flaky 修复**：inbound backoff=0 的毫秒级时钟竞态已在测试中
    （短暂 sleep）规避；这是测试时序问题，不是产品缺陷，但值得在参数化

@@ -54,21 +54,30 @@ def _first_interrupt_id(snapshot: object) -> str | None:
     return None
 
 
-def _event_identity(event: NormalizedChannelEvent) -> tuple[str, list[str], str | None]:
-    """从渠道入站事件中提取身份上下文（Day 4）。
+async def _event_identity(
+    runtime, event: NormalizedChannelEvent
+) -> tuple[str, list[str], str | None, bool]:
+    """从可信渠道身份目录读取身份上下文（Day 3-4 加固）。
 
-    departments / asset_id 只读取服务端登记的 payload（渠道适配器写入），
-    不接受请求体自由提交；缺失时返回空部门/无资产，由受理图收紧权限。
+    - 完全忽略请求体/事件 payload 中的 departments / asset_id（防止伪造）；
+    - 只读 channel_identities 目录（由管理员或专用 Webhook 验签后写入）；
+    - 无映射或失效 -> 空部门 + 空资产 + identity_missing=True（受理图转人工）。
     """
-    payload = event.payload or {}
-    raw_departments = payload.get("departments") or []
-    departments = (
-        [str(item) for item in raw_departments if item]
-        if isinstance(raw_departments, (list, tuple, set, frozenset))
-        else []
+    repo = getattr(runtime, "channel_identities", None)
+    identity = None
+    if repo is not None:
+        try:
+            identity = await repo.get(event.tenant_id, event.channel, event.requester_id)
+        except Exception:
+            identity = None
+    if identity is None or not identity.active:
+        return event.requester_id, [], None, True
+    return (
+        event.requester_id,
+        list(identity.departments),
+        identity.asset_id,
+        False,
     )
-    asset_id = payload.get("asset_id")
-    return event.requester_id, departments, str(asset_id) if asset_id else None
 
 
 async def _resume_from_customer_reply(
@@ -107,7 +116,9 @@ async def _resume_from_customer_reply(
             "ticket": ticket,
         }
 
-    requester_id, departments, asset_id = _event_identity(event)
+    requester_id, departments, asset_id, _identity_missing = await _event_identity(
+        runtime, event
+    )
     config = intake_config(
         tenant_id,
         ticket_id,
@@ -224,7 +235,9 @@ async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor
     created = existing["ticket_id"] is None
 
     operation_id = f"channel:{event.external_event_id}"
-    requester_id, departments, asset_id = _event_identity(event)
+    requester_id, departments, asset_id, identity_missing = await _event_identity(
+        runtime, event
+    )
     config = intake_config(
         event.tenant_id,
         ticket.ticket_id,
@@ -272,6 +285,7 @@ async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor
                     "requester_id": event.requester_id,
                 },
                 "clarification_rounds": 0,
+                "channel_identity_missing": identity_missing,
             },
             config,
         )
