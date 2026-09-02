@@ -295,15 +295,32 @@ class TicketOperationsRepository:
                 )
                 run_row = await cursor.fetchone()
         citations: list[dict[str, Any]] = []
+        intake: dict[str, Any] = {}
         if run_row and isinstance(run_row["intent"], dict):
             result = run_row["intent"].get("result") or {}
             citations = list(result.get("citations") or [])
+            intake = {
+                "category": result.get("category"),
+                "subcategory": result.get("subcategory"),
+                "missing_fields": list(result.get("missing_fields") or []),
+                "dispatch_reason_codes": list(result.get("dispatch_reason_codes") or []),
+                "answer_status": result.get("answer_status"),
+                "answer_reason_codes": list(result.get("answer_reason_codes") or []),
+                "auto_reply": result.get("auto_reply"),
+                "identity_missing": bool(result.get("identity_missing", False)),
+                "risk_level": result.get("risk_level"),
+            }
+        handoff_reasons = sorted(
+            set(intake.get("dispatch_reason_codes") or []) | set(intake.get("answer_reason_codes") or [])
+        )
         return {
             "sla": sla,
             "survey": survey,
             "messages": messages,
             "assignments": assignments,
             "citations": citations,
+            "intake": intake,
+            "handoff_reasons": handoff_reasons,
         }
 
     async def ensure_sla_for_ticket(

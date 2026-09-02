@@ -426,8 +426,15 @@ def load_app(monkeypatch, *, dingtalk=False, wecom=False):
     return module, tickets, intake
 
 
-def headers(*scopes, tenant="tenant-a", user="user-1"):
-    token = make_tenant_token(tenant, user, SECRET, scopes=scopes)
+def headers(*scopes, tenant="tenant-a", user="user-1", departments=(), internal=False):
+    token = make_tenant_token(
+        tenant,
+        user,
+        SECRET,
+        scopes=scopes,
+        departments=tuple(departments),
+        internal=internal,
+    )
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -610,6 +617,36 @@ def test_intake_completes_to_queued_and_creates_sla_instance(monkeypatch):
     call = tickets.operations.sla_calls[0]
     assert call["tenant_id"] == "tenant-a"
     assert call["ticket_id"] == "ticket-1"
+
+
+def test_intake_config_carries_identity_and_asset_from_principal(monkeypatch):
+    """Day 4：受理图 config 必须携带认证主体身份与资产，而非只传 tenant_id。"""
+    module, tickets, intake = load_app(monkeypatch)
+    tickets.items[("tenant-a", "ticket-1")] = SimpleNamespace(
+        ticket_id="ticket-1",
+        requester_id="user-1",
+        version=0,
+        status=TicketStatus.NEW,
+        channel="web",
+        category=None,
+        asset_id="laptop-1",
+    )
+    with TestClient(module.app) as client:
+        response = client.post(
+            "/tickets/ticket-1/intake",
+            headers=headers("ticket:customer", departments=("it",)),
+            json={
+                "operation_id": "op-identity",
+                "text": "VPN cannot connect",
+                "fields": {"title": "VPN", "description": "cannot connect"},
+                "expected_version": 0,
+            },
+        )
+    assert response.status_code == 200
+    config = intake.inputs[0][1]
+    assert config["configurable"]["user_id"] == "user-1"
+    assert config["configurable"]["departments"] == ["it"]
+    assert config["configurable"]["asset_id"] == "laptop-1"
 
 
 def test_pending_interrupt_endpoint_rehydrates_checkpoint_after_refresh(monkeypatch):
@@ -1497,3 +1534,111 @@ def test_admin_operations_are_audited(monkeypatch):
     assert "it_policy.upsert" in actions
     assert "knowledge.document.create" in actions
     assert all(event["tenant_id"] == "tenant-a" for event in audit.admin_events)
+
+
+def test_full_lifecycle_http_regression_vpn(monkeypatch):
+    """Day 6：VPN 主链路完整 HTTP 回归（创建→追问→补全→分类→派单→接单→处理→解决→回访→关闭）。"""
+    module, tickets, intake = load_app(monkeypatch)
+    intake.result = {"__interrupt__": (), "missing_fields": ["impact"]}
+    intake.pending = (
+        Interrupt(
+            id="interrupt-lifecycle-1",
+            value={
+                "ticket_id": "ticket-1",
+                "expected_actor": "customer",
+                "expected_actor_id": "user-1",
+                "allowed_actions": ["provide_information"],
+                "question": "请补充影响范围",
+            },
+        ),
+    )
+    with TestClient(module.app) as client:
+        created = client.post(
+            "/tickets",
+            headers=headers("ticket:customer"),
+            json={"ticket_id": "ticket-1", "title": "VPN 无法连接", "description": "错误码 809"},
+        )
+        assert created.status_code == 201
+
+        intake_resp = client.post(
+            "/tickets/ticket-1/intake",
+            headers=headers("ticket:customer"),
+            json={
+                "operation_id": "op-lifecycle-intake",
+                "text": "VPN 无法连接，错误码 809",
+                "fields": {"title": "VPN", "description": "error 809"},
+                "expected_version": 0,
+            },
+        )
+        assert intake_resp.status_code == 200
+        assert intake_resp.json()["ticket"]["status"] == "awaiting_customer"
+
+        # 客户补充信息后恢复受理（Fake 图改为返回派单结果）
+        intake.result = {"category": "it", "subcategory": "vpn", "dispatch_team_id": "team-it", "priority": "normal"}
+        resume_resp = client.post(
+            "/tickets/ticket-1/resume",
+            headers=headers("ticket:customer"),
+            json={
+                "operation_id": "op-lifecycle-resume",
+                "interrupt_id": "interrupt-lifecycle-1",
+                "ticket_id": "ticket-1",
+                "actor_type": "customer",
+                "actor_id": "user-1",
+                "action": "provide_information",
+                "expected_version": 2,
+                "payload": {"fields": {"impact": "one user"}},
+            },
+        )
+        assert resume_resp.status_code == 200
+        assert resume_resp.json()["ticket"]["status"] == "queued"
+        current_version = resume_resp.json()["ticket"]["version"]
+
+        def transition(action, actor_type, scopes):
+            return client.post(
+                "/tickets/ticket-1/transitions",
+                headers=headers(*scopes),
+                json={
+                    "action": action,
+                    "expected_version": resume_resp.json()["ticket"]["version"],
+                    "actor_type": actor_type,
+                    "payload": {},
+                },
+            )
+        # 客服接单 → 开始处理 → 解决
+        assigned = transition("assign", "agent", ("ticket:agent",))
+        assert assigned.status_code == 200
+        assert assigned.json()["status"] == "assigned"
+        in_progress = transition("start_work", "agent", ("ticket:agent",))
+        assert in_progress.status_code == 200
+        assert in_progress.json()["status"] == "in_progress"
+        resolved = transition("resolve", "agent", ("ticket:agent",))
+        assert resolved.status_code == 200
+        assert resolved.json()["status"] == "resolved"
+
+        # 客服发起回访，客户提交满意度
+        survey = client.post(
+            "/tickets/ticket-1/survey",
+            headers=headers("ticket:agent"),
+            json={"expires_in_days": 7},
+        )
+        assert survey.status_code == 201
+        survey_id = survey.json()["survey_id"]
+        responded = client.post(
+            f"/tickets/ticket-1/survey/{survey_id}/response",
+            headers=headers("ticket:customer"),
+            json={"score": 5, "feedback": "resolved"},
+        )
+        assert responded.status_code == 200
+        assert responded.json()["status"] == "responded"
+
+        # 关闭工单
+        closed = transition("close", "agent", ("ticket:agent",))
+        assert closed.status_code == 200
+        assert closed.json()["status"] == "closed"
+
+        # 收尾：SLA 被补建、回访/消息/审计可达
+        assert tickets.operations.sla_calls
+        assert tickets.operations.surveys
+        final = client.get("/tickets/ticket-1", headers=headers("ticket:customer"))
+        assert final.json()["status"] == "closed"
+        assert current_version > 0

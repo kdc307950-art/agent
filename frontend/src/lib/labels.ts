@@ -18,10 +18,36 @@ export const statusLabel: Record<string, string> = {
 
 export const categoryLabel: Record<string, string> = {
   it: 'IT 故障',
-  finance: '财务咨询',
-  admin: '行政申请',
-  product: '产品问题',
-  other: '其他',
+  'it.vpn': 'VPN',
+  'it.account': '账号',
+  'it.network': '网络',
+  'it.email': '邮箱',
+  'it.hardware': '硬件',
+  'it.software': '软件',
+  'it.printer': '打印',
+  'it.permission': '权限',
+  finance: '财务咨询（非 V1）',
+  admin: '行政申请（非 V1）',
+  product: '产品问题（非 V1）',
+  other: '其他（非 V1）',
+}
+
+/** V1 工作台默认只在 IT 服务台范围展示（Day 9：非 V1 类别从默认筛选隐藏）。 */
+export const v1CategoryOptions: { value: string; label: string }[] = [
+  { value: 'it.vpn', label: 'VPN' },
+  { value: 'it.account', label: '账号' },
+  { value: 'it.network', label: '网络' },
+  { value: 'it.email', label: '邮箱' },
+  { value: 'it.hardware', label: '硬件' },
+  { value: 'it.software', label: '软件' },
+  { value: 'it.printer', label: '打印' },
+  { value: 'it.permission', label: '权限' },
+]
+
+/** V1 可见性：工单类别为 IT（含 it.* 子类）时才在工作台默认队列展示。 */
+export function isV1Category(category?: string | null): boolean {
+  if (!category) return true
+  return category === 'it' || category.startsWith('it.')
 }
 
 export const priorityLabel: Record<string, string> = {

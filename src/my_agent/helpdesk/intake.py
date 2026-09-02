@@ -89,9 +89,17 @@ class IntakePolicy:
     """内置受理策略：必填字段、追问次数上限、分类 -> 团队映射。
 
     租户级策略（backend/tickets/policies.py）会在此基础上叠加覆盖。
+
+    V1 范围约束：supported_categories 是允许「自动受理/自动派单」的大类白名单。
+    默认只允许 IT 类进入自动受理；finance / admin / product / other 命中后
+    统一转服务台人工队列（team_service_desk），不再自动派至对应业务团队。
     """
 
     base_required_fields: frozenset[str] = frozenset({"title", "description", "requester_id"})
+    # V1 默认受理范围：仅 IT；越界大类一律人工队列（可被测试/租户覆盖）
+    supported_categories: frozenset[TicketCategory] = field(
+        default_factory=lambda: frozenset({TicketCategory.IT})
+    )
     category_required_fields: Mapping[TicketCategory, frozenset[str]] = field(
         default_factory=lambda: {
             TicketCategory.IT: frozenset({"affected_system", "impact"}),
@@ -158,6 +166,25 @@ class KeywordTicketClassifier:
             "打印机",
             "手机",
             "权限",
+            # 网络/账号高频词（Day 3 固定评测集覆盖，提升网络场景识别）
+            "wifi",
+            "wi-fi",
+            "网速",
+            "ip",
+            "dns",
+            "网关",
+            "交换机",
+            "网线",
+            "信号",
+            "丢包",
+            "延迟",
+            "路由",
+            "代理",
+            "内网",
+            "外网",
+            "视频会议",
+            "mfa",
+            "验证码",
         ),
         TicketCategory.FINANCE: ("报销", "发票", "付款", "工资", "财务", "费用"),
         TicketCategory.ADMIN: ("门禁", "工位", "会议室", "采购", "行政", "用印"),
@@ -166,13 +193,34 @@ class KeywordTicketClassifier:
 
     _IT_SUBCATEGORY_KEYWORDS: Mapping[str, tuple[str, ...]] = {
         # IT 子分类关键词：命中则细分到 it.vpn / it.account 等
+        # 顺序优先级：printer 在 network 之前，避免「打印机 + 网络」被网络误改
         "vpn": ("vpn", "远程接入", "无法联网", "外网"),
-        "account": ("账号", "登录", "密码", "sso", "锁定", "重置密码"),
-        "network": ("网络", "断网", "wifi", "局域网", "网速", "网关"),
+        "account": ("账号", "登录", "密码", "sso", "锁定", "重置密码", "mfa", "验证码"),
         "email": ("邮箱", "邮件", "outlook", "收不到邮件", "退信"),
         "hardware": ("电脑", "显示器", "键盘", "鼠标", "主板", "硬件", "电源"),
         "software": ("软件", "安装", "更新", "蓝屏", "系统崩溃", "应用"),
         "printer": ("打印机", "打印", "复印", "硒鼓"),
+        "network": (
+            "网络",
+            "断网",
+            "wifi",
+            "wi-fi",
+            "局域网",
+            "网速",
+            "网关",
+            "ip",
+            "dns",
+            "交换机",
+            "网线",
+            "信号",
+            "丢包",
+            "延迟",
+            "路由",
+            "代理",
+            "内网",
+            "外网",
+            "视频会议",
+        ),
         "permission": ("权限", "授权", "申请权限", "访问控制", "角色", "开通", "acl"),
     }
 
@@ -260,6 +308,8 @@ def assess_and_dispatch(
 
     优先级规则：命中高影响词 -> urgent；其余 normal；
     风险：命中敏感词或高影响词 -> high，否则 low。原因码完整记录决策依据。
+    V1 范围规则：不在 supported_categories 内的大类（finance/admin/product/
+    other）一律转服务台人工队列并追加 out_of_scope_manual_review 原因码。
     """
     normalized = text.casefold()
     reasons: list[str] = []
@@ -279,11 +329,17 @@ def assess_and_dispatch(
         reasons.append("clarification_exhausted")
     if category == TicketCategory.OTHER:
         reasons.append("unknown_category")
+    in_scope = category in policy.supported_categories
+    if not in_scope:
+        reasons.append("out_of_scope_manual_review")
     if not reasons:
         reasons.append("category_rule")
 
+    target_team = policy.team_by_category[category] if in_scope else policy.team_by_category[
+        TicketCategory.OTHER
+    ]
     return DispatchDecision(
-        team_id=policy.team_by_category[category],
+        team_id=target_team,
         priority=priority,
         risk_level=risk,
         reason_codes=tuple(reasons),

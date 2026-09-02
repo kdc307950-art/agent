@@ -41,6 +41,9 @@ class Principal:
     tenant_id: str
     user_id: str
     scopes: frozenset[str]
+    # Day 4：部门与内部标记来自认证主体/服务端，前端请求体不能自由提交
+    departments: frozenset[str] = frozenset()
+    internal: bool = False
 
     @property
     def limiter_key(self) -> str:
@@ -169,7 +172,22 @@ class OIDCVerifier:
         scopes = frozenset(scope_values)
         if not self.required_scopes.issubset(scopes):
             raise PermissionError("OIDC token 缺少所需 scope")
-        return Principal(tenant_id=tenant_id, user_id=user_id, scopes=scopes)
+        raw_departments = claims.get("departments", [])
+        if isinstance(raw_departments, str):
+            department_values = raw_departments.split()
+        elif isinstance(raw_departments, (list, tuple, set, frozenset)):
+            department_values = [str(item) for item in raw_departments if item is not None]
+        else:
+            department_values = []
+        departments = frozenset(value for value in department_values if value)
+        internal = bool(claims.get("internal", False))
+        return Principal(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            scopes=scopes,
+            departments=departments,
+            internal=internal,
+        )
 
 
 def _valid_identifier(value: str) -> bool:
@@ -252,12 +270,15 @@ def make_tenant_token(
     # chat:approve 允许恢复被 human_approval 挂起的运行；本地/集成 token 默认下发，
     # 生产走 OIDC 时应由 IdP 单独授予，不要和 chat:write 绑定
     scopes: tuple[str, ...] = ("chat:read", "chat:write", "chat:approve"),
+    departments: tuple[str, ...] = (),
+    internal: bool = False,
     ttl_seconds: int = 3600,
     now: int | None = None,
 ) -> str:
     """Create an internal signed token for local/integration use.
 
     Production deployments should replace this issuer with OIDC/JWT validation.
+    departments / internal 仅由签发方（认证主体）填充，请求体不能覆盖。
     """
     import re
 
@@ -268,6 +289,8 @@ def make_tenant_token(
         "tenant_id": tenant_id,
         "user_id": user_id,
         "scopes": list(scopes),
+        "departments": [str(item) for item in departments if item],
+        "internal": bool(internal),
         "exp": issued_at + ttl_seconds,
     }
     encoded = _b64url_encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode())
@@ -295,7 +318,22 @@ def _parse_tenant_token(token: str, secret: str) -> Principal:
     if not re.fullmatch(_IDENTIFIER, tenant_id) or not re.fullmatch(_IDENTIFIER, user_id):
         raise ValueError("令牌身份无效")
     scopes = frozenset(str(scope) for scope in payload.get("scopes", []))
-    return Principal(tenant_id=tenant_id, user_id=user_id, scopes=scopes)
+    raw_departments = payload.get("departments", [])
+    if isinstance(raw_departments, str):
+        department_values = raw_departments.split()
+    elif isinstance(raw_departments, (list, tuple, set, frozenset)):
+        department_values = [str(item) for item in raw_departments if item is not None]
+    else:
+        department_values = []
+    departments = frozenset(value for value in department_values if value)
+    internal = bool(payload.get("internal", False))
+    return Principal(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        scopes=scopes,
+        departments=departments,
+        internal=internal,
+    )
 
 
 async def authenticate(

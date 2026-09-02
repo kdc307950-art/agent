@@ -36,7 +36,7 @@ import TicketList from '../components/TicketList'
 import TicketDetail from '../components/TicketDetail'
 import type { TransitionAction } from '../components/TicketDetail'
 import CreateTicketDialog from '../components/CreateTicketDialog'
-import { categoryLabel } from '../lib/labels'
+import { isV1Category, v1CategoryOptions } from '../lib/labels'
 import { useDebounce } from '../lib/useDebounce'
 
 // 列表每页请求的工单数量（对应后端 limit 查询参数）
@@ -141,10 +141,12 @@ export default function QueueView({ onOpenSidebar }: { onOpenSidebar?: () => voi
         )
         // 请求已被更新的请求取代（如用户切换筛选）时，丢弃本次结果
         if (requestId !== listRequestId.current) return
+        // V1 默认队列只展示 IT 服务台工单（非 V1 类别从默认筛选隐藏）
+        const v1Items = result.items.filter((item) => isV1Category(item.category))
         setTickets((items) =>
           append
-            ? deduplicateById([...items, ...result.items], (item) => item.ticket_id)
-            : result.items,
+            ? deduplicateById([...items, ...v1Items], (item) => item.ticket_id)
+            : v1Items,
         )
         setCursor(result.next_cursor ?? null)
       } catch (err) {
@@ -463,11 +465,11 @@ export default function QueueView({ onOpenSidebar }: { onOpenSidebar?: () => voi
                 setFilters({ ...filters, category: e.target.value })
               }}
             >
-              <option value="">全部类别</option>
-              {/* 类别选项来自 lib/labels 的 categoryLabel 常量表 */}
-              {Object.entries(categoryLabel).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
+              <option value="">全部类别（IT 服务台）</option>
+              {/* V1 默认只暴露 IT 服务台类别；非 V1 类别不在默认筛选中出现 */}
+              {v1CategoryOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
                 </option>
               ))}
             </select>

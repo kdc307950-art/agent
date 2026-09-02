@@ -27,14 +27,31 @@ from src.my_agent.helpdesk import (
 _SLA_START_STATUSES = frozenset({TicketStatus.QUEUED, TicketStatus.ASSIGNED})
 
 
-def intake_config(tenant_id: str, ticket_id: str) -> dict[str, Any]:
-    return {
-        "configurable": {
-            "thread_id": f"helpdesk:{tenant_id}:{ticket_id}",
-            "tenant_id": tenant_id,
-            "checkpoint_ns": "",
-        }
+def intake_config(
+    tenant_id: str,
+    ticket_id: str,
+    *,
+    user_id: str | None = None,
+    departments: tuple[str, ...] | list[str] | frozenset[str] = (),
+    asset_id: str | None = None,
+) -> dict[str, Any]:
+    """构造受理图 config；身份上下文（user/departments/asset）仅来自服务端。
+
+    调用方必须从认证主体或渠道入站事件填充 user_id/departments/asset_id；
+    缺失时受理图默认收紧权限并转人工（见 graph.compose_answer_node）。
+    """
+    configurable: dict[str, Any] = {
+        "thread_id": f"helpdesk:{tenant_id}:{ticket_id}",
+        "tenant_id": tenant_id,
+        "checkpoint_ns": "",
     }
+    if user_id:
+        configurable["user_id"] = user_id
+    if departments:
+        configurable["departments"] = [str(item) for item in departments if item]
+    if asset_id:
+        configurable["asset_id"] = asset_id
+    return {"configurable": configurable}
 
 
 def serialize_commands(commands: list[TicketCommand]) -> list[dict[str, Any]]:
@@ -275,12 +292,22 @@ async def apply_intake_resume(
     expected_version: int,
     scopes: set[str],
     channel: str,
+    user_id: str | None = None,
+    departments: tuple[str, ...] | list[str] | frozenset[str] = (),
+    asset_id: str | None = None,
 ) -> dict[str, Any]:
     """执行一次受理恢复（Web 与企微回复共用）：
 
     校验挂起 interrupt → 图 resume → 生成命令 → 运营派单 → transition → SLA。
+    身份上下文从认证主体/渠道事件传入；缺失时受理图收紧权限并转人工。
     """
-    config = intake_config(tenant_id, ticket_id)
+    config = intake_config(
+        tenant_id,
+        ticket_id,
+        user_id=user_id,
+        departments=departments,
+        asset_id=asset_id,
+    )
     run = await runtime.tickets.start_workflow_operation(
         tenant_id=tenant_id,
         ticket_id=ticket_id,

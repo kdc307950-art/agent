@@ -9,6 +9,12 @@ from backend.knowledge import (
     RetrievalPrincipal,
     reciprocal_rank_fusion,
 )
+from backend.knowledge.service import (
+    ANSWER_STATUS_DRAFT_READY,
+    ANSWER_STATUS_HANDOFF_HIGH_RISK,
+    ANSWER_STATUS_HANDOFF_NO_EVIDENCE,
+    answer_status,
+)
 
 
 def hit(chunk_id: str, *, source: str, rank: int, tenant: str = "tenant-a") -> RetrievalHit:
@@ -178,3 +184,19 @@ def test_gate_policy_can_require_more_cross_retriever_evidence():
 
     assert result.auto_reply is False
     assert result.reason_codes == ("insufficient_cross_retriever_support",)
+
+
+# ========== Day 5：三种统一建议状态 ==========
+
+
+def test_answer_status_maps_gate_result_to_three_states():
+    """有证据才建议：自动放行 / 高风险人工 / 无证据人工 三种状态可解释。"""
+    assert answer_status(("gate_passed",), auto_reply=True) == ANSWER_STATUS_DRAFT_READY
+    assert answer_status(("no_retrieval_hits",), auto_reply=False) == ANSWER_STATUS_HANDOFF_NO_EVIDENCE
+    assert answer_status(("missing_citations",), auto_reply=False) == ANSWER_STATUS_HANDOFF_NO_EVIDENCE
+    assert (
+        answer_status(("sensitive_or_high_risk",), auto_reply=False)
+        == ANSWER_STATUS_HANDOFF_HIGH_RISK
+    )
+    # 兜底：未知原因绝不隐式放行
+    assert answer_status(("something_new",), auto_reply=False) == ANSWER_STATUS_HANDOFF_NO_EVIDENCE

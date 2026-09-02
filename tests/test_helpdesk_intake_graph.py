@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -177,7 +178,11 @@ def test_unknown_or_ambiguous_classification_forces_review_reason():
     result = invoke(graph, state, config())
 
     assert result["dispatch_team_id"] == "team-service-desk"
-    assert set(result["dispatch_reason_codes"]) == {"classification_review", "unknown_category"}
+    assert set(result["dispatch_reason_codes"]) == {
+        "classification_review",
+        "unknown_category",
+        "out_of_scope_manual_review",
+    }
 
 
 @pytest.mark.parametrize(
@@ -299,3 +304,108 @@ def test_it_policy_provider_absent_uses_defaults():
     result = invoke(graph, base_input(), run_config)
     assert result["priority"] == "normal"
     assert "approval_required" not in result["dispatch_reason_codes"]
+
+
+# ========== V1 范围（Day 2）：越界分类不自动处置 ==========
+
+
+@pytest.mark.parametrize(
+    ("category", "text", "required"),
+    [
+        (TicketCategory.FINANCE, "报销发票付款流程咨询", {"finance_topic": "报销"}),
+        (TicketCategory.ADMIN, "会议室门禁工位申请", {"request_type": "工位"}),
+        (TicketCategory.PRODUCT, "产品页面订单功能问题", {"product_name": "订单页", "impact": "无法下单"}),
+        (TicketCategory.OTHER, "我需要一些帮助", {}),
+    ],
+)
+def test_out_of_scope_category_routes_to_service_desk_manual_queue(category, text, required):
+    """非 IT 大类（finance/admin/product/other）命中后统一转服务台人工队列。
+
+    不得自动派至 team-finance / team-admin / team-product / 业务团队。
+    """
+    classifier = FixedClassifier(category, needs_review=False, confidence=0.9)
+    graph = build_helpdesk_intake_graph(classifier=classifier, checkpointer=MemorySaver())
+    fields = {
+        "title": "咨询",
+        "description": text,
+        "requester_id": "customer-1",
+        **required,
+    }
+
+    result = invoke(graph, base_input(text=text, fields=fields), config())
+
+    assert result["dispatch_team_id"] == "team-service-desk"
+    assert "out_of_scope_manual_review" in result["dispatch_reason_codes"]
+    assert result["dispatch_team_id"] != "team-finance"
+    assert result["dispatch_team_id"] != "team-admin"
+    assert result["dispatch_team_id"] != "team-product"
+
+
+def test_it_category_still_auto_dispatches_to_it_team():
+    """V1 范围内（IT）仍按分类正常自动派单，不追加越界原因码。"""
+    classifier = FixedClassifier(TicketCategory.IT)
+    graph = build_helpdesk_intake_graph(classifier=classifier, checkpointer=MemorySaver())
+
+    result = invoke(graph, base_input(text="VPN 无法连接"), config())
+
+    assert result["dispatch_team_id"] == "team-it"
+    assert "out_of_scope_manual_review" not in result["dispatch_reason_codes"]
+
+
+# ========== Day 4：身份/部门/资产上下文注入与缺失闭锁 ==========
+
+
+class FakeRagService:
+    def __init__(self):
+        self.principals = []
+
+    async def answer(self, principal, question, *, category, risk_level):
+        self.principals.append(principal)
+        return SimpleNamespace(
+            answer="建议先重启 VPN 客户端",
+            citations=(),
+            auto_reply=True,
+            reason_codes=("gate_passed",),
+        )
+
+
+def test_compose_answer_receives_identity_departments_from_config():
+    """受理图必须把 config 注入的 user/departments 传给 RAG 主体，而非空部门集。"""
+    rag = FakeRagService()
+    classifier = FixedClassifier(TicketCategory.IT, subcategory="vpn")
+    graph = build_helpdesk_intake_graph(
+        classifier=classifier, checkpointer=MemorySaver(), rag_service=rag
+    )
+    run_config = config()
+    run_config["configurable"]["tenant_id"] = "tenant-a"
+    run_config["configurable"]["user_id"] = "customer-1"
+    run_config["configurable"]["departments"] = ["it"]
+
+    result = invoke(graph, base_input(), run_config)
+
+    assert rag.principals[0].tenant_id == "tenant-a"
+    assert rag.principals[0].departments == frozenset({"it"})
+    assert rag.principals[0].internal is False
+    assert result["answer_status"] == "draft_ready"
+    assert result["auto_reply"] is True
+
+
+def test_missing_identity_tightens_permissions_and_hands_off():
+    """无身份时不得默认全库检索权限：空部门 + internal=False + 转人工。"""
+    rag = FakeRagService()
+    classifier = FixedClassifier(TicketCategory.IT, subcategory="vpn")
+    graph = build_helpdesk_intake_graph(
+        classifier=classifier, checkpointer=MemorySaver(), rag_service=rag
+    )
+    run_config = config()
+    run_config["configurable"]["tenant_id"] = "tenant-a"
+    # 故意不注入 user_id（身份缺失）
+
+    result = invoke(graph, base_input(), run_config)
+
+    assert rag.principals[0].tenant_id == "tenant-a"
+    assert rag.principals[0].departments == frozenset()
+    assert rag.principals[0].internal is False
+    assert result["answer_status"] == "handoff_high_risk"
+    assert result["auto_reply"] is False
+    assert "identity_missing" in result["answer_reason_codes"]

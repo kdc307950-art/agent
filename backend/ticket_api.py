@@ -521,9 +521,13 @@ async def start_ticket_intake(
             operation_id=payload.operation_id,
             command_type="intake",
             expected_version=ticket.version,
-            checkpoint_thread_id=_intake_config(principal.tenant_id, ticket_id)["configurable"][
-                "thread_id"
-            ],
+            checkpoint_thread_id=_intake_config(
+                principal.tenant_id,
+                ticket_id,
+                user_id=principal.user_id,
+                departments=principal.departments,
+                asset_id=getattr(ticket, "asset_id", None),
+            )["configurable"]["thread_id"],
         )
         if run["status"] == "committed":
             # 并发下另一个请求已完成同一 operation：幂等返回
@@ -545,7 +549,13 @@ async def start_ticket_intake(
         else:
             if ticket.status not in {TicketStatus.NEW, TicketStatus.INTAKING}:
                 raise InvalidTicketTransition(f"状态 {ticket.status} 不能启动受理")
-            config = _intake_config(principal.tenant_id, ticket_id)
+            config = _intake_config(
+                principal.tenant_id,
+                ticket_id,
+                user_id=principal.user_id,
+                departments=principal.departments,
+                asset_id=getattr(ticket, "asset_id", None),
+            )
             # 首次受理：运行 LangGraph 受理图（分类 + 澄清 + 决策）
             result = await runtime.intake_graph.ainvoke(
                 {
@@ -672,6 +682,9 @@ async def resume_ticket_intake(
             expected_version=ticket.version,
             scopes=set(principal.scopes),
             channel=getattr(ticket, "channel", "web"),
+            user_id=principal.user_id,
+            departments=principal.departments,
+            asset_id=getattr(ticket, "asset_id", None),
         )
         return {
             "ticket": outcome["ticket"],

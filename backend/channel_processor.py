@@ -54,6 +54,23 @@ def _first_interrupt_id(snapshot: object) -> str | None:
     return None
 
 
+def _event_identity(event: NormalizedChannelEvent) -> tuple[str, list[str], str | None]:
+    """从渠道入站事件中提取身份上下文（Day 4）。
+
+    departments / asset_id 只读取服务端登记的 payload（渠道适配器写入），
+    不接受请求体自由提交；缺失时返回空部门/无资产，由受理图收紧权限。
+    """
+    payload = event.payload or {}
+    raw_departments = payload.get("departments") or []
+    departments = (
+        [str(item) for item in raw_departments if item]
+        if isinstance(raw_departments, (list, tuple, set, frozenset))
+        else []
+    )
+    asset_id = payload.get("asset_id")
+    return event.requester_id, departments, str(asset_id) if asset_id else None
+
+
 async def _resume_from_customer_reply(
     runtime, event: NormalizedChannelEvent, pending: dict, *, actor_id: str
 ) -> dict | None:
@@ -90,7 +107,14 @@ async def _resume_from_customer_reply(
             "ticket": ticket,
         }
 
-    config = intake_config(tenant_id, ticket_id)
+    requester_id, departments, asset_id = _event_identity(event)
+    config = intake_config(
+        tenant_id,
+        ticket_id,
+        user_id=requester_id,
+        departments=departments,
+        asset_id=asset_id,
+    )
     snapshot = await runtime.intake_graph.aget_state(config)
     state_fields = dict((getattr(snapshot, "values", None) or {}).get("fields") or {})
     merged = {**state_fields, **fields}
@@ -116,6 +140,9 @@ async def _resume_from_customer_reply(
         expected_version=ticket.version,
         scopes={"ticket:customer", "ticket:system"},
         channel=event.channel,
+        user_id=requester_id,
+        departments=departments,
+        asset_id=asset_id,
     )
     await runtime.tickets.mark_pending_intake_resumed(tenant_id, ticket_id)
     # 状态流水在 transition 之后追加，避免与状态事件的 ticket_version 唯一约束冲突。
@@ -197,7 +224,14 @@ async def process_inbound_event(runtime, event: NormalizedChannelEvent, *, actor
     created = existing["ticket_id"] is None
 
     operation_id = f"channel:{event.external_event_id}"
-    config = intake_config(event.tenant_id, ticket.ticket_id)
+    requester_id, departments, asset_id = _event_identity(event)
+    config = intake_config(
+        event.tenant_id,
+        ticket.ticket_id,
+        user_id=requester_id,
+        departments=departments,
+        asset_id=asset_id,
+    )
     run = await runtime.tickets.start_workflow_operation(
         tenant_id=event.tenant_id,
         ticket_id=ticket.ticket_id,

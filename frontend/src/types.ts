@@ -69,11 +69,25 @@ export interface TicketMessage {
   content: string
 }
 
+export interface IntakeInfo {
+  category?: string | null
+  subcategory?: string | null
+  missing_fields?: string[]
+  dispatch_reason_codes?: string[]
+  answer_status?: string | null
+  answer_reason_codes?: string[]
+  auto_reply?: boolean | null
+  identity_missing?: boolean
+  risk_level?: string | null
+}
+
 export interface TicketOverview {
   sla?: SlaInfo | null
   citations?: Citation[]
   survey?: SurveyInfo | null
   messages?: TicketMessage[]
+  intake?: IntakeInfo | null
+  handoff_reasons?: string[]
 }
 
 /** 工单受理图中断时前端需要展示的信息（resume 时原样回传 interrupt_id）。 */

@@ -2,6 +2,7 @@
 
 > 适用环境：`infra/compose.demo.yml` 一键启动 + `backend.seed_demo` 种子数据。
 > 前置：`DEEPSEEK_API_KEY` 已配置（自动分类 / 知识建议依赖模型；不配置时流程可走到派单，知识建议为空并转人工）。
+> 产品边界（目标客户 / 三类工单 / 主链路 / 非目标 / 人工介入规则）见 [docs/product/v1-scope.md](docs/product/v1-scope.md)。
 
 ## 演示账号
 

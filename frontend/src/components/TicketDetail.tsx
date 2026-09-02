@@ -56,6 +56,25 @@ const actionByStatus: Partial<Record<TicketStatus, TransitionAction>> = {
   resolved: { action: 'close', actor_type: 'agent', label: '关闭工单' },
 }
 
+// 人工接管/门禁原因码 → 人类可读文案（V1 只让非技术面试官看懂）
+const handoffReasonLabels: Record<string, string> = {
+  out_of_scope_manual_review: '非 IT 范围，转人工队列',
+  unknown_category: '无法识别分类',
+  classification_review: '分类需人工复核',
+  clarification_exhausted: '字段追问次数已耗尽',
+  sensitive_operation: '敏感操作',
+  high_impact: '高影响范围',
+  approval_required: '需审批',
+  no_retrieval_hits: '无知识依据',
+  missing_citations: '无引用支撑',
+  invalid_citation: '引用非法',
+  insufficient_cross_retriever_support: '证据不足',
+  sensitive_or_high_risk: '高风险场景',
+  generator_abstained: '模型放弃作答',
+  identity_missing: '身份缺失',
+  gate_passed: '门禁通过',
+}
+
 // 组件 props：全部数据与回调均由父组件 QueueView 注入
 interface TicketDetailProps {
   ticket: Ticket | null
@@ -158,11 +177,14 @@ export default function TicketDetail({
     setClarificationFields({})
   }
 
-  // 从 overview 中解构可选展示数据（SLA / 知识引用 / 回访 / 消息流）
+  // 从 overview 中解构可选展示数据（SLA / 知识引用 / 回访 / 消息流 / 人工接管原因）
   const sla = overview?.sla
   const citations = overview?.citations ?? []
   const survey = overview?.survey
   const messages = overview?.messages ?? []
+  const handoffReasons = overview?.handoff_reasons ?? []
+  const answerStatus = overview?.intake?.answer_status
+  const intakeMissingFields = overview?.intake?.missing_fields ?? []
 
   return (
     <section className="detail detail-visible">
@@ -337,6 +359,25 @@ export default function TicketDetail({
               <span>解决时限 {formatTime(sla.resolution_due_at)}</span>
               <span>{sla.paused_at ? '已暂停' : '计时中'}</span>
               <span>{sla.first_responded_at ? '已首次响应' : '尚未首响'}</span>
+            </div>
+          </section>
+        )}
+
+        {/* AI 建议状态与人工接管原因：只展示可解释的门禁结果，不依赖模型文本 */}
+        {(answerStatus || handoffReasons.length > 0 || intakeMissingFields.length > 0) && (
+          <section className="detail-section">
+            <h3>AI 建议状态</h3>
+            <div className="ticket-meta">
+              <span>状态：{answerStatus || '未生成'}</span>
+              {intakeMissingFields.length > 0 && (
+                <span>待补全字段：{intakeMissingFields.join('、')}</span>
+              )}
+              {handoffReasons.length > 0 && (
+                <span>
+                  人工接管原因：
+                  {handoffReasons.map((reason) => handoffReasonLabels[reason] || reason).join('；')}
+                </span>
+              )}
             </div>
           </section>
         )}

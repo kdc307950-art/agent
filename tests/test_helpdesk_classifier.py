@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from src.my_agent.helpdesk import KeywordTicketClassifier, TicketCategory
 
 
@@ -47,3 +49,20 @@ def test_all_it_subcategories_are_recognized():
         result = classify(text)
         assert result.category == TicketCategory.IT, text
         assert result.subcategory == expected, text
+
+
+@pytest.mark.parametrize(
+    ("expected", "text"),
+    [
+        (TicketCategory.FINANCE, "报销发票付款流程咨询"),
+        (TicketCategory.ADMIN, "会议室门禁工位申请"),
+        (TicketCategory.PRODUCT, "产品页面订单功能问题"),
+        (TicketCategory.OTHER, "我需要一些帮助"),
+    ],
+)
+def test_out_of_scope_categories_are_recognized_but_flagged_for_manual_review(expected, text):
+    """越界大类仍可被可解释分类器识别（供人工队列使用），但不纳入自动处置。"""
+    result = classify(text)
+    assert result.category == expected
+    if expected != TicketCategory.OTHER:
+        assert result.confidence >= 0.5

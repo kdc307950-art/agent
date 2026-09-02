@@ -6,6 +6,8 @@
 
 技术底座：确定性工单状态机 + LangGraph 受理/补全/分类/派单图 + Agentic RAG 引用门禁，运行在多租户隔离、PostgreSQL Checkpoint、审计、Redis 限流、预算和 Outbox 之上。
 
+**V1 产品边界（一句话）**：面向中小企业内部 IT 服务台，员工从 Web / 企业微信报 VPN、账号/权限、网络故障，系统自动分类、补字段、加载 SLA、派单并给出带引用的建议，人工确认后解决关闭。完整范围见 [docs/product/v1-scope.md](docs/product/v1-scope.md)：目标客户、三类工单、主链路、非目标功能与人工介入规则；验证指标与未验证边界见 [docs/evaluation/v1-report.md](docs/evaluation/v1-report.md)。
+
 > `legacy-demo/` 目录下的 `main.py` / `main_supervisor.py` / `main_workflow.py` 与 `workflows/legacy-demo.json` 是早期通用聊天/天气/计算 Demo，统一标记为 **legacy-demo**，仅供试跑图结构，与生产工单链路无关；产品定位与入口见下文。
 
 ## 5 分钟跑起来
@@ -415,7 +417,7 @@ uv run pytest tests -q -m "not live_e2e"
 
 命令行的环境变量优先于 `.env`（`conftest.py` 的 `load_dotenv()` 不覆盖已存在的变量），所以不必改本地配置。
 
-CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。本次无外部依赖本地回归为 `306 passed, 61 skipped`（跳过 PostgreSQL/Redis 集成与 live_e2e）；启用集成栈后应执行同一命令验证数据库租约、ACL 与迁移语义。真实 HTTP 工单 E2E 验证了创建、缺字段中断、补充恢复、分类派单、处理、解决、回访和关闭，最终事件版本连续到 v9。
+CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。本次无外部依赖本地回归为 `324 passed, 62 skipped`（跳过 PostgreSQL/Redis 集成与 live_e2e）；启用集成栈后应执行同一命令验证数据库租约、ACL 与迁移语义。真实 HTTP 工单 E2E 验证了创建、缺字段中断、补充恢复、分类派单、处理、解决、回访和关闭，最终事件版本连续到 v9；V1 固定 90 条工单评测集（`backend/knowledge/ticket_eval_cases.py`）静态模式全部门禁达标（见 [docs/evaluation/v1-report.md](docs/evaluation/v1-report.md)）。
 
 真实 DeepSeek E2E 默认不运行，以免普通 CI 产生费用。手动 workflow `Live Agent E2E` 需要受保护环境中的 `DEEPSEEK_API_KEY`、`LIVE_AGENT_TOKEN` 和 `TENANT_TOKEN_SECRET`，覆盖文本 SSE、工具调用和同线程续聊。
 

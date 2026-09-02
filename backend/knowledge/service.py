@@ -116,6 +116,41 @@ class AnswerGatePolicy:
             raise ValueError("minimum_hybrid_hits 不能为负数")
 
 
+# AI 建议的三种统一结果（Day 5「有证据才建议」门禁的可解释状态）
+ANSWER_STATUS_DRAFT_READY = "draft_ready"
+ANSWER_STATUS_HANDOFF_NO_EVIDENCE = "handoff_no_evidence"
+ANSWER_STATUS_HANDOFF_HIGH_RISK = "handoff_high_risk"
+
+# 归因分组：哪些原因 -> 高风险管理，哪些 -> 证据不足
+_HIGH_RISK_REASONS = frozenset({"sensitive_or_high_risk", "generator_abstained"})
+_NO_EVIDENCE_REASONS = frozenset(
+    {
+        "no_retrieval_hits",
+        "missing_citations",
+        "invalid_citation",
+        "insufficient_cross_retriever_support",
+    }
+)
+
+
+def answer_status(reason_codes: Sequence[str], *, auto_reply: bool) -> str:
+    """把门控原因收敛为三种可展示状态。
+
+    - draft_ready：自动回复放行（引用与证据均满足；极端场景仍建议人工复核）
+    - handoff_high_risk：敏感/高风险原因触发，必须人工确认
+    - handoff_no_evidence：无检索命中 / 引用缺失 / 单路证据不足，无证据不自动发送
+    """
+    if auto_reply:
+        return ANSWER_STATUS_DRAFT_READY
+    codes = set(reason_codes)
+    if codes & _HIGH_RISK_REASONS:
+        return ANSWER_STATUS_HANDOFF_HIGH_RISK
+    if codes & _NO_EVIDENCE_REASONS:
+        return ANSWER_STATUS_HANDOFF_NO_EVIDENCE
+    # 兜底：任何未识别的门控原因一律人工，绝不隐式放行
+    return ANSWER_STATUS_HANDOFF_NO_EVIDENCE
+
+
 class NullVectorRetriever:
     """空向量检索器：总是返回空结果。
 

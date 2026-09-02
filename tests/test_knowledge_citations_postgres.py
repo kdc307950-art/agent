@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -118,5 +119,58 @@ def test_verify_citations_respects_department_acl(monkeypatch):
             it_dept = RetrievalPrincipal(tenant_id=tenant, departments=frozenset({"it"}), internal=True)
             allowed = await repo.verify_citations(it_dept, [("restricted-doc", 1, "c1")])
             assert [e.citation_key for e in allowed] == [("restricted-doc", 1, "c1")]
+
+    asyncio.run(run())
+
+
+def test_verify_citations_rejects_empty_expired_and_wrong_department(monkeypatch):
+    """Day 5：无引用、过期文档、跨部门文档一律不得作为证据。"""
+    tenant = f"tenant-{uuid4().hex}"
+
+    async def run():
+        monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
+        await setup_postgres()
+        from backend.audit import audit_context
+
+        async with audit_context(DATABASE_URL) as audit:
+            repo = KnowledgeRepository(audit.pool)
+            await repo.put_document(
+                tenant,
+                KnowledgeDocumentInput(
+                    document_id="expired-doc",
+                    version=1,
+                    title="已过期文档",
+                    status="published",
+                    visibility="internal",
+                    valid_until=datetime.now(UTC) - timedelta(days=1),
+                ),
+                [KnowledgeChunkInput(chunk_id="c1", ordinal=0, content="过期内容")],
+            )
+            await repo.put_document(
+                tenant,
+                KnowledgeDocumentInput(
+                    document_id="finance-only-doc",
+                    version=1,
+                    title="财务部门文档",
+                    status="published",
+                    visibility="restricted",
+                    allowed_departments=("finance",),
+                ),
+                [KnowledgeChunkInput(chunk_id="c1", ordinal=0, content="财务内容")],
+            )
+            it_principal = RetrievalPrincipal(
+                tenant_id=tenant, departments=frozenset({"it"}), internal=True
+            )
+
+            # 无引用：空列表直接拒绝
+            assert await repo.verify_citations(it_principal, []) == []
+
+            # 过期文档：有效期窗口之外拒绝
+            assert await repo.verify_citations(it_principal, [("expired-doc", 1, "c1")]) == []
+
+            # 跨部门文档：it 部门不可引用 finance-only 文档
+            assert (
+                await repo.verify_citations(it_principal, [("finance-only-doc", 1, "c1")]) == []
+            )
 
     asyncio.run(run())
