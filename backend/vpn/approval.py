@@ -54,7 +54,12 @@ class ReissueAction(StrEnum):
 
 
 class ApprovalStatus(StrEnum):
-    """一次审批式执行动作的生命周期状态（区别于工单 TicketStatus，属 approval 域）。"""
+    """一次审批式执行动作的生命周期状态（区别于工单 TicketStatus，属 approval 域）。
+
+    可恢复状态模型（阶段五）：在既有终态之外，增补「执行中 / 结果未知 / 需对账」三态，
+    用于把「外部已下发但本地未落库」「外部超时结果未知」这类不一致状态显式建模，
+    交给补偿对账任务收敛，而非简单吞掉异常后误判为失败。
+    """
 
     PENDING = "pending"      # 已发起审批，等待审批人
     APPROVED = "approved"    # 审批通过
@@ -63,6 +68,9 @@ class ApprovalStatus(StrEnum):
     FAILED = "failed"        # 前置校验失败或执行失败（可重试/人工接管）
     DELIVERED = "delivered"  # 配置已下发
     CONFIRMED = "confirmed"  # 下发并确认
+    EXECUTING = "executing"  # 正在执行（执行开始后、拿到外部结论前）
+    EXECUTION_UNKNOWN = "execution_unknown"  # 外部结果未知（超时/无明确应答），需对账
+    RECONCILIATION_REQUIRED = "reconciliation_required"  # 外部成功但本地落库失败，需对账
 
 
 # ===========================================================================
@@ -305,10 +313,14 @@ class ReissueRegistry:
     生产环境应把该表映射到 workflow_operation（operation_id 幂等 + committed 终态）
     与 audit 事件（审计留痕）；此处提供支持单元测试的内存版，保证「同键重复
     不重复执行」「未 APPROVED 不执行」两个硬验收在纯函数层可验证。
+
+    阶段五：增补 request 快照与 scan_reconcilable()，供补偿对账扫描
+    execution_unknown / reconciliation_required 键而无需外部入参（供 worker 调用）。
     """
 
     _status: dict[str, ApprovalStatus] = field(default_factory=dict)
     _result: dict[str, ReissueExecutionResult] = field(default_factory=dict)
+    _request: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def get_status(self, idempotency_key: str) -> ApprovalStatus | None:
         return self._status.get(idempotency_key)
@@ -322,6 +334,20 @@ class ReissueRegistry:
     def set_result(self, idempotency_key: str, result: ReissueExecutionResult) -> None:
         self._result[idempotency_key] = result
         self._status[idempotency_key] = result.status
+
+    def set_request(self, idempotency_key: str, request: ReissueActionRequest) -> None:
+        self._request[idempotency_key] = request.model_dump(mode="json")
+
+    def get_request(self, idempotency_key: str) -> dict[str, Any] | None:
+        return self._request.get(idempotency_key)
+
+    def scan_reconcilable(self) -> list[str]:
+        """返回需要补偿对账的幂等键（execution_unknown / reconciliation_required）。"""
+        return [
+            key
+            for key, status in self._status.items()
+            if status in (ApprovalStatus.EXECUTION_UNKNOWN, ApprovalStatus.RECONCILIATION_REQUIRED)
+        ]
 
 
 # 模块级默认登记表（测试隔离可注入独立实例）
@@ -414,6 +440,8 @@ async def start_reissue_approval(
         expected_version=expected_version,
         reason_codes=list(reason_codes or []),
     )
+    # 阶段五：登记请求快照，供补偿对账扫描时重建上下文（无需外部入参）。
+    registry.set_request(key, request)
 
     # 幂等：同键已交付/确认 → 直接返回既有结果，不重复发起/执行
     existing = registry.get_result(key)
@@ -582,6 +610,55 @@ async def cancel_reissue(
     )
 
 
+# ===========================================================================
+# 异常分类（阶段五）：把「外部结果未知」与「明确失败」区分开，不吞掉异常。
+# ===========================================================================
+
+# 外部结果「歧义/未知」错误码集合（超时/无明确应答等）——这类不应误判为失败，而应收敛对账。
+_AMBIGUOUS_ERROR_CODES: frozenset[str] = frozenset({
+    "timeout", "external_timeout", "execution_timeout", "external_result_unknown",
+    "unknown", "vendor_timeout", "timeout_unknown",
+})
+
+# 需要补偿对账的状态。
+_RECONCILABLE_STATES = (
+    ApprovalStatus.EXECUTION_UNKNOWN,
+    ApprovalStatus.RECONCILIATION_REQUIRED,
+)
+
+
+def _is_ambiguous_error_code(error_code: Any) -> bool:
+    return isinstance(error_code, str) and error_code.lower() in _AMBIGUOUS_ERROR_CODES
+
+
+def _is_timeout_exception(exc: BaseException) -> bool:
+    """超时类异常 → 外部结果未知（可能已下发），不误判为失败。"""
+    if isinstance(exc, TimeoutError):
+        return True
+    name = type(exc).__name__.lower()
+    return "timeout" in name or name in {"asyncio.timeout_error", "timeouterror"}
+
+
+def classify_reissue_outcome(outcome: dict[str, Any]) -> tuple[ApprovalStatus, str | None]:
+    """把外部 reissue 结果归类为终态（区分异常类型，不吞掉异常）。
+
+    规则：
+        - delivered/confirmed            → CONFIRMED / DELIVERED；
+        - error_code 为歧义/未知类       → EXECUTION_UNKNOWN（需对账，不误判为失败）；
+        - 其余（业务拒绝/权限失败/版本冲突/外部明确失败） → FAILED + error_code。
+    返回 (status, error_code)。
+    """
+    delivered = bool(outcome.get("delivered", False))
+    confirmed = bool(outcome.get("confirmed", delivered))
+    if delivered or confirmed:
+        return (ApprovalStatus.CONFIRMED if confirmed else ApprovalStatus.DELIVERED), None
+    error_code = outcome.get("error_code")
+    if _is_ambiguous_error_code(error_code):
+        return ApprovalStatus.EXECUTION_UNKNOWN, str(error_code)
+    code = str(error_code) if error_code else "reissue_failed"
+    return ApprovalStatus.FAILED, code
+
+
 async def execute_approved_reissue(
     *,
     request: ReissueActionRequest,
@@ -658,9 +735,31 @@ async def execute_approved_reissue(
         status="running",
         payload={**base_payload},
     )
+    # 阶段五：进入 EXECUTING（执行中），并区分「外部结果未知」与「明确失败」。
+    registry.set_status(key, ApprovalStatus.EXECUTING)
+    registry.set_request(key, request)
     try:
         outcome = await runner(runtime, user_id=request.user_id, idempotency_key=key, target_version=request.client_version)
     except Exception as exc:  # noqa: BLE001
+        if _is_timeout_exception(exc):
+            # 外部超时：结果未知（可能已下发），不误判为失败 → 转 execution_unknown，交对账。
+            logger.warning("reissue 执行结果未知 key=%s: %s", key, type(exc).__name__)
+            registry.set_status(key, ApprovalStatus.EXECUTION_UNKNOWN)
+            await _audit(
+                runtime,
+                run_context,
+                "vpn_reissue_execution_unknown",
+                status="execution_unknown",
+                payload={**base_payload, "error_type": type(exc).__name__, "reason": "external_timeout_unknown"},
+            )
+            return ReissueExecutionResult(
+                ok=False,
+                status=ApprovalStatus.EXECUTION_UNKNOWN,
+                idempotency_key=key,
+                reason="外部结果未知（可能已下发），待补偿对账",
+                error_code="execution_unknown",
+                detail={"error_type": type(exc).__name__},
+            )
         logger.warning("reissue 执行失败 key=%s: %s", key, type(exc).__name__)
         registry.set_status(key, ApprovalStatus.FAILED)
         await _audit(
@@ -681,17 +780,36 @@ async def execute_approved_reissue(
 
     if not isinstance(outcome, dict):
         outcome = {}
+    outcome_status, error_code = classify_reissue_outcome(outcome)
     delivered = bool(outcome.get("delivered", False))
     confirmed = bool(outcome.get("confirmed", delivered))
-    error_code = outcome.get("error_code")
-    if error_code or not delivered:
+    if outcome_status == ApprovalStatus.EXECUTION_UNKNOWN:
+        # 外部结果未知（歧义错误码）→ 转 execution_unknown，交对账。
+        registry.set_status(key, ApprovalStatus.EXECUTION_UNKNOWN)
+        await _audit(
+            runtime,
+            run_context,
+            "vpn_reissue_execution_unknown",
+            status="execution_unknown",
+            payload={**base_payload, "result": outcome, "reason": outcome.get("reason") or "external_result_unknown"},
+        )
+        return ReissueExecutionResult(
+            ok=False,
+            status=ApprovalStatus.EXECUTION_UNKNOWN,
+            idempotency_key=key,
+            reason=outcome.get("reason") or "外部结果未知，待补偿对账",
+            error_code=str(error_code) if error_code else "execution_unknown",
+            detail=outcome,
+        )
+    if outcome_status == ApprovalStatus.FAILED:
+        # 明确失败（业务拒绝/权限失败/版本冲突/外部失败）→ FAILED。
         registry.set_status(key, ApprovalStatus.FAILED)
         await _audit(
             runtime,
             run_context,
             "vpn_reissue_failed",
             status="failed",
-            payload={**base_payload, "result": outcome, "reason": outcome.get("reason") or "reissue_failed"},
+            payload={**base_payload, "result": outcome, "reason": outcome.get("reason") or "reissue_failed", "error_code": error_code},
         )
         return ReissueExecutionResult(
             ok=False,
@@ -702,7 +820,7 @@ async def execute_approved_reissue(
             detail=outcome,
         )
 
-    final_status = ApprovalStatus.CONFIRMED if confirmed else ApprovalStatus.DELIVERED
+    final_status = outcome_status  # CONFIRMED 或 DELIVERED
     result = ReissueExecutionResult(
         ok=True,
         status=final_status,

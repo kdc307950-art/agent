@@ -39,9 +39,12 @@ from .approval import (
     ReissueActionRequest,
     ReissueExecutionResult,
     ReissueRegistry,
+    _audit,
+    _request_id,
     approve_reissue,
     build_reissue_idempotency_key,
     cancel_reissue,
+    classify_reissue_outcome,
     execute_approved_reissue,
     reject_reissue,
     start_reissue_approval,
@@ -195,6 +198,144 @@ class VpnReissueService:
         await self._post_execute(runtime, run_context, request, result)
         return result
 
+    # ---- 补偿对账（阶段五：收敛 execution_unknown / reconciliation_required） ----
+
+    async def reconcile(
+        self,
+        *,
+        idempotency_key: str,
+        runtime: Any,
+        run_context: Any,
+    ) -> dict[str, Any]:
+        """补偿对账：对外部结果未知/本地落库失败的执行，重查外部真实结果并收敛到定态。
+
+        流程（供 worker 逐键调用；无需外部入参，请求上下文取自 registry 快照）：
+            1. 仅对 EXECUTION_UNKNOWN / RECONCILIATION_REQUIRED 进行对账；
+            2. 幂等重放外部 reissue_config（同键幂等，返回权威真实结果）；
+            3. 分类真实结果：
+               - delivered/confirmed       → 补写 workflow_operation committed + 工单迁移(APPROVE)
+                                            + 置 CONFIRMED/DELIVERED + 审计 vpn_reissue_reconciled；
+               - 外部明确未下发             → 补写 workflow_operation failed + 置 FAILED + 审计；
+               - 仍未知/再次超时           → 保持 EXECUTION_UNKNOWN + 审计（下轮再对账）。
+        返回：{"idempotency_key", "reconciled", "status", "external_result"}。
+        """
+        registry = self.registry
+        current = registry.get_status(idempotency_key)
+        if current not in (ApprovalStatus.EXECUTION_UNKNOWN, ApprovalStatus.RECONCILIATION_REQUIRED):
+            return {
+                "idempotency_key": idempotency_key,
+                "reconciled": False,
+                "status": current.value if current else None,
+                "reason": "not_reconcilable",
+            }
+        req_dict = registry.get_request(idempotency_key)
+        if not req_dict:
+            return {
+                "idempotency_key": idempotency_key,
+                "reconciled": False,
+                "status": current.value,
+                "reason": "missing_request_snapshot",
+            }
+        request = ReissueActionRequest(**req_dict)
+        outcome = await self._query_external(runtime, request)
+        outcome_status, error_code = classify_reissue_outcome(outcome)
+        base = {**_request_id(request), "external_result": outcome}
+
+        if outcome_status in (ApprovalStatus.CONFIRMED, ApprovalStatus.DELIVERED):
+            # 外部已成功：补写 committed + 工单迁移 + 终态 + 审计（收敛，不再依赖单次请求完成）。
+            result = ReissueExecutionResult(
+                ok=True,
+                status=outcome_status,
+                idempotency_key=idempotency_key,
+                delivered=True,
+                confirmed=(outcome_status == ApprovalStatus.CONFIRMED),
+                detail=outcome,
+            )
+            registry.set_result(idempotency_key, result)
+            await self._mark_operation_committed(runtime, request, result)
+            await self._apply_ticket_transition(runtime, run_context, request, TicketAction.APPROVE, ActorType.APPROVER)
+            await _audit(
+                runtime,
+                run_context,
+                "vpn_reissue_reconciled",
+                status=outcome_status.value,
+                payload={**base, "reason": "external_success_reconciled", "result": result.model_dump(mode="json")},
+            )
+            return {
+                "idempotency_key": idempotency_key,
+                "reconciled": True,
+                "status": outcome_status.value,
+                "external_result": outcome,
+            }
+
+        if outcome_status == ApprovalStatus.EXECUTION_UNKNOWN:
+            # 仍未知：保持 execution_unknown，审计后下轮再对账。
+            await _audit(
+                runtime,
+                run_context,
+                "vpn_reissue_reconciliation_pending",
+                status="execution_unknown",
+                payload={**base, "reason": "external_still_unknown"},
+            )
+            return {
+                "idempotency_key": idempotency_key,
+                "reconciled": False,
+                "status": ApprovalStatus.EXECUTION_UNKNOWN.value,
+                "external_result": outcome,
+            }
+
+        # 外部明确未下发：补写 failed + 工单回可接管 + 审计。
+        registry.set_status(idempotency_key, ApprovalStatus.FAILED)
+        await self._mark_operation_failed(
+            runtime, run_context, request, error_code or "reissue_failed"
+        )
+        await _audit(
+            runtime,
+            run_context,
+            "vpn_reissue_failed",
+            status="failed",
+            payload={**base, "reason": "external_definitely_not_delivered", "error_code": error_code},
+        )
+        return {
+            "idempotency_key": idempotency_key,
+            "reconciled": True,
+            "status": ApprovalStatus.FAILED.value,
+            "external_result": outcome,
+        }
+
+    async def reconcile_all(self, *, runtime: Any, run_context: Any) -> list[dict[str, Any]]:
+        """扫描所有需对账键并逐一补偿（供后台 worker / 定时任务入口调用）。"""
+        results: list[dict[str, Any]] = []
+        for key in self.registry.scan_reconcilable():
+            results.append(
+                await self.reconcile(idempotency_key=key, runtime=runtime, run_context=run_context)
+            )
+        return results
+
+    async def _query_external(self, runtime: Any, request: ReissueActionRequest) -> dict[str, Any]:
+        """幂等重查外部真实下发结果（同键幂等，无副作用）。"""
+        adapter = getattr(runtime, "vpn_adapter", None)
+        if adapter is None or not hasattr(adapter, "reissue_config"):
+            return {
+                "delivered": False,
+                "confirmed": False,
+                "error_code": "external_result_unknown",
+                "reason": "adapter_unavailable",
+            }
+        try:
+            return await adapter.reissue_config(
+                user_id=request.user_id,
+                idempotency_key=request.idempotency_key,
+                target_version=request.client_version,
+            )
+        except Exception as exc:  # noqa: BLE001  重查异常 → 仍未知
+            return {
+                "delivered": False,
+                "confirmed": False,
+                "error_code": "execution_unknown",
+                "reason": type(exc).__name__,
+            }
+
     # ---- 内部：workflow_operation 终态 + 工单状态联动 ----
 
     async def _record_operation_started(
@@ -242,10 +383,11 @@ class VpnReissueService:
         runtime: Any,
         request: ReissueActionRequest,
         result: ReissueExecutionResult,
-    ) -> None:
+    ) -> bool:
+        """落 workflow_operation committed 终态；返回是否成功（阶段五：本地提交失败需对账）。"""
         tickets = getattr(runtime, "tickets", None)
         if tickets is None or not hasattr(tickets, "mark_workflow_operation_committed"):
-            return
+            return False
         try:
             await tickets.mark_workflow_operation_committed(
                 tenant_id=request.tenant_id,
@@ -253,8 +395,10 @@ class VpnReissueService:
                 operation_id=request.idempotency_key,
                 result_hash=json.dumps(result.model_dump(mode="json"), ensure_ascii=False, default=str),
             )
+            return True
         except Exception as exc:  # noqa: BLE001
             logger.warning("reissue 标记 workflow_operation committed 失败 key=%s: %s", request.idempotency_key, type(exc).__name__)
+            return False
 
     async def _post_execute(
         self,
@@ -263,12 +407,14 @@ class VpnReissueService:
         request: ReissueActionRequest,
         result: ReissueExecutionResult,
     ) -> None:
-        """审批执行后的收尾。
+        """审批执行后的收尾（可恢复状态模型，阶段五）。
 
         只负责动作终态 + 审计，不再迁移工单状态机：发起时已把工单迁到 AWAITING_APPROVAL，
         「审批通过/拒绝/取消」的 domain 状态迁移由 /chat/resume 等外部审批通道负责
-        （AWAITING_APPROVAL→APPROVE/REJECT/CANCEL，均合法）。失败时仅把动作置 failed
-        终态（registry 已 FAILED），工单仍停留在 AWAITING_APPROVAL（可接管/可仲裁）。
+        （AWAITING_APPROVAL→APPROVE/REJECT/CANCEL，均合法）。
+
+        关键差异（取代「异常记录后继续」）：执行**成功**但本地 workflow_operation 落库失败时，
+        不再简单吞掉异常误判为成功，而是转 **RECONCILIATION_REQUIRED** 交由补偿对账收敛。
         """
         if not result.ok:
             await self._mark_operation_failed(
@@ -279,7 +425,21 @@ class VpnReissueService:
             )
             return
         # #1 C1：成功也落 workflow_operation committed 终态（机器可读终态 + 持久幂等锚点）。
-        await self._mark_operation_committed(runtime, request, result)
+        committed = await self._mark_operation_committed(runtime, request, result)
+        if not committed:
+            # 外部已下发但本地落库失败 → 保持可恢复状态，交对账补写（不再吞错）。
+            self.registry.set_status(request.idempotency_key, ApprovalStatus.RECONCILIATION_REQUIRED)
+            await _audit(
+                runtime,
+                run_context,
+                "vpn_reissue_reconciliation_required",
+                status="reconciliation_required",
+                payload={
+                    **_request_id(request),
+                    "reason": "local_commit_failed",
+                    "result": result.model_dump(mode="json"),
+                },
+            )
 
     async def _transition_ticket(
         self,
@@ -296,6 +456,7 @@ class VpnReissueService:
         run_context: Any,
         request: ReissueActionRequest,
         action: TicketAction,
+        actor_type: ActorType = ActorType.AGENT,
     ) -> None:
         tickets = getattr(runtime, "tickets", None)
         if tickets is None or not hasattr(tickets, "get") or not hasattr(tickets, "transition"):
@@ -315,7 +476,7 @@ class VpnReissueService:
                     TicketCommand(
                         ticket_id=request.ticket_id,
                         action=action,
-                        actor_type=ActorType.AGENT,
+                        actor_type=actor_type,
                         actor_id=actor_id,
                         expected_version=int(getattr(ticket, "version", 0) or 0),
                         payload={"action": request.action.value, "idempotency_key": request.idempotency_key},
@@ -329,7 +490,7 @@ class VpnReissueService:
                 TicketCommand(
                     ticket_id=request.ticket_id,
                     action=action,
-                    actor_type=ActorType.AGENT,
+                    actor_type=actor_type,
                     actor_id=actor_id,
                     expected_version=int(getattr(ticket, "version", 0) or 0),
                     payload={"action": request.action.value, "idempotency_key": request.idempotency_key},

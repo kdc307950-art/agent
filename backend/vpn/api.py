@@ -155,6 +155,38 @@ async def reject_reissue(
     return result.model_dump(mode="json")
 
 
+@router.post("/reconcile")
+async def reconcile_reissues(
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    """补偿对账（手工/worker 触发）：扫描并收敛所有 execution_unknown / reconciliation_required。"""
+    _require_scope(principal, "ticket:agent")
+    runtime = _runtime(request)
+    ctx = _run_context(principal, ticket_id="-")
+    results = await runtime.vpn_reissue.reconcile_all(runtime=runtime, run_context=ctx)
+    return {"reconciled": True, "results": results}
+
+
+@router.post("/{idempotency_key}/reconcile")
+async def reconcile_reissue(
+    idempotency_key: str,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    """对某个幂等键执行补偿对账（收敛 execution_unknown / reconciliation_required）。"""
+    _require_scope(principal, "ticket:agent")
+    runtime = _runtime(request)
+    # 纵深：校验 key 内嵌租户与当前主体一致（防跨租户对账）。
+    embedded_tenant = idempotency_key.split(":")[1] if ":" in idempotency_key else ""
+    if embedded_tenant and embedded_tenant != principal.tenant_id:
+        raise HTTPException(status_code=403, detail="跨租户访问被拒绝")
+    ctx = _run_context(principal, ticket_id="-")
+    return await runtime.vpn_reissue.reconcile(
+        idempotency_key=idempotency_key, runtime=runtime, run_context=ctx
+    )
+
+
 @router.get("/{idempotency_key}")
 async def get_reissue(
     idempotency_key: str,

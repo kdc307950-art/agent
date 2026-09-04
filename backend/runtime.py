@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import time
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
@@ -41,6 +43,7 @@ from .knowledge import (
 )
 from .metrics import RuntimeMetrics
 from .repositories import LongTermMemoryRepository
+from .run_context import RunContext
 from .schema import check_schema_ready, ensure_schema_version
 from .settings import Settings
 from .tickets import (
@@ -50,6 +53,10 @@ from .tickets import (
     TicketRepository,
 )
 from .tool_governance import ToolGovernance
+from .vpn.closed_loop import VpnClosedLoopService
+from .vpn.reissue_service import VpnReissueService
+from .vpn.repository import VpnDiagnosisRepository
+from .vpn.service import VpnDiagnosisService
 from .workflow_loader import load_workflow_spec
 
 
@@ -74,6 +81,16 @@ class AgentRuntime:
     knowledge_retriever: object | None = None
     copilot: CopilotService | None = None
     copilot_repository: CopilotRepository | None = None
+    # VPN Diagnosis Agent（只读诊断组件；未配置模型 key 时 None，API 返回 503）。
+    vpn_diagnosis: VpnDiagnosisService | None = None
+    # VPN 客户处置闭环（阶段二）：在只读诊断之上落库 + 状态机联动 + 客户动作闭环。
+    vpn_closed_loop: VpnClosedLoopService | None = None
+    # VPN 处置闭环 PostgreSQL 持久化仓储（方案 A，写 vpn_* 表；未配置模型 key 时 None）。
+    vpn_diagnosis_repo: VpnDiagnosisRepository | None = None
+    # 只读 VPN 适配器（Mock/真实，供工具经 runtime.vpn_adapter 访问）。
+    vpn_adapter: object | None = None
+    # 重新下发 VPN 配置的审批式执行编排服务（依赖 audit/tickets/vpn_adapter，运行时取）。
+    vpn_reissue: VpnReissueService | None = None
     graph_mode: str = "single"
 
 
@@ -221,12 +238,68 @@ async def runtime_context(
         from .knowledge.retriever import KnowledgeRetriever
 
         knowledge_retriever = KnowledgeRetriever(knowledge, vector_retriever)
-        yield AgentRuntime(
+        # VPN Diagnosis Agent：只读诊断组件。仅当配置了真实模型 key 时才启用，
+        # 否则 vpn_diagnosis / vpn_adapter 为 None（API 返回 503）。构造方式与
+        # copilot 完全对称：MockVpnAdapter(数据可来自 vpn_mock_data_path) +
+        # ChatOpenAI(temperature=0) + VpnDiagnosisAgent(全经 governed_invoke 走治理)。
+        vpn_adapter: object | None = None
+        vpn_diagnosis_service: VpnDiagnosisService | None = None
+        vpn_closed_loop_service: VpnClosedLoopService | None = None
+        vpn_diagnosis_repo: VpnDiagnosisRepository | None = None
+        if settings.deepseek_api_key:
+            from langchain_openai import ChatOpenAI
+            from pydantic import SecretStr
+
+            from .vpn.agent import VpnDiagnosisAgent
+            from .vpn.sandbox_adapter import build_vpn_adapter
+            from .vpn.service import VpnDiagnosisService
+            from .vpn.tools import VPN_TOOLS
+
+            # 阶段四：数据源模式通过 VPN_ADAPTER_MODE 切换（mock=固定Mock / sandbox=可重复沙箱）。
+            # 只读能力统一经 VpnResilientAdapter 韧性包装（request_id/timeout/retry/熔断/权限/审计/脱敏）。
+            vpn_adapter = build_vpn_adapter(
+                settings.vpn_adapter_mode,
+                seed=settings.vpn_sandbox_seed,
+                data_path=settings.vpn_mock_data_path if settings.vpn_mock_data_path else None,
+            )
+            vpn_tools = {tool.name: tool for tool in VPN_TOOLS}
+            vpn_model = ChatOpenAI(
+                api_key=SecretStr(settings.deepseek_api_key),
+                base_url=settings.llm_base_url,
+                model=settings.llm_model,
+                temperature=0,
+            )
+            vpn_diagnosis_service = VpnDiagnosisService(
+                VpnDiagnosisAgent(
+                    model=vpn_model,
+                    tools=vpn_tools,
+                )
+            )
+            # VPN 客户处置闭环（阶段二）：复用 vpn_diagnosis 服务编排，叠加落库 + 状态机联动。
+            # PostgreSQL 持久化（方案 A）：把诊断运行/排查步骤/客户结果/升级镜像写入 vpn_* 表。
+            vpn_diagnosis_repo = VpnDiagnosisRepository(audit.pool)
+            vpn_closed_loop_service = VpnClosedLoopService(
+                diagnosis_service=vpn_diagnosis_service,
+                repository=vpn_diagnosis_repo,
+            )
+        # runtime_provider：图节点（vpn_diagnose）需要在执行期访问运行中的
+        # AgentRuntime（拿到 vpn_diagnosis 服务与 audit）。由于 intake_graph 在
+        # AgentRuntime 构造时构建，用可变 holder 在构造完成后回填，避免环形硬引用。
+        runtime_holder: dict[str, Any] = {}
+
+
+        def _runtime_provider() -> Any:
+            return runtime_holder.get("self")
+
+
+        runtime = AgentRuntime(
             graph=graph,
             intake_graph=build_helpdesk_intake_graph(
                 checkpointer=checkpointer,
                 rag_service=agentic_rag,
                 it_policy_provider=ItPolicyRepository(audit.pool),
+                vpn_diagnosis=vpn_diagnosis_service,
+                runtime_provider=_runtime_provider,
             ),
             checkpointer=checkpointer,
             store=store,
@@ -245,5 +318,43 @@ async def runtime_context(
             knowledge_retriever=knowledge_retriever,
             copilot=copilot_service,
             copilot_repository=copilot_repository,
+            vpn_diagnosis=vpn_diagnosis_service,
+            vpn_closed_loop=vpn_closed_loop_service,
+            vpn_diagnosis_repo=vpn_diagnosis_repo,
+            vpn_adapter=vpn_adapter,
+            vpn_reissue=VpnReissueService() if vpn_diagnosis_service else None,
             graph_mode=settings.agent_graph_mode,
         )
+        runtime_holder["self"] = runtime
+        yield runtime
+
+
+async def reconcile_pending_reissues(runtime: AgentRuntime) -> list[dict[str, Any]]:
+    """补偿对账 worker 入口：扫描 vpn_reissue 注册表中 execution_unknown / reconciliation_required
+    的幂等键，逐键向外部系统重查真实结果并收敛到定态（补写 workflow_operation + 工单 + 审计）。
+
+    供未来后台 worker / 定时任务调用；生产环境可在 ReissueRegistry 之上叠加 workflow_operation
+    持久化后，改由数据库扫描触发。此处提供内存版扫描，保证「状态不依赖单次请求完成」可验证。
+    """
+    svc = runtime.vpn_reissue
+    if svc is None:
+        return []
+    results: list[dict[str, Any]] = []
+    for key in svc.registry.scan_reconcilable():
+        req_dict = svc.registry.get_request(key)
+        if not req_dict:
+            continue
+        ctx = RunContext(
+            run_id=f"vpn-reconcile-{uuid.uuid4().hex[:12]}",
+            request_id=uuid.uuid4().hex[:12],
+            tenant_id=str(req_dict.get("tenant_id") or ""),
+            user_id="reconciliation-worker",
+            thread_id=f"vpn:{req_dict.get('tenant_id')}:{req_dict.get('ticket_id') or '-'}",
+            scopes=frozenset({"ticket:agent", "ticket:system"}),
+            deadline=time.time() + 60,
+            allowed_tools=None,
+        )
+        results.append(
+            await svc.reconcile(idempotency_key=key, runtime=runtime, run_context=ctx)
+        )
+    return results
