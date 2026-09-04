@@ -363,6 +363,11 @@ class VpnResilientAdapter(VpnAdapter):
     包进 _invoke（统一封装韧性关注点）。真实适配器同样只需实现 VpnAdapter 契约即可被包裹。
     """
 
+    # 类级类型声明：供 build_vpn_adapter 工厂动态赋值（data_source_tier/inner_adapter），
+    # 保证 mypy 能识别这两个属性而不报 "has no attribute"。实例值在 __init__ 里初始化。
+    inner_adapter: VpnAdapter
+    data_source_tier: VpnDataSourceTier | None
+
     def __init__(
         self,
         inner: VpnAdapter,
@@ -382,6 +387,9 @@ class VpnResilientAdapter(VpnAdapter):
         # 幂等键登记（按 (method, key) 去重，防重复副作用）
         self._idempotency: dict[str, dict[str, Any]] = {}
         self._new_request_id = request_id_factory or (lambda: uuid.uuid4().hex)
+        # 供工厂/外部注入的横向属性（纯类型声明，与 _inner 同源；data_source_tier 由工厂按模式赋值）
+        self.inner_adapter: VpnAdapter = inner
+        self.data_source_tier: VpnDataSourceTier | None = None
 
     # ---- 只读查询（全部经 _invoke，具备韧性） ----
     # 先只接三个真实只读能力：账号状态 / 客户端配置版本 / 网关健康状态。

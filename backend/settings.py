@@ -143,6 +143,11 @@ class Settings:
     knowledge_embedding_token: str | None
     worker_heartbeat_ttl_seconds: int
     readiness_check_workers: bool
+    vpn_mock_data_path: str
+    # VPN 数据源模式：mock(固定Mock) / sandbox(可重复沙箱)。默认 mock 保持既有行为；
+    # 切换 sandbox 后由可重复沙箱适配器提供确定性数据（阶段四）。
+    vpn_adapter_mode: str
+    vpn_sandbox_seed: int
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -302,4 +307,11 @@ class Settings:
             worker_heartbeat_ttl_seconds=_int_setting("WORKER_HEARTBEAT_TTL_SECONDS", 90, 5),
             readiness_check_workers=os.getenv("READINESS_CHECK_WORKERS", "false").strip().lower()
             in ("1", "true", "yes"),
+            # VPN Diagnosis Agent 的 MockVpnAdapter 数据文件路径（可选）。
+            # 留空使用内置默认示例数据；非空时必须指向合法 JSON 对象文件（校验见 from_env 后）。
+            vpn_mock_data_path=os.getenv("VPN_MOCK_DATA_PATH", "").strip(),
+            # VPN 数据源模式（阶段四）：mock(固定Mock) / sandbox(可重复沙箱)。
+            # 生产禁止接入真实生产网关（不提供 prod_* 模式）。
+            vpn_adapter_mode=_choice_setting("VPN_ADAPTER_MODE", "mock", {"mock", "sandbox"}),
+            vpn_sandbox_seed=_int_setting("VPN_SANDBOX_SEED", 0, 0),
         )
