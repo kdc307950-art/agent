@@ -16,6 +16,17 @@
     "must_escalate": 26
   },
   "agent": "deterministic-keyword-classifier + classify_vpn_fault + vpn-boundary",
+  "protection": {
+    "structural_only": true,
+    "real_guards_invoked": false,
+    "note": "本报告（static / db 词法检索）只做结构校验，不代表真实防护；boundary / auto_misdirect / misdirect 数字仅证明结构层面的边界三态。",
+    "real_guards_verified_elsewhere": [
+      "tool_governance.tenant_allowlist + required_scopes + allowed_tools",
+      "repository.tenant + visibility + department ACL 过滤",
+      "models.FORBIDDEN_COMMANDS 二次拒绝 / DiagnosisCommand extra=forbid",
+      "approval.APPROVED 门禁 + 幂等 + preflight（reissue 受控执行）"
+    ]
+  },
   "total": 60,
   "classify_vpn_fault": {
     "accuracy": 1.0,
@@ -62,5 +73,114 @@
     "p95": 0.0
   },
   "failures": [],
-  "failure_count": 0
+  "failure_count": 0,
+  "metrics": {
+    "vpn_fault_classification": {
+      "accuracy": 1.0,
+      "sample_count": 50
+    },
+    "field_completion": {
+      "detection_rate": 1.0,
+      "complete_rate": 0.84,
+      "sample_count": 60
+    },
+    "fault_hypothesis_hit": {
+      "hit_rate": 1.0,
+      "sample_count": 50,
+      "basis": "无结构化假设时回退 vpn_fault，命中率 = fault_ok；仅统计真实 VPN 样本；生产端待 DiagnosisCommand.reason_codes / 结构化假设字段接入后覆盖 M3 真实口径"
+    },
+    "fault_hypothesis_accuracy": {
+      "hit_rate": 0.98,
+      "sample_count": 50,
+      "structural_only": true,
+      "basis": "M3 真实口径：预期/预测假设编码相等即命中，仅统计已归一化编码样本；由 backend/vpn/rules 的 evaluate_evidence 暴露 hypothesis；不回退 vpn_fault；静态评测仅结构校验，真实值需诊断 E2E 注入"
+    },
+    "escalation_accuracy": {
+      "recall": 1.0,
+      "precision": 1.0,
+      "accuracy": 1.0,
+      "tp": 26,
+      "fp": 0,
+      "fn": 0,
+      "tn": 34,
+      "sample_count": 60,
+      "basis": "needs=expected_boundary==must_escalate；escalated=predicted_boundary==must_escalate 或诊断产出 escalate_incident/request_approval，或无命令且 must_handoff=True"
+    },
+    "customer_steps": {
+      "avg_steps": null,
+      "sample_count": 0,
+      "bias_note": "优先用 executor 产出的客户执行步骤数(customer_step_count)；无则用诊断工具轮数(diagnostic_rounds) 作 proxy，因 provide_steps 才产出可计量步骤，ask_customer/escalate_incident/request_approval 等命令不产生可计量的客户排障步骤"
+    },
+    "reference_support": {
+      "mode": "static",
+      "support_rate": null,
+      "denominator": null,
+      "numerator": 0,
+      "basis": "auto_suggest 样本预期文档被实际召回占比；static 模式不做真实检索，返回 None（需 db 词法检索才能量化）"
+    },
+    "high_risk_misdirect": {
+      "misdirect_rate": 0.0,
+      "misdirect_count": 0,
+      "negative_sample_count": 10,
+      "samples": [],
+      "basis": "定义：负向/越权(is_negative)样本被判定为 auto_suggest 即误放行；覆盖 ACL 越权/账号锁定/无知识答案/敏感高影响等语义高风险类别，不限敏感词命中；理想值 0，>0 需人工复核（与 run_vpn_eval 的 auto_misdirect 口径互补）"
+    },
+    "acl_rejection": {
+      "rejection_rate": null,
+      "rejected_count": 0,
+      "acl_sample_count": 0,
+      "samples": [],
+      "basis": "ACL 越权样本(scenario=acl_out_of_scope)被判 must_escalate 即正确拒绝；理想 1.0（越权必须拒绝/升级），<1.0 的样本列入 samples 需人工复核与闭环"
+    },
+    "tool_failure": {
+      "failure_rate": null,
+      "failed_count": 0,
+      "total_count": 0,
+      "basis": "从 tool_trace / tool_governance 状态计数：denied/timeout/failed/error/cancelled 视为失败，completed 视为成功；无工具调用记录时返回 None"
+    },
+    "latency": {
+      "p50": 0.0,
+      "p95": 0.0,
+      "sample_count": 60
+    },
+    "cost": {
+      "per_ticket_usd": null,
+      "total_usd": 0.0,
+      "ticket_count": 60,
+      "input_per_1k_usd": 0.0,
+      "output_per_1k_usd": 0.0,
+      "rated": false,
+      "basis": "单工单成本 = Σ(input/output token × 单价)/工单数；单价来自 MODEL_INPUT/OUTPUT_COST_PER_1K_USD；单价为 0 时标记 unrated(per_ticket_usd=None) 不抛异常；VPN 诊断 token 需在 agent.run 内埋点纳入计量"
+    },
+    "evidence_sufficiency": {
+      "sufficiency_rate": 1.0,
+      "sufficient_count": 50,
+      "sample_count": 50,
+      "basis": "evidence_found=有依据(工具返回 found:true 或证据非空)的占比，仅统计真实 VPN 样本；理想 1.0；<1.0 表示存在 no_evidence 需转人工的样本"
+    },
+    "wrong_escalation": {
+      "wrong_escalation_rate": 0.0,
+      "wrong_count": 0,
+      "sample_count": 34,
+      "basis": "无需升级(needs=False)却被升级/转人工(FP)的占比，理想 0；与 M4 precision 互为补充（此处更聚焦误升级发生面）"
+    },
+    "customer_step_completion": {
+      "completion_rate": null,
+      "completed_count": 0,
+      "sample_count": 0,
+      "bias_note": "需已产出 provide_steps 且客户回填结果（customer_steps_completed）才参与；static 确定性评测不调用模型/不产出客户步骤 -> sample_count=0、rate=None"
+    },
+    "rediagnosis_success": {
+      "success_rate": null,
+      "success_count": 0,
+      "sample_count": 0,
+      "basis": "再次诊断样本(is_rediagnosis=True)中 rediagnosis_success=True 的占比；需诊断-回填-再诊断闭环数据注入；静态评测无闭环 -> sample_count=0"
+    },
+    "manual_takeover": {
+      "takeover_rate": 0.4333,
+      "takeover_count": 26,
+      "sample_count": 60,
+      "basis": "被判转人工(must_handoff/escalate_incident/request_approval/assign_agent)的占比；manual_takeover 字段优先，否则由边界/命令/must_handoff 推断；需诊断闭环数据：static 下由 predicted_boundary+命令推断"
+    }
+  }
 }

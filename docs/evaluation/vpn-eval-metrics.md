@@ -205,3 +205,141 @@
 >   与 seed 知识库 `vpn-001` 一致且词法检索确实命中）；此前 0.3077 为数据库索引/数据状态不一致的伪象，
 >   重新 `migrations + seed_demo` 后 db 评测 `reference_support_rate=1.0`。若日后再次偏低，请先重跑迁移/种子定位
 >   索引状态，而非样本映射。
+
+---
+
+## 7. 阶段三（t3）：证据链诊断 + 确定性规则 + 新评测指标
+
+> 生成角色：qa-engineer（阶段三） · 对应模块：`backend/vpn/rules.py`、`backend/vpn_eval_metrics.py`、
+> `backend/run_vpn_eval.py`。目标：把 VPN 诊断从「关键词分类」升级为「证据链」，并新增证据链闭环指标。
+
+### 7.1 确定性证据链规则表（backend/vpn/rules.py）
+
+规则表（顺序即优先级；命中即返回，不叠加）：
+
+| 规则 | 条件（归一化信号） | 结论（hypothesis / next_action / must_handoff） | reason_codes |
+|---|---|---|---|
+| R0 | `identity_ok=False`（身份/归属缺失） | `no_evidence` ／ `escalate_incident` ／ 强制人工 | `identity_missing`、`handoff:identity` |
+| R1 | `multi_user_impact=True`（群体故障） | `multi_user_impact` ／ 事件升级／ 强制人工 | `multi_user_impact`、`handoff:multi_user` |
+| R2 | `account_status=locked/disabled`（账号锁定/禁用） | `account_locked` ／ 升级(it.account)／ 强制人工 | `account_locked`、`handoff:account_locked` |
+| R3 | 账号正常 + 网关 up + 客户端版本过期 | `client_version_outdated` ／ `provide_steps`／ 非人工 | `client_version_outdated`、`config_issue` |
+| R4 | 网关 down/degraded | `gateway_down` ／ 升级／ 强制人工 | `gateway_down`、`handoff:gateway` |
+| R5 | 账号/网关正常 + 无版本过期（兜底） | `connection_failed` ／ 有知识 `provide_steps`，无知识 `escalate_incident` | `connection_failed`、`error_code_signal=<code>` |
+| R6 | 无任何可信证据 | `no_evidence` ／ 升级／ 强制人工（不给根因） | `no_evidence`、`handoff:no_evidence` |
+
+设计要点：
+
+- **输入为归一化信号** `VpnEvidence`（account_status / gateway_status / client_version /
+  required_version / error_code / multi_user_impact / identity_ok / knowledge_hit / has_asset），
+  纯函数、无 IO，确定性可单测（`tests/test_vpn_evidence_rules.py`）。
+- **结论固定为结构化** `EvidenceDiagnosis`：`hypothesis / confidence / evidence[] /
+  ruled_out[] / next_action / reason_codes[] / must_handoff`。这是 M3 真实口径的载体。
+- **主问题/关联问题分离（修复 D6）**：`ruled_out[]` 显式列出被排除的假设。账号锁定、多用户、
+  网关侧的主问题与「客户端版本」「连接类」关联问题严格分开，不再混在单标签里。
+- **错误码只作假设信号**：`error_code` 只写入 `reason_codes`（`error_code_signal=<code>`），
+  **不能直接等于根因**（R5 的 hypothesis 仍是 `connection_failed`）。
+- **无证据不给根因结论**：R0/R6 一律 `hypothesis=no_evidence` 且转人工，不编造根因。
+
+### 7.2 M3 真实口径（不再回退 vpn_fault）
+
+- 旧口径 `fault_hypothesis_hit`（`compute_hypothesis_hit`）在无结构化假设时**回退 vpn_fault**（命中率=fault_ok），
+  保留向后兼容（老报告不变）。
+- 新口径 `fault_hypothesis_accuracy`（`compute_fault_hypothesis_accuracy`）只用**结构化证据链假设**：
+  `expected_hypothesis_code`（由样本 `fault_hypothesis` 归一到稳定编码）与 `evidence_hypothesis`
+  （由 `rules.evaluate_evidence(build_evidence_from_case(case))` 产出）**编码相等即命中**，**不回退 vpn_fault**。
+- `run_vpn_eval._evaluate_case` 已把这两个编码与 `evidence_found` 写入每条 case 结果，
+  `to_record` 归一化为 `VpnEvalRecord.expected_hypothesis_code / evidence_hypothesis / evidence_found`。
+- 静态评测 `structural_only=True`（仅结构校验，不跑真实模型）；真实值需诊断 E2E 注入。
+
+### 7.3 新增证据链闭环指标（backend/vpn_eval_metrics.py）
+
+在既有 M1-M9 + D3 基础上新增 6 个指标小节，全部为纯函数，`compute_metrics_report` 一并写入报告：
+
+| 指标 | 口径 | 理想值 |
+|---|---|---|
+| `fault_hypothesis_accuracy` | M3 真实口径：结构化假设编码相等命中（不回退 vpn_fault） | 1.0 |
+| `evidence_sufficiency` | 真实 VPN 样本中 `evidence_found=True` 占比（证据充分率） | 1.0 |
+| `wrong_escalation` | 无需升级却被升级/转人工（FP）占比 | 0 |
+| `customer_step_completion` | 产出客户步骤且客户完成回填占比（需闭环数据） | 1.0 |
+| `rediagnosis_success` | 再次诊断后成功落定占比（需闭环数据） | 1.0 |
+| `manual_takeover` | 被判 must_handoff/escalate/approve/assign 的占比（平均人工接管率） | 与预期升级率一致 |
+
+静态（确定性 keyword-classifier）评测无模型/无闭环数据时，`customer_step_completion` 与
+`rediagnosis_success` 返回 `sample_count=0`、`rate=None`；其余指标基于边界/命令/证据字段可计算。
+
+### 7.4 M5 真实口径：暴露 agent.run 的 rounds / tool_call_count
+
+`VpnDiagnosisAgent.run` 返回结构已新增 `rounds` 与 `tool_call_count`（真实执行的轮次与工具调用数），
+并新增 `evidence_chain`（结构化证据链假设）。`VpnEvalRecord` 以 `agent_rounds` / `agent_tool_call_count`
+承载，供 M5 真实口径核算（不再只用诊断工具轮数 proxy）。`compute_customer_steps` 仍优先
+`customer_step_count`，否则用 `agent_rounds` / `diagnostic_rounds`。
+
+### 7.5 D6 修复：账号锁定-VPN 混淆分诊
+
+账号锁定误表述为 "VPN 连不上"（S6 本应 it.account 却归 it.vpn）在三层修复：
+
+1. **分诊层（intake.py）**：`KeywordTicketClassifier` 在 it 子分类前调用 `_is_account_lockout_primary`——
+   当文本命中账号锁定主因词（锁定/被锁/账户被锁等）且**不落入 VPN 认证/登录失败框架**时，优先归
+   `it.account`（即使同时含 "vpn/远程接入"）。`_VPN_AUTH_FAILURE_TERMS` 保护 v1 的
+   「VPN 登录失败，账号被锁定」仍归 `it.vpn`（认证类主因）。修复 S6 5 条 `category_mismatch`。
+2. **边界层（boundary_vpn）**：新增尾参 `has_account_lockout`（默认 False）。命中账号锁定/禁用时
+   在字段不全之后、其它升级条件之前强制 `must_escalate`（it.account 必须人工，不给 VPN 自动建议）。
+   `run_vpn_eval._evaluate_case` 用 `rules.is_account_lockout_text(text)` 传入。
+3. **证据链规则层（rules.py）**：`_account_status_from_text` / `is_account_lockout_text` 从文案文本
+   检测账号锁定/禁用主因（显式词：账号被锁/锁定/已禁用/冻结/disabled/locked；弱信号：多次登录失败/
+   停用，未落入认证排除框架才升级）。`build_evidence_from_case` 在字段未显式给账号状态时用它把
+   `account_status` 置为 `LOCKED/DISABLED`，使 S6 命中 **R2 → `account_locked` + must_escalate**，
+   M3 结构化假设不再回退 `vpn_fault`。R2 同时覆盖 `DISABLED`（账户已禁用/冻结）。
+
+### 7.6 与阶段二（t2 客户处置闭环结构化数据）的取数桥接
+
+需要真实诊断 run / 客户动作数据才能计算的指标（`customer_step_completion` /
+`rediagnosis_success` / `manual_takeover` / M3 真实口径），已预留**从 t2 结构化快照取数**的桥接函数：
+
+- `backend/vpn_eval_metrics.py::to_record_from_snapshot(snapshot, ...)`
+- `backend/vpn_eval_metrics.py::records_from_diagnosis_snapshots(snapshots, ...)`
+
+**输入形态**：`backend/vpn/closed_loop.VpnClosedLoopService.get_snapshot()` 产出的已
+`model_dump(mode="json")` 的 dict（含 `latest_run / runs / actions / results / escalations`）。
+取数用 duck-typing（纯 dict），**不 import t2 对象类型**，因此 t2 未落地也能独立单测；
+t2 落地后把 `get_snapshot()` 结果传入即可对齐。
+
+**口径映射**：
+
+| VpnEvalRecord 字段 | 取数规则（快照） |
+|---|---|
+| `evidence_hypothesis` / `hypothesis_confidence` / `evidence_found` | 最近一次 run 的 `hypothesis / confidence / evidence 非空` |
+| `customer_steps_completed` | 有 `actions`（provide_steps 步骤）且 `results`（客户回填）非空 |
+| `is_rediagnosis` | `runs` 数量 >= 2 |
+| `rediagnosis_success` | 有再诊断时最近一次 run 状态为 `completed/handed_off`（`failed/cancelled` 为 False） |
+| `manual_takeover` | 最近 run 的 `next_action` 为 escalate/approve/assign，或 `status=handed_off/failed`，或 reason_codes 含 handoff/escalate，或 `must_handoff` |
+| `produced_command` / `diagnosis_must_handoff` | 最近 run 的 `next_action` / 转人工推断 |
+
+缺失字段一律回退 `None`/`False`，不抛异常。单测见 `tests/test_vpn_eval_metrics.py` 的
+「阶段三：与 t2 诊断闭环快照的取数桥接」小节（再诊断成功/失败、转人工、客户完成、空快照、批量）。
+
+> **说明**：静态（确定性 keyword-classifier）评测不调用诊断 run，`customer_step_completion` 与
+> `rediagnosis_success` 仍返回 `sample_count=0`、`rate=None`；真实值需在诊断 E2E/集成层通过上述
+> 快照取数桥接入 t2 数据后计算。
+
+### 7.7 证据链接入诊断链路（VpnDiagnosisService / VpnClosedLoopService）
+
+阶段三把结构化证据链假设**接入真实诊断链路**，使 `VpnDiagnosisRun` 的 hypothesis 来自确定性规则
+（`EvidenceDiagnosis.hypothesis`）而非 `command.content`，评测即可拿到真实 hypothesis：
+
+- **`service.VpnDiagnosisService.apply_handoff`**：把 `tool_evidence` 归一化为 `VpnEvidence`
+  （用 `rules.normalize_account_status / normalize_gateway_status`），调用 `rules.evaluate_evidence`
+  得到 `EvidenceDiagnosis`，写入 `result["evidence_chain"]`（hypothesis/confidence/evidence/
+  ruled_out/next_action/reason_codes/must_handoff）。无任何工具证据时按 `no_evidence` 兜底。
+- **`closed_loop.VpnClosedLoopService._build_run`**：优先用 `evidence_chain` 填充
+  `VpnDiagnosisRun.hypothesis`（规则假设而非 command.content）、`evidence`（rules 的 evidence 数组，
+  每条 `tool_name="rules"`）、`ruled_out`、`confidence`、`next_action`、`reason_codes`；
+  无 `evidence_chain` 时回退到 command 维度（向后兼容）。
+- **M3 真实口径闭环**：`agent.run` → `service.apply_handoff`（evidence_chain）→
+  `closed_loop._build_run`（VpnDiagnosisRun.hypothesis=证据链假设）→ `get_snapshot()` →
+  `to_record_from_snapshot` → `VpnEvalRecord.evidence_hypothesis` → `compute_fault_hypothesis_accuracy`。
+
+单测：`tests/test_vpn_evidence_rules.py` 的「service.apply_handoff 接入证据链」小节（账号锁定/网关
+down/无版本有知识/无可信证据 四路径）；`tests/test_vpn_diagnosis_closed_loop.py` 的「证据链结构化假设
+落库」小节（`_build_run` 用 evidence_chain / 无 evidence_chain 回退）。
+
