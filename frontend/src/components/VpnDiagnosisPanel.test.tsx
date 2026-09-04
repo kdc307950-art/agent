@@ -104,12 +104,11 @@ describe('VpnDiagnosisPanel', () => {
     await userEvent.click(screen.getByRole('button', { name: '提交结果' }))
 
     await waitFor(() =>
-      expect(submitSpy).toHaveBeenCalledWith(
-        't-1',
-        'a-1',
-        expect.objectContaining({ result: '已重启' }),
-        undefined,
-      ),
+      expect(submitSpy).toHaveBeenCalledWith('t-1', 'a-1', {
+        result: '已重启',
+        evidence: {},
+        details: '',
+      }),
     )
   })
 
