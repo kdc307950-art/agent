@@ -1,0 +1,82 @@
+{
+  "_comment": "最小补齐数据：让 VPN 审批式受控操作(reissue_vpn_config)在 compose.demo 栈上可真实走通。核心是对齐「VPN 账号域」与「真实 it_assets 资产域」——默认内置 MockVpnAdapter 的账号是 user-042，而 seed_demo 种入的真实资产 owner 是 customer-1，二者不同域导致 preflight 恒失败。本文件用 customer-1 作为 active VPN 账号 + client_config，与真实资产 laptop-001(owner=customer-1) 对齐。用法：将本文件挂载进 agent 容器，并设置 VPN_MOCK_DATA_PATH 指向它。",
+  "accounts": {
+    "customer-1": {
+      "user_id": "customer-1",
+      "status": "active",
+      "role": "member",
+      "expires_at": "2026-12-31",
+      "managed_device": true,
+      "found": true
+    }
+  },
+  "gateways": {
+    "gw-cn-north": {
+      "gateway_id": "gw-cn-north",
+      "region": "north",
+      "status": "up",
+      "load_percent": 42,
+      "found": true
+    },
+    "gw-ne-001": {
+      "gateway_id": "gw-ne-001",
+      "region": "northeast",
+      "status": "degraded",
+      "load_percent": 96,
+      "found": true
+    }
+  },
+  "assets": {
+    "laptop-001": {
+      "asset_id": "laptop-001",
+      "hostname": "laptop-001",
+      "name": "laptop-001",
+      "asset_type": "laptop",
+      "status": "active",
+      "owner_user_id": "customer-1",
+      "department": "it",
+      "found": true
+    }
+  },
+  "incidents": {
+    "INC-9": {
+      "incident_id": "INC-9",
+      "status": "monitoring",
+      "severity": "major",
+      "affected_user_count": 25,
+      "found": true
+    }
+  },
+  "similar_tickets": {
+    "customer-1": [
+      {
+        "ticket_id": "T-102",
+        "status": "resolved",
+        "category": "it.vpn",
+        "fault": "connection_failed",
+        "title": "VPN 频繁掉线",
+        "resolved_at": "2025-05-01T10:00:00Z"
+      }
+    ]
+  },
+  "knowledge": [
+    {
+      "document_id": "vpn-001",
+      "title": "VPN 连接失败排查",
+      "content": "检查客户端版本、网关负载、账号与证书有效性；确认网络可达与内网路由。错误码 769 通常表示目标不可达、809 表示连接被服务端拒绝。"
+    },
+    {
+      "document_id": "vpn-002",
+      "title": "VPN 多用户影响升级指引",
+      "content": "同一区域多个用户同时故障时应升级为事件并转人工队列，不自动回复。"
+    }
+  ],
+  "client_configs": {
+    "customer-1": {
+      "user_id": "customer-1",
+      "version": "v2.4.1",
+      "generated_at": "2026-01-15T00:00:00Z",
+      "found": true
+    }
+  }
+}

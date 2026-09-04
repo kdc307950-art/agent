@@ -1,0 +1,66 @@
+{
+  "version": "2026-09-12-vpn-v1",
+  "dataset": "vpn_v1",
+  "total_cases": 60,
+  "fault_counts": {
+    "connection_failed": 12,
+    "frequent_disconnect": 10,
+    "auth_failed": 10,
+    "intranet_unreachable": 10,
+    "multi_user_impact": 8,
+    "negative_out_of_scope": 10
+  },
+  "boundary_counts": {
+    "auto_suggest": 26,
+    "must_ask": 8,
+    "must_escalate": 26
+  },
+  "agent": "deterministic-keyword-classifier + classify_vpn_fault + vpn-boundary",
+  "total": 60,
+  "classify_vpn_fault": {
+    "accuracy": 1.0,
+    "sample_count": 50,
+    "by_fault": {
+      "auth_failed": 1.0,
+      "connection_failed": 1.0,
+      "frequent_disconnect": 1.0,
+      "intranet_unreachable": 1.0,
+      "multi_user_impact": 1.0
+    }
+  },
+  "category": {
+    "accuracy": 1.0,
+    "vpn_category_rate": 1.0
+  },
+  "field_completion": {
+    "detection_rate": 1.0,
+    "complete_rate": 0.84
+  },
+  "boundary": {
+    "accuracy": 1.0,
+    "by_boundary": {
+      "auto_suggest": 1.0,
+      "must_ask": 1.0,
+      "must_escalate": 1.0
+    }
+  },
+  "auto_misdirect": {
+    "count": 0,
+    "samples": []
+  },
+  "knowledge": {
+    "mode": "static",
+    "reference_support_rate": null,
+    "reference_support_denominator": null
+  },
+  "closed_loop_reachable": {
+    "rate": 1.0,
+    "sample_count": 50
+  },
+  "latency_ms": {
+    "p50": 0.0,
+    "p95": 0.0
+  },
+  "failures": [],
+  "failure_count": 0
+}

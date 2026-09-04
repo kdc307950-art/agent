@@ -1,0 +1,221 @@
+{
+  "version": "2026-09-12-vpn-v2",
+  "dataset": "vpn_v2",
+  "total_cases": 63,
+  "fault_counts": {
+    "connection_failed": 33,
+    "multi_user_impact": 7,
+    "negative_out_of_scope": 23
+  },
+  "boundary_counts": {
+    "auto_suggest": 13,
+    "must_ask": 9,
+    "must_escalate": 41
+  },
+  "agent": "deterministic-keyword-classifier + classify_vpn_fault + vpn-boundary",
+  "protection": {
+    "structural_only": true,
+    "real_guards_invoked": false,
+    "note": "本报告（static / db 词法检索）只做结构校验，不代表真实防护；boundary / auto_misdirect / misdirect 数字仅证明结构层面的边界三态。",
+    "real_guards_verified_elsewhere": [
+      "tool_governance.tenant_allowlist + required_scopes + allowed_tools",
+      "repository.tenant + visibility + department ACL 过滤",
+      "models.FORBIDDEN_COMMANDS 二次拒绝 / DiagnosisCommand extra=forbid",
+      "approval.APPROVED 门禁 + 幂等 + preflight（reissue 受控执行）"
+    ]
+  },
+  "total": 63,
+  "classify_vpn_fault": {
+    "accuracy": 1.0,
+    "sample_count": 40,
+    "by_fault": {
+      "connection_failed": 1.0,
+      "multi_user_impact": 1.0
+    }
+  },
+  "category": {
+    "accuracy": 0.9206,
+    "vpn_category_rate": 1.0
+  },
+  "field_completion": {
+    "detection_rate": 1.0,
+    "complete_rate": 0.775
+  },
+  "boundary": {
+    "accuracy": 1.0,
+    "by_boundary": {
+      "auto_suggest": 1.0,
+      "must_ask": 1.0,
+      "must_escalate": 1.0
+    }
+  },
+  "auto_misdirect": {
+    "count": 0,
+    "samples": []
+  },
+  "knowledge": {
+    "mode": "db",
+    "reference_support_rate": 1.0,
+    "reference_support_denominator": 13
+  },
+  "closed_loop_reachable": {
+    "rate": 1.0,
+    "sample_count": 40
+  },
+  "latency_ms": {
+    "p50": 0.0,
+    "p95": 0.0
+  },
+  "failures": [
+    {
+      "index": 36,
+      "scenario": "account_lockout_vs_vpn",
+      "text": "VPN 连不上，说是账号被锁定了",
+      "vpn_fault": "connection_failed",
+      "expected_category": "it.account",
+      "actual_category": "it.vpn",
+      "expected_boundary": "must_escalate",
+      "predicted_boundary": "must_escalate",
+      "reasons": [
+        "category_mismatch"
+      ]
+    },
+    {
+      "index": 37,
+      "scenario": "account_lockout_vs_vpn",
+      "text": "远程接入连不上，账号被锁定",
+      "vpn_fault": "connection_failed",
+      "expected_category": "it.account",
+      "actual_category": "it.vpn",
+      "expected_boundary": "must_escalate",
+      "predicted_boundary": "must_escalate",
+      "reasons": [
+        "category_mismatch"
+      ]
+    },
+    {
+      "index": 39,
+      "scenario": "account_lockout_vs_vpn",
+      "text": "VPN 无法联网，提示账号被锁定",
+      "vpn_fault": "connection_failed",
+      "expected_category": "it.account",
+      "actual_category": "it.vpn",
+      "expected_boundary": "must_escalate",
+      "predicted_boundary": "must_escalate",
+      "reasons": [
+        "category_mismatch"
+      ]
+    },
+    {
+      "index": 40,
+      "scenario": "account_lockout_vs_vpn",
+      "text": "账号锁定导致 VPN 连不上",
+      "vpn_fault": "connection_failed",
+      "expected_category": "it.account",
+      "actual_category": "it.vpn",
+      "expected_boundary": "must_escalate",
+      "predicted_boundary": "must_escalate",
+      "reasons": [
+        "category_mismatch"
+      ]
+    },
+    {
+      "index": 42,
+      "scenario": "account_lockout_vs_vpn",
+      "text": "VPN 提示账号被锁定，进不去",
+      "vpn_fault": "connection_failed",
+      "expected_category": "it.account",
+      "actual_category": "it.vpn",
+      "expected_boundary": "must_escalate",
+      "predicted_boundary": "must_escalate",
+      "reasons": [
+        "category_mismatch"
+      ]
+    }
+  ],
+  "failure_count": 5,
+  "metrics": {
+    "vpn_fault_classification": {
+      "accuracy": 1.0,
+      "sample_count": 40
+    },
+    "field_completion": {
+      "detection_rate": 1.0,
+      "complete_rate": 0.775,
+      "sample_count": 63
+    },
+    "fault_hypothesis_hit": {
+      "hit_rate": 1.0,
+      "sample_count": 40,
+      "basis": "无结构化假设时回退 vpn_fault，命中率 = fault_ok；仅统计真实 VPN 样本；生产端待 DiagnosisCommand.reason_codes / 结构化假设字段接入后覆盖 M3 真实口径"
+    },
+    "escalation_accuracy": {
+      "recall": 1.0,
+      "precision": 1.0,
+      "accuracy": 1.0,
+      "tp": 41,
+      "fp": 0,
+      "fn": 0,
+      "tn": 22,
+      "sample_count": 63,
+      "basis": "needs=expected_boundary==must_escalate；escalated=predicted_boundary==must_escalate 或诊断产出 escalate_incident/request_approval，或无命令且 must_handoff=True"
+    },
+    "customer_steps": {
+      "avg_steps": null,
+      "sample_count": 0,
+      "bias_note": "优先用 executor 产出的客户执行步骤数(customer_step_count)；无则用诊断工具轮数(diagnostic_rounds) 作 proxy，因 provide_steps 才产出可计量步骤，ask_customer/escalate_incident/request_approval 等命令不产生可计量的客户排障步骤"
+    },
+    "reference_support": {
+      "mode": "db",
+      "support_rate": 1.0,
+      "denominator": 13,
+      "numerator": 13,
+      "basis": "auto_suggest 样本预期文档被实际召回占比；static 模式不做真实检索，返回 None（需 db 词法检索才能量化）"
+    },
+    "high_risk_misdirect": {
+      "misdirect_rate": 0.0,
+      "misdirect_count": 0,
+      "negative_sample_count": 23,
+      "samples": [],
+      "basis": "定义：负向/越权(is_negative)样本被判定为 auto_suggest 即误放行；覆盖 ACL 越权/账号锁定/无知识答案/敏感高影响等语义高风险类别，不限敏感词命中；理想值 0，>0 需人工复核（与 run_vpn_eval 的 auto_misdirect 口径互补）"
+    },
+    "acl_rejection": {
+      "rejection_rate": 1.0,
+      "rejected_count": 7,
+      "acl_sample_count": 7,
+      "samples": [],
+      "basis": "ACL 越权样本(scenario=acl_out_of_scope)被判 must_escalate 即正确拒绝；理想 1.0（越权必须拒绝/升级），<1.0 的样本列入 samples 需人工复核与闭环"
+    },
+    "tool_failure": {
+      "failure_rate": null,
+      "failed_count": 0,
+      "total_count": 0,
+      "basis": "从 tool_trace / tool_governance 状态计数：denied/timeout/failed/error/cancelled 视为失败，completed 视为成功；无工具调用记录时返回 None"
+    },
+    "latency": {
+      "p50": 0.0,
+      "p95": 0.0,
+      "sample_count": 63
+    },
+    "cost": {
+      "per_ticket_usd": null,
+      "total_usd": 0.0,
+      "ticket_count": 63,
+      "input_per_1k_usd": 0.0,
+      "output_per_1k_usd": 0.0,
+      "rated": false,
+      "basis": "单工单成本 = Σ(input/output token × 单价)/工单数；单价来自 MODEL_INPUT/OUTPUT_COST_PER_1K_USD；单价为 0 时标记 unrated(per_ticket_usd=None) 不抛异常；VPN 诊断 token 需在 agent.run 内埋点纳入计量"
+    }
+  },
+  "scenario_counts": {
+    "single_user_connection_failed": 7,
+    "multi_user_failure": 7,
+    "error_code_769_809": 7,
+    "client_version_outdated": 7,
+    "home_vs_hotspot_network": 7,
+    "account_lockout_vs_vpn": 7,
+    "no_knowledge_answer": 7,
+    "high_risk_request": 7,
+    "acl_out_of_scope": 7
+  }
+}
