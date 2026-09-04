@@ -38,6 +38,7 @@ import type { PendingInterrupt, Ticket, TicketOverview, TicketStatus } from '../
 import type { ResumeIntakeInput } from '../api/tickets'
 import StatusBadge from './StatusBadge'
 import CopilotPanel from './CopilotPanel'
+import VpnDiagnosisPanel from './VpnDiagnosisPanel'
 import { categoryLabel, formatTime, priorityLabel, statusLabel } from '../lib/labels'
 
 // 一次状态流转动作：action 为后端状态机动作名，actor_type 为执行者类型，label 为按钮文案
@@ -243,6 +244,15 @@ export default function TicketDetail({
           onAdopt={(text) => onAdoptDraft?.(text)}
         />
       )}
+
+      {/* VPN 诊断（阶段二）：仅 VPN 类别工单在受理/处理中展示；含诊断结果 + 客户排障步骤逐条回填 */}
+      {ticket.category === 'it.vpn' &&
+        (ticket.status === 'assigned' || ticket.status === 'in_progress') && (
+          <VpnDiagnosisPanel
+            ticketId={ticket.ticket_id}
+            enabled={!busy && !detailLoading}
+          />
+        )}
 
       {/* 已采用的 Copilot 草稿：客服确认区（展示 + 复制，不自动发送） */}
       {adoptedReply && (

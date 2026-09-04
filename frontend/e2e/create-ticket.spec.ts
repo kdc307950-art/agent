@@ -19,7 +19,7 @@ test.describe('新建工单流程', () => {
     await page.route(
       (url) => url.pathname === '/api/tickets',
       async (route, request) => {
-        if (request.method() !== 'POST') return route.continue()
+        if (request.method() !== 'POST') return route.fallback()
         return route.fulfill({
           status: 201,
           contentType: 'application/json',
@@ -30,7 +30,7 @@ test.describe('新建工单流程', () => {
     await page.route(
       (url) => url.pathname === `/api/tickets/${baseTicket.ticket_id}/intake`,
       async (route, request) => {
-        if (request.method() !== 'POST') return route.continue()
+        if (request.method() !== 'POST') return route.fallback()
         return route.fulfill({
           status: 200,
           contentType: 'application/json',
@@ -63,7 +63,7 @@ test.describe('新建工单流程', () => {
     await page.route(
       (url) => url.pathname === '/api/tickets',
       async (route, request) => {
-        if (request.method() !== 'POST') return route.continue()
+        if (request.method() !== 'POST') return route.fallback()
         createCount += 1
         return route.fulfill({
           status: 201,
@@ -77,7 +77,7 @@ test.describe('新建工单流程', () => {
     await page.route(
       (url) => url.pathname === `/api/tickets/${baseTicket.ticket_id}/intake`,
       async (route, request) => {
-        if (request.method() !== 'POST') return route.continue()
+        if (request.method() !== 'POST') return route.fallback()
         intakeCount += 1
         if (intakeCount === 1) {
           return route.fulfill({

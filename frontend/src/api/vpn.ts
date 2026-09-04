@@ -1,64 +1,77 @@
 /**
  * VPN 诊断 API 封装（阶段二）。
  *
- * 覆盖后端新增的四条受控接口：
- *   - POST /tickets/{ticket_id}/vpn/diagnose               发起/重新发起一次诊断
- *   - GET  /tickets/{ticket_id}/vpn/diagnosis              查询当前工单最新诊断
- *   - POST /tickets/{ticket_id}/vpn/actions/{action_id}/result  回填单个客户排障步骤结果
- *   - POST /tickets/{ticket_id}/vpn/diagnose/resume        在客户回填后恢复诊断
+ * 对齐 backend/vpn/api_v2.py 落地契约（backend/vpn/closed_loop.py 服务编排）：
+ *   - POST /tickets/{ticket_id}/vpn/diagnose               发起一次诊断，无请求体
+ *   - GET  /tickets/{ticket_id}/vpn/diagnosis              查询处置闭环快照
+ *   - POST /tickets/{ticket_id}/vpn/actions/{action_id}/result  客户回填一条排查步骤结果
+ *   - POST /tickets/{ticket_id}/vpn/diagnose/resume        客户动作后再次诊断（体 {comment}）
  *
  * 请求统一经 `api()`（client.ts）携带租户 token 与错误处理；非 2xx 抛 ApiError。
- * 领域契约以后端（backend-engineer t2）最终落地为准；本层为骨架，字段与之对齐。
  */
 
 import { api } from './client'
 import type {
-  VpnActionResult,
   VpnCustomerActionResult,
-  VpnDiagnosisResult,
+  VpnDiagnosisRun,
+  VpnDiagnosisSnapshot,
 } from '../types'
 
-/** 发起/恢复诊断的入参：operation_id 幂等，expected_version 做并发校验。 */
-export interface VpnDiagnoseInput {
-  operation_id: string
-  expected_version: number
-}
-
-/** 回填单个客户排障步骤结果（details 为结构化 dict，可选）。 */
+/** 回填单个客户排查步骤结果的请求体（诊断 API 的 VpnActionResultRequest）。 */
 export interface VpnActionResultInput {
-  result: VpnActionResult
-  evidence?: string
-  details?: Record<string, unknown>
+  /** 自由文本：客户提供的执行结果。 */
+  result: string
+  /** 结构化证据 dict（可选，默认 {}）。 */
+  evidence?: Record<string, unknown>
+  /** 文本备注（可选，默认 ""）。 */
+  details?: string
 }
 
-/** 发起 VPN 诊断并返回完整诊断上下文（run + 客步骤 + 已回填结果）。 */
+/** 再次诊断请求体（诊断 API 的 VpnResumeRequest，暂为保留结构）。 */
+export interface VpnResumeInput {
+  comment?: string
+}
+
+/** POST /vpn/diagnose 或 /vpn/diagnose/resume 的响应：run + result + dispatch。 */
+export interface VpnDiagnoseResponse {
+  run: VpnDiagnosisRun
+  result: Record<string, unknown>
+  dispatch: Record<string, unknown>
+}
+
+/** POST /vpn/actions/{id}/result 的响应：action_result + transition + re_diagnosis。 */
+export interface VpnActionResultResponse {
+  action_result: VpnCustomerActionResult
+  transition: boolean
+  re_diagnosis?: VpnDiagnoseResponse | null
+}
+
+/** 发起一次 VPN 诊断（无请求体）；返回 run / result / dispatch。 */
 export function diagnoseVpn(
   ticketId: string,
-  input: VpnDiagnoseInput,
   signal?: AbortSignal,
-): Promise<VpnDiagnosisResult> {
+): Promise<VpnDiagnoseResponse> {
   return api(`/tickets/${ticketId}/vpn/diagnose`, {
     method: 'POST',
-    body: JSON.stringify(input),
     signal,
   })
 }
 
-/** 查询当前工单最新诊断结果；无诊断时 run 为 null。 */
+/** 查询当前工单的 VPN 处置闭环快照（含 latest_run / runs / actions / results / escalations）。 */
 export function getVpnDiagnosis(
   ticketId: string,
   signal?: AbortSignal,
-): Promise<VpnDiagnosisResult> {
+): Promise<VpnDiagnosisSnapshot> {
   return api(`/tickets/${ticketId}/vpn/diagnosis`, { signal })
 }
 
-/** 回填单个客户排障步骤的执行结果。 */
+/** 回填单个客户排查步骤的执行结果。 */
 export function submitVpnActionResult(
   ticketId: string,
   actionId: string,
   input: VpnActionResultInput,
   signal?: AbortSignal,
-): Promise<VpnCustomerActionResult> {
+): Promise<VpnActionResultResponse> {
   return api(`/tickets/${ticketId}/vpn/actions/${actionId}/result`, {
     method: 'POST',
     body: JSON.stringify(input),
@@ -66,12 +79,12 @@ export function submitVpnActionResult(
   })
 }
 
-/** 客户回填后恢复诊断；返回新的完整诊断上下文。 */
+/** 客户回填后再次诊断（新 run）；请求体为 {comment}。 */
 export function resumeVpnDiagnosis(
   ticketId: string,
-  input: VpnDiagnoseInput,
+  input: VpnResumeInput = {},
   signal?: AbortSignal,
-): Promise<VpnDiagnosisResult> {
+): Promise<VpnDiagnoseResponse> {
   return api(`/tickets/${ticketId}/vpn/diagnose/resume`, {
     method: 'POST',
     body: JSON.stringify(input),

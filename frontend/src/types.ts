@@ -221,3 +221,120 @@ export interface CopilotGenerateResult {
 export interface CopilotLatestResult {
   draft: CopilotDraft | null
 }
+
+// ===== VPN 诊断（阶段二，对齐 backend/vpn/diagnosis.py 领域契约）=====
+
+/** VPN 诊断运行生命周期状态（DiagnosisRunStatus，StrEnum）。
+ *  diagnose 后的状态：diagnosing / completed / handed_off / failed / cancelled。
+ */
+export type VpnDiagnosisRunStatus =
+  | 'diagnosing'
+  | 'completed'
+  | 'handed_off'
+  | 'failed'
+  | 'cancelled'
+
+/** VPN 诊断运行中的故障类型（fault，对齐 VPN_FAULT_*）。 */
+export type VpnFault =
+  | 'connection_failed'
+  | 'authentication_failed'
+  | 'configuration_error'
+  | 'multi_user_impact'
+  | 'account_locked'
+  | string
+
+/** 客户排查步骤状态的可用值（CustomerActionStatus，StrEnum）。 */
+export type VpnCustomerActionStatus =
+  | 'issued'
+  | 'executed'
+  | 'confirmed'
+  | 'abandoned'
+  | 'superseded'
+
+/** 客户回填步骤结果（result 为自由文本，VpnCustomerActionResult.result）。 */
+export type VpnActionResult = string
+
+/** VPN 升级记录状态（EscalationStatus，StrEnum）。 */
+export type VpnEscalationStatus = 'open' | 'acknowledged' | 'resolved' | 'closed'
+
+/** 一次诊断里的单条证据项（VpnDiagnosisFinding，来自只读工具返回的依据）。 */
+export interface VpnDiagnosisFinding {
+  tool_name: string
+  evidence: string
+  document_id?: string | null
+  document_version?: string | null
+  chunk_id?: string | null
+  title?: string | null
+  found?: boolean
+}
+
+/** 一次 VPN 诊断运行（VpnDiagnosisRun，诊断过程与结论的结构化快照）。 */
+export interface VpnDiagnosisRun {
+  run_id: string
+  ticket_id: string
+  tenant_id?: string
+  fault: string
+  hypothesis: string
+  confidence: number
+  evidence: VpnDiagnosisFinding[]
+  ruled_out: string[]
+  next_action: string | null
+  reason_codes: string[]
+  status: VpnDiagnosisRunStatus
+  created_at: string
+  updated_at?: string
+}
+
+/** 给客户的一条排查步骤（VpnCustomerAction，provide_steps 草稿的结构化落库）。 */
+export interface VpnCustomerAction {
+  action_id: string
+  ticket_id?: string
+  tenant_id?: string
+  run_id?: string | null
+  title: string
+  instruction: string
+  expected_result: string
+  risk_level: 'low' | 'medium' | 'high'
+  requires_agent: boolean
+  status?: VpnCustomerActionStatus
+  order?: number
+  created_at?: string
+}
+
+/** 客户对某条排查步骤的执行结果回填（VpnCustomerActionResult）。
+ *  result 为自由文本；evidence 为 dict；details 为字符串。
+ */
+export interface VpnCustomerActionResult {
+  action_id: string
+  ticket_id?: string
+  tenant_id?: string
+  run_id?: string | null
+  result: string
+  evidence?: Record<string, unknown> | null
+  details?: string | null
+  submitted_by?: string
+  submitted_at: string
+}
+
+/** 一次 VPN 升级记录（VpnEscalation，多用户影响/身份缺失等转人工）。 */
+export interface VpnEscalation {
+  escalation_id: string
+  ticket_id: string
+  tenant_id?: string
+  run_id?: string | null
+  reason?: string
+  reason_codes?: string[]
+  target_queue?: string
+  status?: VpnEscalationStatus
+  created_at?: string
+}
+
+/** GET /tickets/{id}/vpn/diagnosis 返回的处置闭环快照（closed_loop.get_snapshot）。 */
+export interface VpnDiagnosisSnapshot {
+  ticket_id: string
+  latest_run: VpnDiagnosisRun | null
+  runs: VpnDiagnosisRun[]
+  actions: VpnCustomerAction[]
+  results: VpnCustomerActionResult[]
+  escalations: VpnEscalation[]
+}

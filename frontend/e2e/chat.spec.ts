@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { mockTicketList } from './fixtures'
 
 function buildSseBody(events: object[]): string {
   return events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('')
@@ -6,7 +7,7 @@ function buildSseBody(events: object[]): string {
 
 function routeChatStream(page: import('@playwright/test').Page, events: object[]) {
   return page.route((url) => url.toString().includes('/api/chat/stream'), async (route, request) => {
-    if (request.method() !== 'POST') return route.continue()
+    if (request.method() !== 'POST') return route.fallback()
     return route.fulfill({
       status: 200,
       headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
@@ -17,7 +18,7 @@ function routeChatStream(page: import('@playwright/test').Page, events: object[]
 
 function routeChatResume(page: import('@playwright/test').Page, events: object[]) {
   return page.route((url) => url.toString().includes('/api/chat/resume'), async (route, request) => {
-    if (request.method() !== 'POST') return route.continue()
+    if (request.method() !== 'POST') return route.fallback()
     return route.fulfill({
       status: 200,
       headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
@@ -28,6 +29,7 @@ function routeChatResume(page: import('@playwright/test').Page, events: object[]
 
 test.describe('智能助手对话', () => {
   test('流式输出文本并渲染', async ({ page }) => {
+    await mockTicketList(page, [])
     await routeChatStream(page, [
       { type: 'text', content: '你好' },
       { type: 'text', content: '，世界' },
@@ -43,6 +45,7 @@ test.describe('智能助手对话', () => {
   })
 
   test('收到 interrupt 时显示审批卡片，确认后继续', async ({ page }) => {
+    await mockTicketList(page, [])
     await routeChatStream(page, [
       { type: 'tool', status: 'calling' },
       {

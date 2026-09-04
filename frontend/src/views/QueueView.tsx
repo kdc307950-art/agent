@@ -541,7 +541,9 @@ export default function QueueView({ onOpenSidebar }: { onOpenSidebar?: () => voi
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         onCreated={(ticket) => {
-          setTickets((items) => [ticket, ...items])
+          setTickets((items) =>
+            deduplicateById([ticket, ...items], (item) => item.ticket_id),
+          )
           navigate(ticketsPath(view, ticket.ticket_id))
         }}
       />

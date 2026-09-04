@@ -5,7 +5,6 @@ import {
   resumeVpnDiagnosis,
   submitVpnActionResult,
 } from './vpn'
-import type { VpnDiagnosisRun } from '../types'
 
 // 用 vi.mock 拦截底层 api()，同时保留 ApiError / describeApiError 的既有行为（client.test 已覆盖）
 vi.mock('./client', async (importOriginal) => {
@@ -19,73 +18,85 @@ vi.mock('./client', async (importOriginal) => {
 import * as client from './client'
 const apiMock = client.api as unknown as ReturnType<typeof vi.fn>
 
-const sampleRun: VpnDiagnosisRun = {
-  run_id: 'run-1',
+const sampleRun = {
+  run_id: 'diag_abc',
   ticket_id: 't-1',
   fault: 'configuration_error',
   hypothesis: '客户端配置版本过旧',
   confidence: 0.9,
   evidence: [
-    { finding_type: '账号正常', description: '账号 active', source_tool: 'get_vpn_account_status' },
+    { tool_name: 'get_vpn_account_status', evidence: '账号 active', title: null, found: true },
   ],
-  ruled_out: [
-    { finding_type: '网关异常', description: '网关 up', source_tool: 'get_vpn_gateway_status' },
-  ],
-  next_action: '请客户升级客户端后重试',
+  ruled_out: ['gateway_down'],
+  next_action: 'provide_steps',
   reason_codes: ['client_version_too_old'],
   status: 'completed',
   created_at: new Date().toISOString(),
 }
 
-describe('vpn API 封装', () => {
+describe('vpn API 封装（对齐诊断 API 落地契约）', () => {
   beforeEach(() => {
     apiMock.mockReset()
   })
 
-  it('diagnoseVpn 走 POST /tickets/{id}/vpn/diagnose 并携带 body', async () => {
-    apiMock.mockResolvedValue({ run: sampleRun, customer_actions: [] })
-    const result = await diagnoseVpn('t-1', { operation_id: 'op-1', expected_version: 1 })
+  it('diagnoseVpn 走 POST /tickets/{id}/vpn/diagnose，无请求体', async () => {
+    apiMock.mockResolvedValue({ run: sampleRun, result: {}, dispatch: {} })
+    const result = await diagnoseVpn('t-1')
     expect(apiMock).toHaveBeenCalledWith('/tickets/t-1/vpn/diagnose', {
       method: 'POST',
-      body: JSON.stringify({ operation_id: 'op-1', expected_version: 1 }),
       signal: undefined,
     })
-    expect(result.run).toEqual(sampleRun)
+    expect(result.run.run_id).toBe('diag_abc')
   })
 
-  it('getVpnDiagnosis 走 GET /tickets/{id}/vpn/diagnosis', async () => {
-    apiMock.mockResolvedValue({ run: null })
+  it('getVpnDiagnosis 走 GET /tickets/{id}/vpn/diagnosis，返回快照', async () => {
+    const snapshot = {
+      ticket_id: 't-1',
+      latest_run: sampleRun,
+      runs: [sampleRun],
+      actions: [],
+      results: [],
+      escalations: [],
+    }
+    apiMock.mockResolvedValue(snapshot)
     const result = await getVpnDiagnosis('t-1')
     expect(apiMock).toHaveBeenCalledWith('/tickets/t-1/vpn/diagnosis', { signal: undefined })
-    expect(result).toEqual({ run: null })
+    expect(result.latest_run).toEqual(sampleRun)
+    expect(result.runs).toHaveLength(1)
   })
 
-  it('submitVpnActionResult 走 POST /tickets/{id}/vpn/actions/{aid}/result，details 为 dict', async () => {
-    apiMock.mockResolvedValue({
-      action_id: 'a-1',
-      result: 'success',
-      evidence: '已重启',
-      details: null,
-      submitted_at: new Date().toISOString(),
-    })
-    await submitVpnActionResult('t-1', 'a-1', {
-      result: 'success',
-      evidence: '已重启',
-      details: { note: '连接恢复' },
+  it('submitVpnActionResult 走 POST /tickets/{id}/vpn/actions/{aid}/result，evidence 为 dict、details 为字符串', async () => {
+    const response = {
+      action_result: {
+        action_id: 'a-1',
+        result: '已重启',
+        evidence: { note: '连接恢复' },
+        details: '客户已操作',
+        submitted_at: new Date().toISOString(),
+      },
+      transition: true,
+      re_diagnosis: null,
+    }
+    apiMock.mockResolvedValue(response)
+    const result = await submitVpnActionResult('t-1', 'a-1', {
+      result: '已重启',
+      evidence: { note: '连接恢复' },
+      details: '客户已操作',
     })
     expect(apiMock).toHaveBeenCalledWith('/tickets/t-1/vpn/actions/a-1/result', {
       method: 'POST',
-      body: JSON.stringify({ result: 'success', evidence: '已重启', details: { note: '连接恢复' } }),
+      body: JSON.stringify({ result: '已重启', evidence: { note: '连接恢复' }, details: '客户已操作' }),
       signal: undefined,
     })
+    expect(result.action_result.action_id).toBe('a-1')
   })
 
-  it('resumeVpnDiagnosis 走 POST /tickets/{id}/vpn/diagnose/resume', async () => {
-    apiMock.mockResolvedValue({ run: sampleRun, customer_actions: [] })
-    await resumeVpnDiagnosis('t-1', { operation_id: 'op-2', expected_version: 2 })
+  it('resumeVpnDiagnosis 走 POST /tickets/{id}/vpn/diagnose/resume，请求体为 {comment}', async () => {
+    apiMock.mockResolvedValue({ run: sampleRun, result: {}, dispatch: {} })
+    await resumeVpnDiagnosis('t-1', { comment: '继续' })
     expect(apiMock).toHaveBeenCalledWith('/tickets/t-1/vpn/diagnose/resume', {
       method: 'POST',
-      body: JSON.stringify({ operation_id: 'op-2', expected_version: 2 }),
+      body: JSON.stringify({ comment: '继续' }),
       signal: undefined,
     })
   })

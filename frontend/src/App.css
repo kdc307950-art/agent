@@ -102,6 +102,25 @@
 .approval-card .primary-action { background: #176b5b; }
 .approval-card .secondary-action { color: #8f3438; border-color: #e6b8b8; }
 .approval-card .primary-action:disabled, .approval-card .secondary-action:disabled { opacity: .55; }
+/* VPN 诊断面板（阶段二）：客户排障步骤逐条回填 */
+.vpn-panel .copilot-block strong { display: block; margin-bottom: 6px; color: #4b565f; }
+.vpn-panel .copilot-block .requester { margin-top: 6px; }
+.vpn-panel .vpn-step { padding: 10px 0 12px; border-top: 1px solid #eef1f3; }
+.vpn-panel .vpn-step:first-of-type { border-top: 0; }
+.vpn-panel .vpn-step-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.vpn-panel .vpn-step-head strong { font-size: 13px; color: #252c33; }
+.vpn-panel .vpn-step-expected { color: #78838c; font-size: 12px; margin: 2px 0 6px; }
+.vpn-panel .vpn-step-controls { display: grid; grid-template-columns: minmax(110px, auto) minmax(120px, 1fr) minmax(120px, 1fr) auto; gap: 8px; align-items: end; }
+.vpn-panel .vpn-step-controls label { display: grid; gap: 4px; color: #58636c; font-size: 11px; font-weight: 650; }
+.vpn-panel .vpn-step-controls select,
+.vpn-panel .vpn-step-controls input { height: 32px; border: 1px solid #ccd4da; border-radius: 4px; padding: 0 9px; color: #273038; background: white; }
+.vpn-panel .vpn-step-controls .secondary-action { height: 32px; }
+.vpn-risk-low { color: #2c8a4b; }
+.vpn-risk-medium { color: #a25b18; }
+.vpn-risk-high { color: #b52f35; }
+@media (max-width: 720px) {
+  .vpn-panel .vpn-step-controls { grid-template-columns: 1fr; }
+}
 .mobile-only { display: none; }
 /* 移动端侧栏遮罩：抽屉打开时覆盖主内容，点击关闭 */
 .sidebar-overlay { position: fixed; inset: 0; background: rgba(15,23,28,.45); z-index: 39; }

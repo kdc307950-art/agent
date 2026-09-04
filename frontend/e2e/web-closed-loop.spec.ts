@@ -54,14 +54,14 @@ test.describe('Web 闭环（Mock）', () => {
     await page.route(
       url => url.pathname === '/api/tickets' && url.searchParams.size === 0,
       async (route, request) => {
-        if (request.method() !== 'POST') return route.continue()
+        if (request.method() !== 'POST') return route.fallback()
         return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(ticket) })
       },
     )
     await page.route(
       url => url.pathname === `/api/tickets/${ticketId}/intake`,
       async (route, request) => {
-        if (request.method() !== 'POST') return route.continue()
+        if (request.method() !== 'POST') return route.fallback()
         return route.fulfill({
           status: 200,
           contentType: 'application/json',
@@ -72,7 +72,7 @@ test.describe('Web 闭环（Mock）', () => {
     await page.route(
       url => url.pathname === `/api/tickets/${ticketId}/resume`,
       async (route, request) => {
-        if (request.method() !== 'POST') return route.continue()
+        if (request.method() !== 'POST') return route.fallback()
         currentTicket = queued
         return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ticket: queued, state: {}, interrupt: null }) })
       },
@@ -80,7 +80,7 @@ test.describe('Web 闭环（Mock）', () => {
     await page.route(
       url => url.pathname === `/api/tickets/${ticketId}/transitions`,
       async (route, request) => {
-        if (request.method() !== 'POST') return route.continue()
+        if (request.method() !== 'POST') return route.fallback()
         const body = request.postDataJSON()
         const next = {
           assign: 'assigned',
@@ -98,6 +98,9 @@ test.describe('Web 闭环（Mock）', () => {
     await page.getByPlaceholder('标题').fill('VPN 无法连接')
     await page.getByPlaceholder('问题描述').fill('错误码 809')
     await page.getByRole('button', { name: '提交工单' }).click()
+
+    // 创建回调可能与列表刷新交错；同一 ticket_id 只能保留一行。
+    await expect(page.locator('.ticket-row')).toHaveCount(1)
 
     // 缺字段补问面板出现
     await expect(page.locator('.clarification-panel')).toBeVisible()

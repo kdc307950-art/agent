@@ -94,7 +94,7 @@ export function mockCreateTicket(page: Page, ticket: Ticket) {
   return page.route(
     (url) => url.pathname === '/api/tickets',
     async (route, request) => {
-      if (request.method() !== 'POST') return route.continue()
+      if (request.method() !== 'POST') return route.fallback()
       return route.fulfill({
         status: 201,
         contentType: 'application/json',
@@ -108,7 +108,7 @@ export function mockStartIntake(page: Page, ticket: Ticket) {
   return page.route(
     (url) => url.pathname === `/api/tickets/${ticket.ticket_id}/intake`,
     async (route, request) => {
-      if (request.method() !== 'POST') return route.continue()
+      if (request.method() !== 'POST') return route.fallback()
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -122,7 +122,7 @@ export function mockTransition(page: Page, ticket: Ticket, nextStatus: string) {
   return page.route(
     (url) => url.pathname === `/api/tickets/${ticket.ticket_id}/transitions`,
     async (route, request) => {
-      if (request.method() !== 'POST') return route.continue()
+      if (request.method() !== 'POST') return route.fallback()
       const updated = { ...ticket, status: nextStatus, version: ticket.version + 1 }
       return route.fulfill({
         status: 200,
@@ -155,7 +155,7 @@ export function mockCopilotGenerate(
   return page.route(
     (url) => url.pathname === `/api/tickets/${ticketId}/copilot`,
     async (route, request) => {
-      if (request.method() !== 'POST') return route.continue()
+      if (request.method() !== 'POST') return route.fallback()
       // 阶段二异步 Worker：POST 只入队返回 202
       return route.fulfill({
         status: 202,
@@ -210,7 +210,7 @@ export function mockCopilotApprove(page: Page, ticketId: string) {
       url.pathname.startsWith(`/api/tickets/${ticketId}/copilot/`) &&
       url.pathname.endsWith('/approve'),
     async (route, request) => {
-      if (request.method() !== 'POST') return route.continue()
+      if (request.method() !== 'POST') return route.fallback()
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
