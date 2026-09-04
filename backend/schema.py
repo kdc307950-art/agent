@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from psycopg import AsyncConnection
 
 APP_SCHEMA_NAME = "langgraph_agent"
-APP_SCHEMA_VERSION = 22
+APP_SCHEMA_VERSION = 23
 MIGRATION_LOCK_KEY = 891274631
 
 # These are the tables created by the pinned LangGraph PostgreSQL adapters and
@@ -51,6 +51,12 @@ REQUIRED_RELATIONS: tuple[str, ...] = (
     "admin_audit_events",
     "copilot_runs",
     "copilot_drafts",
+    "admin_audit_events",
+    # v23: VPN 客户处置闭环持久化。
+    "vpn_diagnosis_runs",
+    "vpn_customer_actions",
+    "vpn_customer_action_results",
+    "vpn_escalations",
 )
 
 
@@ -496,14 +502,12 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 """)
             # Rows created by pre-lease schemas have NULL lease metadata. Reset
             # them so an upgrade cannot strand events permanently in processing.
-            await cursor.execute(
-                """
+            await cursor.execute("""
                 UPDATE outbox_events
                 SET status = 'pending', worker_id = NULL, lease_expires_at = NULL,
                     available_at = LEAST(available_at, now())
                 WHERE status = 'processing' AND lease_expires_at IS NULL
-                """
-            )
+                """)
             current = 8
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
@@ -821,14 +825,12 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
             )
             # 兼容曾在租约字段加入前中断的 processing 记录，避免 NULL 租约
             # 永久不可领取；恢复为 received 由 Worker 重新处理。
-            await cursor.execute(
-                """
+            await cursor.execute("""
                 UPDATE inbound_events
                 SET status = 'received', worker_id = NULL, lease_expires_at = NULL,
                     claimed_at = NULL, next_attempt_at = LEAST(next_attempt_at, now())
                 WHERE status = 'processing' AND lease_expires_at IS NULL
-                """
-            )
+                """)
             await cursor.execute("""
                 ALTER TABLE inbound_events
                 DROP CONSTRAINT IF EXISTS inbound_events_status_check
@@ -1038,9 +1040,7 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
             # POST 只创建 queued 运行立即返回 202；CopilotWorker 领取
             # （processing + worker_id + 租约）后执行，Web 进程不调模型。
             # 临时错误指数退避（failed + next_attempt_at），超重试 -> dead。
-            await cursor.execute(
-                "ALTER TABLE copilot_runs ADD COLUMN IF NOT EXISTS worker_id TEXT"
-            )
+            await cursor.execute("ALTER TABLE copilot_runs ADD COLUMN IF NOT EXISTS worker_id TEXT")
             await cursor.execute(
                 "ALTER TABLE copilot_runs ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ"
             )
@@ -1109,15 +1109,13 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
             # 每个运行最多一份可见草稿；草稿写入与运行完成由同一事务保护。
             # 约束也防止旧 Worker 在租约丢失后留下重复结果。历史版本没有
             # 该唯一约束，先按创建时间保留每个运行最新一份，保证升级可重复执行。
-            await cursor.execute(
-                """
+            await cursor.execute("""
                 DELETE FROM copilot_drafts AS stale
                 USING copilot_drafts AS keep
                 WHERE stale.tenant_id = keep.tenant_id
                   AND stale.run_id = keep.run_id
                   AND (stale.created_at, stale.draft_id) < (keep.created_at, keep.draft_id)
-                """
-            )
+                """)
             await cursor.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_copilot_drafts_tenant_run
                 ON copilot_drafts (tenant_id, run_id)
@@ -1153,6 +1151,151 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 ON channel_identities (tenant_id, channel)
                 """)
             current = 22
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 23:
+            # v23: VPN 客户处置闭环（阶段二）—— 新增三个工单状态 + 4 张领域对象表。
+            # 工单状态扩展：diagnosing / awaiting_customer_action / reconciliation_required。
+            await cursor.execute(
+                "ALTER TABLE tickets DROP CONSTRAINT IF EXISTS tickets_status_check"
+            )
+            await cursor.execute("""
+                ALTER TABLE tickets
+                ADD CONSTRAINT tickets_status_check CHECK (
+                    status IN (
+                        'new',
+                        'intaking',
+                        'awaiting_customer',
+                        'classified',
+                        'answer_proposed',
+                        'awaiting_customer_confirmation',
+                        'queued',
+                        'assigned',
+                        'in_progress',
+                        'awaiting_approval',
+                        'diagnosing',
+                        'awaiting_customer_action',
+                        'reconciliation_required',
+                        'resolved',
+                        'closed',
+                        'cancelled'
+                    )
+                )
+                """)
+            # 一次 VPN 诊断运行（结论/假设/证据/下一步/原因码）。
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS vpn_diagnosis_runs (
+                    run_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    ticket_id TEXT NOT NULL,
+                    fault TEXT NOT NULL DEFAULT 'connection_failed',
+                    hypothesis TEXT NOT NULL DEFAULT '',
+                    confidence DOUBLE PRECISION NOT NULL DEFAULT 0 CHECK (
+                        confidence >= 0 AND confidence <= 1
+                    ),
+                    evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    ruled_out TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+                    next_action TEXT,
+                    reason_codes TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+                    status TEXT NOT NULL DEFAULT 'diagnosing',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    CONSTRAINT vpn_diagnosis_runs_ticket_fk
+                        FOREIGN KEY (tenant_id, ticket_id)
+                        REFERENCES tickets (tenant_id, ticket_id)
+                        ON DELETE CASCADE,
+                    CONSTRAINT vpn_diagnosis_runs_status_check
+                        CHECK (status IN ('diagnosing', 'completed', 'handed_off', 'failed', 'cancelled'))
+                )
+                """)
+            await cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_vpn_diagnosis_runs_ticket
+                ON vpn_diagnosis_runs (tenant_id, ticket_id, created_at DESC)
+                """)
+            # 给客户的排查步骤（provide_steps 结构化落库）。
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS vpn_customer_actions (
+                    action_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    ticket_id TEXT NOT NULL,
+                    run_id TEXT,
+                    title TEXT NOT NULL,
+                    instruction TEXT NOT NULL,
+                    expected_result TEXT NOT NULL,
+                    risk_level TEXT NOT NULL DEFAULT 'low',
+                    requires_agent BOOLEAN NOT NULL DEFAULT FALSE,
+                    status TEXT NOT NULL DEFAULT 'issued',
+                    ordinal INTEGER NOT NULL DEFAULT 0 CHECK (ordinal >= 0),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    CONSTRAINT vpn_customer_actions_ticket_fk
+                        FOREIGN KEY (tenant_id, ticket_id)
+                        REFERENCES tickets (tenant_id, ticket_id)
+                        ON DELETE CASCADE,
+                    CONSTRAINT vpn_customer_actions_status_check
+                        CHECK (status IN ('issued', 'executed', 'confirmed', 'abandoned', 'superseded')),
+                    CONSTRAINT vpn_customer_actions_risk_check
+                        CHECK (risk_level IN ('low', 'medium', 'high'))
+                )
+                """)
+            await cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_vpn_customer_actions_ticket
+                ON vpn_customer_actions (tenant_id, ticket_id, ordinal)
+                """)
+            # 客户回填的排查步骤结果。
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS vpn_customer_action_results (
+                    result_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    ticket_id TEXT NOT NULL,
+                    action_id TEXT NOT NULL,
+                    run_id TEXT,
+                    result TEXT NOT NULL,
+                    evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    details TEXT NOT NULL DEFAULT '',
+                    submitted_by TEXT NOT NULL DEFAULT '',
+                    submitted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    CONSTRAINT vpn_customer_action_results_ticket_fk
+                        FOREIGN KEY (tenant_id, ticket_id)
+                        REFERENCES tickets (tenant_id, ticket_id)
+                        ON DELETE CASCADE,
+                    CONSTRAINT vpn_customer_action_results_action_fk
+                        FOREIGN KEY (action_id)
+                        REFERENCES vpn_customer_actions (action_id)
+                        ON DELETE CASCADE
+                )
+                """)
+            await cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_vpn_action_results_ticket
+                ON vpn_customer_action_results (tenant_id, ticket_id, submitted_at DESC)
+                """)
+            # VPN 升级记录（转人工/多用户影响/身份缺失等）。
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS vpn_escalations (
+                    escalation_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    ticket_id TEXT NOT NULL,
+                    run_id TEXT,
+                    reason TEXT NOT NULL DEFAULT '',
+                    reason_codes TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+                    target_queue TEXT NOT NULL DEFAULT 'team-service-desk',
+                    status TEXT NOT NULL DEFAULT 'open',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    CONSTRAINT vpn_escalations_ticket_fk
+                        FOREIGN KEY (tenant_id, ticket_id)
+                        REFERENCES tickets (tenant_id, ticket_id)
+                        ON DELETE CASCADE,
+                    CONSTRAINT vpn_escalations_status_check
+                        CHECK (status IN ('open', 'acknowledged', 'resolved', 'closed'))
+                )
+                """)
+            await cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_vpn_escalations_ticket
+                ON vpn_escalations (tenant_id, ticket_id, created_at DESC)
+                """)
+            current = 23
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
                 (current, APP_SCHEMA_NAME),

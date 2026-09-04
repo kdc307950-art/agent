@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -24,27 +23,26 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from backend.security import Principal, rate_limit_dependency
+from backend.vpn.api_v2 import router as vpn_diagnosis_router
 from backend.vpn.closed_loop import VpnClosedLoopService, VpnCustomerActionError
 from backend.vpn.diagnosis import (
     CustomerActionStatus,
     DiagnosisRegistry,
+    DiagnosisRunStatus,
     VpnCustomerAction,
     VpnCustomerActionResult,
-    VpnDiagnosisFinding,
     VpnDiagnosisRun,
     VpnEscalation,
     parse_steps_to_actions,
 )
-from backend.vpn.diagnosis_api import router as vpn_diagnosis_router
 from src.my_agent.helpdesk import (
     ActorType,
-    InvalidTicketTransition,
     TicketAction,
     TicketCommand,
+    TicketPermissionDenied,
     TicketStatus,
     transition_ticket,
 )
-
 
 # ===========================================================================
 # 领域对象校验
@@ -204,7 +202,8 @@ def test_diagnosing_transitions():
 
 
 def test_customer_cannot_prescribe_steps_only_customer_can_submit_result():
-    with pytest.raises(Exception):
+    # 客户无诊断权限，不能派发排查步骤（应抛 TicketPermissionDenied）。
+    with pytest.raises(TicketPermissionDenied):
         transition_ticket(
             TicketStatus.DIAGNOSING,
             _cmd(TicketAction.PRESCRIBE_STEPS, ActorType.CUSTOMER),
@@ -220,7 +219,7 @@ def test_customer_cannot_prescribe_steps_only_customer_can_submit_result():
         == TicketStatus.DIAGNOSING
     )
     # 客户不能回填（无权执行 PRESCRIBE_STEPS）
-    with pytest.raises(Exception):
+    with pytest.raises(TicketPermissionDenied):
         transition_ticket(
             TicketStatus.DIAGNOSING,
             _cmd(TicketAction.PRESCRIBE_STEPS, ActorType.CUSTOMER),
@@ -360,6 +359,23 @@ def test_diagnose_must_handoff_records_escalation_and_reconcile():
     # 无命令转人工 -> 请求对账
     assert tickets.cur_status == TicketStatus.RECONCILIATION_REQUIRED
     assert TicketAction.REQUEST_RECONCILIATION in tickets.transition_calls
+
+
+def test_resume_opens_a_new_run_and_keeps_previous_run():
+    runtime, svc, _tickets, _audit = _make_loop()
+    first = asyncio.run(
+        svc.diagnose(runtime=runtime, tenant_id="tenant-a", ticket_id="t-1", run_context=_rc())
+    )
+    assert svc.registry.get_latest_run("t-1").run_id == first["run"]["run_id"]
+    second = asyncio.run(
+        svc.resume(runtime=runtime, tenant_id="tenant-a", ticket_id="t-1", run_context=_rc())
+    )
+    assert second["run"]["run_id"] != first["run"]["run_id"]
+    runs = svc.registry.list_runs("t-1")
+    assert len(runs) == 2
+    # 前一轮已终结（provide_steps -> COMPLETED），最新一轮为新 run。
+    assert runs[0].status == DiagnosisRunStatus.COMPLETED
+    assert runs[-1].run_id == second["run"]["run_id"]
 
 
 def test_submit_action_result_closes_loop():
@@ -511,3 +527,67 @@ def test_resume_diagnosis_requires_agent_scope():
     with TestClient(app) as client:
         resp = client.post("/tickets/t-1/vpn/diagnose/resume", json={"comment": "r"})
     assert resp.status_code == 403
+
+
+# ========== 阶段三：证据链结构化假设落库（M3 真实口径） ==========
+
+
+def _evidence_chain_outcome():
+    """带 evidence_chain（service.apply_handoff 产出）的诊断 outcome。"""
+    return {
+        "request": {"fault": "connection_failed", "ticket_id": "t-1", "tenant_id": "tenant-a"},
+        "result": {
+            "command": {
+                "command": "provide_steps",
+                "content": "请升级客户端",
+                "payload": {},
+                "reason_codes": ["client_version_outdated"],
+                "confidence": 0.85,
+            },
+            "must_handoff": False,
+            "evaluation": {"must_handoff": False, "handoff_reasons": [], "confidence": 0.85},
+            "tool_evidence": [
+                {"tool_name": "get_vpn_gateway_status", "content": "网关 gw-up status=up", "found": True}
+            ],
+            "evidence_chain": {
+                "hypothesis": "client_version_outdated",
+                "confidence": 0.85,
+                "evidence": ["账号状态=active", "网关状态=up", "客户端版本=2.9.0 < 要求 3.4.2"],
+                "ruled_out": ["gateway_down", "account_locked", "multi_user_impact"],
+                "next_action": "provide_steps",
+                "reason_codes": ["client_version_outdated", "config_issue"],
+                "must_handoff": False,
+            },
+        },
+    }
+
+
+def test_build_run_uses_evidence_chain_hypothesis():
+    """证据链结构化假设应写入 VpnDiagnosisRun（而非 command.content）。"""
+    svc = VpnClosedLoopService(
+        diagnosis_service=_StubDiagnosisService([_evidence_chain_outcome()])
+    )
+    run = svc._build_run(
+        _evidence_chain_outcome(), tenant_id="tenant-a", ticket_id="t-1"
+    )
+    assert run.hypothesis == "client_version_outdated"
+    assert run.confidence == 0.85
+    assert run.next_action == "provide_steps"
+    assert run.ruled_out == ["gateway_down", "account_locked", "multi_user_impact"]
+    assert run.reason_codes == ["client_version_outdated", "config_issue"]
+    # evidence 用 rules 的 evidence 数组（含账号/网关/版本三条），而非裸 tool_evidence。
+    assert len(run.evidence) == 3
+    assert all(e.tool_name == "rules" for e in run.evidence)
+
+
+def test_build_run_falls_back_without_evidence_chain():
+    """无 evidence_chain 时回退到 command 维度（向后兼容）。"""
+    outcome = _provide_steps_outcome()
+    svc = VpnClosedLoopService(
+        diagnosis_service=_StubDiagnosisService([outcome])
+    )
+    run = svc._build_run(outcome, tenant_id="tenant-a", ticket_id="t-1")
+    assert run.next_action == "provide_steps"
+    assert run.hypothesis == "1. 检查客户端版本\n2. 重启客户端\n3. 切换网络"  # command.content 兜底
+    assert len(run.evidence) == 1  # 仅 tool_evidence
+    assert run.evidence[0].tool_name == "get_vpn_account_status"

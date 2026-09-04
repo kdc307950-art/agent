@@ -1,4 +1,4 @@
-"""LANGGraph VPN 客户处置闭环 HTTP API（阶段二）。
+"""LANGGraph VPN 客户处置闭环 HTTP API（阶段二，api_v2）。
 
 低侵入、可运行的端到端入口，接 runtime.vpn_closed_loop（VpnClosedLoopService）+ audit：
 
@@ -7,9 +7,12 @@
     - POST /tickets/{ticket_id}/vpn/actions/{action_id}/result  客户回填一条排查步骤结果
     - POST /tickets/{ticket_id}/vpn/diagnose/resume   （客户动作后）再次诊断
 
-设计要点：
-    - 租户隔离：principal.tenant_id 为权威，service 层只按 principal.tenant_id 读/写工单。
+设计要点（参照 backend/vpn/api.py 的 _runtime/_run_context/_require_scope 模式）：
+    - 路由归属 ticket 域：router prefix="/tickets"，与既有 /vpn/reissue 前缀互不冲突。
+    - 租户隔离：principal.tenant_id 为权威，service 层只按 principal.tenant_id 读/写工单，
+      请求体不信任租户（本路由请求体只含客户动作，不含租户字段）。
     - scope 校验：诊断动作（agent）需 ticket:agent；客户回填结果需 ticket:customer 且为本人工单。
+    - 错误映射：404 工单不存在 / 409 状态冲突（重复回填/非法动作）/ 422 参数非法（ValueError）。
     - 每个关键点写 audit.record_event（vpn_diagnosis_*，由 closed_loop 服务负责）。
     - 服务未初始化（未配置模型 key）返回 503。
 """
@@ -148,7 +151,10 @@ async def get_diagnosis(
     request: Request,
     principal: Principal = Depends(rate_limit_dependency),
 ):
-    """查询工单的 VPN 处置闭环快照（诊断运行/排查步骤/结果/升级）。"""
+    """查询工单的 VPN 处置闭环快照（诊断运行/排查步骤/结果/升级）。
+
+    只读查询：坐席（ticket:agent）或客户（ticket:customer，仅本人工单）均可读。
+    """
     if not ({"ticket:agent", "ticket:customer"} & principal.scopes):
         raise HTTPException(status_code=403, detail="缺少工单读取权限")
     runtime = _runtime(request)

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -33,6 +34,11 @@ def UTC_NOW() -> datetime:
     return datetime.now(UTC)
 
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9_.:-]+$"
+
+
+def _new_result_id() -> str:
+    """生成客户动作结果的主键 result_id。"""
+    return f"res_{uuid.uuid4().hex[:24]}"
 
 
 # ===========================================================================
@@ -149,6 +155,7 @@ class VpnCustomerActionResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    result_id: str = Field(default_factory=_new_result_id, min_length=1, max_length=128, pattern=_IDENTIFIER_PATTERN)
     action_id: str = Field(min_length=1, max_length=128, pattern=_IDENTIFIER_PATTERN)
     ticket_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
     tenant_id: str = Field(min_length=1, max_length=128)

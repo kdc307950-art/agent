@@ -37,6 +37,7 @@ from .diagnosis import (
     DiagnosisRegistry,
     DiagnosisRunStatus,
     EscalationStatus,
+    VpnCustomerAction,
     VpnCustomerActionResult,
     VpnDiagnosisFinding,
     VpnDiagnosisRun,
@@ -54,6 +55,14 @@ HUMAN_QUEUE_TEAM_ID = "team-service-desk"
 # 识别「诊断结论需人工/再次处置」的处置命令。
 HANDOFF_COMMANDS = frozenset({"escalate_incident", "request_approval"})
 CREATE_AGENT_ACTIONS = frozenset({TicketAction.START_DIAGNOSIS, TicketAction.PRESCRIBE_STEPS})
+
+
+def _next_action_from_command(command: Any) -> str | None:
+    """从 DiagnosisCommand dict 提取 next_action（命令值）；非法/None 返回 None。"""
+    if not isinstance(command, dict):
+        return None
+    value = command.get("command")
+    return str(value) if value else None
 
 
 class VpnDiagnosisNotFound(LookupError):
@@ -76,9 +85,12 @@ class VpnClosedLoopService:
         *,
         diagnosis_service: Any,
         registry: DiagnosisRegistry | None = None,
+        repository: Any | None = None,
     ) -> None:
         self.diagnosis_service = diagnosis_service
         self.registry = registry or DiagnosisRegistry()
+        # PostgreSQL 持久化仓储（方案 A）：生产环境 runtime 提供时镜像落库；缺省 None 时仅内存登记表。
+        self.repository = repository
 
     # ---- 公有编排入口 ----
 
@@ -106,6 +118,7 @@ class VpnClosedLoopService:
             result = {}
         run = self._build_run(outcome, tenant_id=tenant_id, ticket_id=ticket_id)
         self.registry.save_run(run)
+        await self._persist_run(run)
 
         await self._audit(
             runtime,
@@ -115,6 +128,20 @@ class VpnClosedLoopService:
             payload={
                 "tenant_id": tenant_id,
                 "ticket_id": ticket_id,
+                "run_id": run.run_id,
+                "fault": run.fault,
+                "confidence": run.confidence,
+                "next_action": run.next_action,
+                "must_handoff": bool(result.get("must_handoff")),
+            },
+        )
+        await self._append_timeline(
+            runtime,
+            run_context,
+            tenant_id,
+            ticket_id,
+            action="vpn_diagnosis",
+            payload={
                 "run_id": run.run_id,
                 "fault": run.fault,
                 "confidence": run.confidence,
@@ -134,6 +161,7 @@ class VpnClosedLoopService:
         )
 
         dispatch = await self._dispatch(result, runtime, run_context, tenant_id, ticket_id, run)
+        await self._persist_run(run)  # dispatch 可能推进 run.status，回写一次落库
         return {
             "run": run.model_dump(mode="json"),
             "result": result,
@@ -189,6 +217,9 @@ class VpnClosedLoopService:
             submitted_by=actor_id,
         )
         self.registry.add_action_result(created)
+        await self._persist_action_result(created)
+        # 动作状态推进为 EXECUTED（内存 + PostgreSQL）。
+        await self._persist_action_status(action_id, CustomerActionStatus.EXECUTED)
 
         await self._audit(
             runtime,
@@ -202,6 +233,15 @@ class VpnClosedLoopService:
                 "run_id": created.run_id,
                 "submitted_by": actor_id,
             },
+        )
+        await self._append_timeline(
+            runtime,
+            run_context,
+            tenant_id,
+            ticket_id,
+            action="vpn_customer_action",
+            actor_type="customer",
+            payload={"action_id": action_id, "result_id": created.result_id, "submitted_by": actor_id},
         )
 
         # 状态机：awaiting_customer_action -> diagnosing（客户提供动作结果）。
@@ -247,22 +287,29 @@ class VpnClosedLoopService:
         tenant_id: str,
         ticket_id: str,
     ) -> dict[str, Any]:
-        """返回工单当前的 VPN 处置闭环快照（诊断/动作/结果/升级）。"""
-        latest_run = self.registry.get_latest_run(ticket_id)
+        """返回工单当前的 VPN 处置闭环快照（诊断/动作/结果/升级）。
+
+        生产环境（repository 存在）优先读 PostgreSQL；否则回退到内存登记表（单测）。
+        """
+        if self.repository is not None:
+            latest_run = await self.repository.get_latest_run(tenant_id, ticket_id)
+            runs = await self.repository.list_runs(tenant_id, ticket_id)
+            actions = await self.repository.list_actions(tenant_id, ticket_id)
+            results = await self.repository.list_action_results(tenant_id, ticket_id)
+            escalations = await self.repository.list_escalations(tenant_id, ticket_id)
+        else:
+            latest_run = self.registry.get_latest_run(ticket_id)
+            runs = self.registry.list_runs(ticket_id)
+            actions = self.registry.list_actions(ticket_id)
+            results = self.registry.list_ticket_results(ticket_id)
+            escalations = self.registry.list_escalations(ticket_id)
         return {
             "ticket_id": ticket_id,
             "latest_run": latest_run.model_dump(mode="json") if latest_run else None,
-            "runs": [run.model_dump(mode="json") for run in self.registry.list_runs(ticket_id)],
-            "actions": [
-                action.model_dump(mode="json") for action in self.registry.list_actions(ticket_id)
-            ],
-            "results": [
-                result.model_dump(mode="json")
-                for result in self.registry.list_ticket_results(ticket_id)
-            ],
-            "escalations": [
-                esc.model_dump(mode="json") for esc in self.registry.list_escalations(ticket_id)
-            ],
+            "runs": [run.model_dump(mode="json") for run in runs],
+            "actions": [action.model_dump(mode="json") for action in actions],
+            "results": [result.model_dump(mode="json") for result in results],
+            "escalations": [esc.model_dump(mode="json") for esc in escalations],
         }
 
     # ---- 内部：结果 -> VpnDiagnosisRun ----
@@ -274,24 +321,50 @@ class VpnClosedLoopService:
             result = {}
         request = request if isinstance(request, dict) else {}
         command = result.get("command")
-        next_action = str(command.get("command")) if isinstance(command, dict) else None
+        # 阶段三：优先用证据链结构化假设（service.apply_handoff 写入的 evidence_chain），
+        # 使 VpnDiagnosisRun.hypothesis/evidence/ruled_out/confidence/next_action/reason_codes
+        # 来自确定性规则 EvidenceDiagnosis，供 M3 fault_hypothesis 消费（而非 command.content）。
+        evidence_chain = result.get("evidence_chain")
+        if isinstance(evidence_chain, dict) and evidence_chain.get("hypothesis"):
+            hypothesis = str(evidence_chain.get("hypothesis") or "")
+            confidence = self._as_float(evidence_chain.get("confidence"))
+            evidence = [
+                VpnDiagnosisFinding(
+                    tool_name="rules",
+                    evidence=str(ev_item),
+                    found=True,
+                )
+                for ev_item in (evidence_chain.get("evidence") or [])
+            ]
+            ruled_out = list(evidence_chain.get("ruled_out") or [])
+            # 与 else 分支保持一致的同型（str | None），避免 mypy 因 if/else 分支类型不一致报错；
+            # 同时避免 str(None)="None" 的边界（二者均缺时保留 None）。
+            next_action = evidence_chain.get("next_action") or _next_action_from_command(command)
+            reason_codes = list(evidence_chain.get("reason_codes") or [])
+        else:
+            # 回退：无结构化证据链时用命令维度（向后兼容）。
+            next_action = _next_action_from_command(command)
+            confidence = self._as_float(
+                result.get("evaluation", {}).get("confidence")
+            ) if isinstance(result.get("evaluation"), dict) else self._as_float(
+                command.get("confidence")
+            ) if isinstance(command, dict) else 0.0
+            evidence = [
+                VpnDiagnosisFinding(
+                    tool_name=str(item.get("tool_name") or ""),
+                    evidence=str(item.get("content") or ""),
+                    document_id=item.get("document_id"),
+                    document_version=item.get("document_version"),
+                    chunk_id=item.get("chunk_id"),
+                    title=item.get("title"),
+                    found=bool(item.get("found", True)),
+                )
+                for item in (result.get("tool_evidence") or [])
+            ]
+            hypothesis = str(command.get("content") or "") if command else ""
+            ruled_out = list(result.get("ruled_out") or [])
+            reason_codes = list(command.get("reason_codes") or []) if command else []
 
-        confidence = self._as_float(result.get("evaluation", {}).get("confidence")) if isinstance(
-            result.get("evaluation"), dict
-        ) else self._as_float(command.get("confidence")) if isinstance(command, dict) else 0.0
-
-        evidence = [
-            VpnDiagnosisFinding(
-                tool_name=str(item.get("tool_name") or ""),
-                evidence=str(item.get("content") or ""),
-                document_id=item.get("document_id"),
-                document_version=item.get("document_version"),
-                chunk_id=item.get("chunk_id"),
-                title=item.get("title"),
-                found=bool(item.get("found", True)),
-            )
-            for item in (result.get("tool_evidence") or [])
-        ]
         must_handoff = bool(result.get("must_handoff"))
         run_status = (
             DiagnosisRunStatus.HANDED_OFF
@@ -299,20 +372,19 @@ class VpnClosedLoopService:
             else DiagnosisRunStatus.DIAGNOSING
         )
 
-        run = VpnDiagnosisRun(
+        return VpnDiagnosisRun(
             run_id=self._new_run_id(),
             ticket_id=ticket_id,
             tenant_id=tenant_id,
             fault=str(request.get("fault") or "connection_failed"),
-            hypothesis=str(command.get("content") or "") if command else "",
+            hypothesis=hypothesis,
             confidence=confidence,
             evidence=evidence[:64],
-            ruled_out=list(result.get("ruled_out") or []),
+            ruled_out=ruled_out,
             next_action=next_action,
-            reason_codes=list(command.get("reason_codes") or []) if command else [],
+            reason_codes=reason_codes,
             status=run_status,
         )
-        return run
 
     # ---- 内部：命令分派 ----
 
@@ -344,6 +416,7 @@ class VpnClosedLoopService:
             )
             for action in actions:
                 self.registry.add_action(action)
+                await self._persist_action(action)
             await self._audit(
                 runtime,
                 run_context,
@@ -362,6 +435,14 @@ class VpnClosedLoopService:
                 tenant_id,
                 ticket_id,
                 TicketAction.PRESCRIBE_STEPS,
+                payload={"run_id": run.run_id, "action_ids": [a.action_id for a in actions]},
+            )
+            await self._append_timeline(
+                runtime,
+                run_context,
+                tenant_id,
+                ticket_id,
+                action="vpn_prescribed_steps",
                 payload={"run_id": run.run_id, "action_ids": [a.action_id for a in actions]},
             )
             run.status = DiagnosisRunStatus.COMPLETED
@@ -455,6 +536,7 @@ class VpnClosedLoopService:
             status=EscalationStatus.OPEN,
         )
         self.registry.add_escalation(escalation)
+        await self._persist_escalation(escalation)
         await self._audit(
             runtime,
             run_context,
@@ -463,6 +545,18 @@ class VpnClosedLoopService:
             payload={
                 "tenant_id": tenant_id,
                 "ticket_id": ticket_id,
+                "run_id": run.run_id,
+                "escalation_id": escalation.escalation_id,
+                "reason_codes": reasons,
+            },
+        )
+        await self._append_timeline(
+            runtime,
+            run_context,
+            tenant_id,
+            ticket_id,
+            action="vpn_escalated",
+            payload={
                 "run_id": run.run_id,
                 "escalation_id": escalation.escalation_id,
                 "reason_codes": reasons,
@@ -534,6 +628,77 @@ class VpnClosedLoopService:
             await audit.record_event(run_context, event_type, status=status, payload=payload)
         except Exception as exc:  # noqa: BLE001
             logger.warning("VPN 闭环审计写入失败 %s: %s", event_type, type(exc).__name__)
+
+    # ---- 内部：PostgreSQL 持久化（方案 A，repository 存在时镜像写） ----
+
+    async def _persist_run(self, run: VpnDiagnosisRun) -> None:
+        if self.repository is None or not hasattr(self.repository, "save_run"):
+            return
+        try:
+            await self.repository.save_run(run)
+        except Exception as exc:  # noqa: BLE001  落库失败不阻断主流程
+            logger.warning("VPN 诊断运行落库失败 run=%s: %s", run.run_id, type(exc).__name__)
+
+    async def _persist_action(self, action: VpnCustomerAction) -> None:
+        if self.repository is None or not hasattr(self.repository, "add_action"):
+            return
+        try:
+            await self.repository.add_action(action)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("VPN 排查步骤落库失败 action=%s: %s", action.action_id, type(exc).__name__)
+
+    async def _persist_action_status(self, action_id: str, status: CustomerActionStatus) -> None:
+        if self.repository is None or not hasattr(self.repository, "update_action_status"):
+            return
+        try:
+            await self.repository.update_action_status(action_id, status)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("VPN 排查步骤状态落库失败 action=%s: %s", action_id, type(exc).__name__)
+
+    async def _persist_action_result(self, result: VpnCustomerActionResult) -> None:
+        if self.repository is None or not hasattr(self.repository, "add_action_result"):
+            return
+        try:
+            await self.repository.add_action_result(result)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("VPN 客户结果落库失败 result=%s: %s", result.result_id, type(exc).__name__)
+
+    async def _persist_escalation(self, escalation: VpnEscalation) -> None:
+        if self.repository is None or not hasattr(self.repository, "add_escalation"):
+            return
+        try:
+            await self.repository.add_escalation(escalation)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("VPN 升级记录落库失败 esc=%s: %s", escalation.escalation_id, type(exc).__name__)
+
+    # ---- 内部：工单时间线（append_status_event，诊断/派步骤/客户结果/升级进入时间线） ----
+
+    async def _append_timeline(
+        self,
+        runtime: Any,
+        run_context: Any,
+        tenant_id: str,
+        ticket_id: str,
+        *,
+        action: str,
+        payload: dict[str, Any],
+        actor_type: str | None = None,
+    ) -> None:
+        tickets = getattr(runtime, "tickets", None)
+        if tickets is None or not hasattr(tickets, "append_status_event"):
+            return
+        try:
+            actor_id = getattr(run_context, "user_id", None) or "vpn-agent"
+            await tickets.append_status_event(
+                tenant_id,
+                ticket_id,
+                action=action,
+                actor_type=actor_type or "agent",
+                actor_id=actor_id,
+                payload=payload,
+            )
+        except Exception as exc:  # noqa: BLE001  时间线写入失败不阻断主流程
+            logger.warning("VPN 时间线写入失败 ticket=%s action=%s: %s", ticket_id, action, type(exc).__name__)
 
     # ---- 内部：工具 ----
 
