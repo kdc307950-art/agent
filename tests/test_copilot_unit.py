@@ -164,7 +164,7 @@ def _run(copilot, request, runtime):
 
 def test_extract_json_tolerates_noise():
     assert _extract_json('前文 {"a": 1} 后文') == {"a": 1}
-    assert _extract_json("```json\n{\"b\": 2}\n```") == {"b": 2}
+    assert _extract_json('```json\n{"b": 2}\n```') == {"b": 2}
     assert _extract_json("no json") == {}
 
 
@@ -189,15 +189,14 @@ def test_copilot_runs_tool_loop_and_produces_structured_result():
 
 def test_tool_call_limit_terminates_run():
     """工具调用超过上限（max_tool_calls）立即终止并标记错误。"""
+
     async def run():
         tool = _Tool("search_knowledge")
         runtime = _runtime()
         copilot = _copilot(
             {"search_knowledge": tool},
             _AlwaysToolCallModel("search_knowledge"),
-            limits=CopilotLimits(
-                max_rounds=10, max_tool_calls=2, max_tool_calls_per_round=2
-            ),
+            limits=CopilotLimits(max_rounds=10, max_tool_calls=2, max_tool_calls_per_round=2),
         )
         return await _run(copilot, _request(), runtime), tool.calls
 
@@ -209,15 +208,14 @@ def test_tool_call_limit_terminates_run():
 
 def test_round_limit_terminates_run():
     """达到最大轮次仍未产出结构化结果时标记 round_limit_exceeded。"""
+
     async def run():
         tool = _Tool("search_knowledge")
         runtime = _runtime()
         copilot = _copilot(
             {"search_knowledge": tool},
             _AlwaysToolCallModel("search_knowledge"),
-            limits=CopilotLimits(
-                max_rounds=1, max_tool_calls=10, max_tool_calls_per_round=1
-            ),
+            limits=CopilotLimits(max_rounds=1, max_tool_calls=10, max_tool_calls_per_round=1),
         )
         return await _run(copilot, _request(), runtime)
 
@@ -228,13 +226,16 @@ def test_round_limit_terminates_run():
 
 def test_single_tool_timeout_does_not_break_run():
     """单工具超时被捕获：工具调用标记 timeout，主流程继续/正常收尾。"""
+
     async def run():
         tool = _Tool("search_knowledge")
         tool.timeout_on = 1  # 第一次调用即超时
         runtime = _runtime()
         copilot = _copilot(
             {"search_knowledge": tool},
-            _ToolCallModel(["search_knowledge"], final={"draft_answer": "超时后仍出草稿", "confidence": 0.9}),
+            _ToolCallModel(
+                ["search_knowledge"], final={"draft_answer": "超时后仍出草稿", "confidence": 0.9}
+            ),
             limits=CopilotLimits(single_tool_timeout_seconds=0.1),
         )
         return await _run(copilot, _request(), runtime)
@@ -247,6 +248,7 @@ def test_single_tool_timeout_does_not_break_run():
 
 def test_unregistered_tool_is_denied():
     """模型请求未注册工具：拒绝执行并记录 denied，不崩溃。"""
+
     async def run():
         tool = _Tool("search_knowledge")
         runtime = _runtime()
@@ -266,6 +268,7 @@ def test_unregistered_tool_is_denied():
 
 def test_copilot_tool_calls_go_through_governance_and_are_audited():
     """Copilot 工具调用产生治理审计事件（tool_call_started/completed）。"""
+
     async def run():
         tool = _Tool("search_knowledge")
         runtime = _runtime()
@@ -284,6 +287,7 @@ def test_copilot_tool_calls_go_through_governance_and_are_audited():
 
 def test_copilot_tool_denied_by_tenant_allowlist():
     """租户 allowlist 不允许的工具无法调用（治理层拒绝）。"""
+
     async def run():
         tool = _Tool("search_knowledge")
         # 租户 allowlist 为空：任何工具都被拒绝
@@ -305,6 +309,7 @@ def test_copilot_tool_denied_by_tenant_allowlist():
 
 def test_copilot_tool_denied_when_scope_missing():
     """缺少 ticket:agent scope 时工具被拒绝（治理层）。"""
+
     async def run():
         tool = _Tool("search_knowledge")
         runtime = _runtime(scopes=frozenset({"chat:write"}))  # 无 ticket:agent
@@ -325,6 +330,7 @@ def test_copilot_forged_send_message_is_denied_by_governance():
     模拟：工具集合包含 send_message，但 RunContext.allowed_tools 只含只读工具；
     治理层 allowed_tools 子集校验必须拦截。
     """
+
     async def run():
         send_tool = _Tool("send_message")
         runtime = _runtime(
@@ -362,6 +368,7 @@ def test_governance_error_maps_to_structured_error_code():
 
 def test_copilot_tool_trace_includes_structured_error_code():
     """工具被治理拒绝时 tool_trace 带结构化 error_code（而非仅文本）。"""
+
     async def run():
         tool = _Tool("search_knowledge")
         runtime = _runtime(scopes=frozenset({"chat:write"}))  # 无 ticket:agent
@@ -456,7 +463,9 @@ def test_gate_accepts_allowlisted_citation():
     result = service.apply_gate(
         {
             "draft_answer": "参考文档处理",
-            "citations": [{"document_id": "vpn-guide", "document_version": 2, "chunk_id": "vpn-03"}],
+            "citations": [
+                {"document_id": "vpn-guide", "document_version": 2, "chunk_id": "vpn-03"}
+            ],
             "confidence": 0.95,
             "needs_human_review": False,
         },
@@ -546,7 +555,9 @@ class _RealKnowledge:
 
     async def lexical_search(self, principal, query, limit=10):
         if query in self.hits_by_query:
-            return [h for h in self.hits_by_query[query] if h.tenant_id == principal.tenant_id][:limit]
+            return [h for h in self.hits_by_query[query] if h.tenant_id == principal.tenant_id][
+                :limit
+            ]
         return [h for h in self.hits if h.tenant_id == principal.tenant_id][:limit]
 
     async def verify_citations(self, principal, citations):
@@ -561,7 +572,11 @@ class _RealKnowledge:
                 all_hits.setdefault(h.key, h)
         result = []
         for h in all_hits.values():
-            if h.tenant_id == principal.tenant_id and h.key in set(citations) and h.key in self.verified:
+            if (
+                h.tenant_id == principal.tenant_id
+                and h.key in set(citations)
+                and h.key in self.verified
+            ):
                 result.append(
                     KnowledgeEvidence(
                         document_id=h.document_id,
@@ -860,7 +875,10 @@ def test_service_forged_chunk_is_rejected_by_authority_gate():
     result = asyncio.run(run())
     assert result.citations == []
     assert result.needs_human_review is True
-    assert "authority_citation_rejected" in result.reason_codes or "missing_citations" in result.reason_codes
+    assert (
+        "authority_citation_rejected" in result.reason_codes
+        or "missing_citations" in result.reason_codes
+    )
 
 
 def test_service_authority_rejection_counts_citation_metric():

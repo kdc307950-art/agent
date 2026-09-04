@@ -111,8 +111,10 @@ class HttpEmbeddingProvider:
                     raise RuntimeError("embedding 响应必须是 JSON 对象")
                 embeddings = payload.get("embeddings") or payload.get("data") or []
                 # 兼容 OpenAI embeddings 形态：data=[{index, embedding}, ...]。
-                if isinstance(embeddings, list) and embeddings and all(
-                    isinstance(item, dict) for item in embeddings
+                if (
+                    isinstance(embeddings, list)
+                    and embeddings
+                    and all(isinstance(item, dict) for item in embeddings)
                 ):
                     try:
                         indices = [int(item["index"]) for item in embeddings]
@@ -334,9 +336,7 @@ class PgVectorRetriever:
         hits: list[RetrievalHit] = []
         for row in rows:
             raw_similarity = row.pop("similarity", None)
-            similarity = (
-                float(raw_similarity) if raw_similarity is not None else None
-            )
+            similarity = float(raw_similarity) if raw_similarity is not None else None
             hits.append(
                 RetrievalHit(
                     source="vector",

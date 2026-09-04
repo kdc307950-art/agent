@@ -102,8 +102,7 @@ class InboundWorker:
             tenant_id=self.tenant_id,
         )
         lease_tasks = {
-            self._lease_key(row): asyncio.create_task(self._keep_lease_alive(row))
-            for row in rows
+            self._lease_key(row): asyncio.create_task(self._keep_lease_alive(row)) for row in rows
         }
         try:
             for row in rows:
@@ -232,7 +231,9 @@ class InboundWorker:
         except InboundLeaseLost:
             error_code_log = InboundLeaseLost.error_code
             status = "lease_lost"
-            await safe_incr(self.worker_metrics, "inbound_worker_lease_lost_total", {"channel": channel})
+            await safe_incr(
+                self.worker_metrics, "inbound_worker_lease_lost_total", {"channel": channel}
+            )
         except Exception as exc:
             # 失败分支：按剩余可重试次数决定进 dead 还是指数退避后重试。
             error_code = getattr(exc, "error_code", None) or type(exc).__name__
@@ -254,7 +255,9 @@ class InboundWorker:
                 )
             except Exception:
                 # 无法确认 fencing 结果时保守地不计 retry/dead；租约过期后由恢复流程接管。
-                logger.exception("inbound_event_failure_update_failed", extra={"event_id": event_id})
+                logger.exception(
+                    "inbound_event_failure_update_failed", extra={"event_id": event_id}
+                )
                 updated = False
             if updated:
                 if retry_at is None:

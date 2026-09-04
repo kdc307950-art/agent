@@ -47,6 +47,30 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+# Windows 沙箱下 .pytest_cache/v/cache 写入权限受限（WinError 5），禁用 pytest 缓存避免收集错误/警告。
+# 注意：pytest tmp_path fixture 在此沙箱（系统 Temp 与项目内 basetemp 均被锁）会触发 PermissionError，
+# 受影响用例（test_vpn_mock_adapter 的 json-file 用例、test_runtime_build_graph 部分用例）需在无沙箱
+# 限制的 CI/Docker 环境复验；属环境限制，非代码缺陷。
+addopts = "-p no:cacheprovider"
+# 排除 GraphFlow / 前端 / 虚拟环境等非测试目录（避免 pytest 扫描权限受限或无关目录导致收集错误）
+norecursedirs = [
+    ".graphflow-cache",
+    "graphflow-out",
+    ".pytest_cache",
+    ".venv",
+    "node_modules",
+    "frontend/node_modules",
+    "frontend/dist",
+    "x_bt*",
+    ".x_bt*",
+    ".ptmp*",
+    ".tmp_pytest",
+    ".pytest_tmp",
+    ".vpn_tmp",
+    ".ws_tmp",
+    "*_tmp",
+    "*.tmp*",
+]
 markers = [
     "live_e2e: tests that call a real model endpoint and may incur provider cost",
 ]

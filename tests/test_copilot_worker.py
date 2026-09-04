@@ -56,7 +56,8 @@ class _FakePool:
     async def claim_copilot_runs(self, *, worker_id, lease_seconds, limit):
         now = datetime.now(UTC)
         ready = [
-            r for r in self.runs.values()
+            r
+            for r in self.runs.values()
             if r["status"] == "queued"
             or (r["status"] == "failed" and (r.get("next_attempt_at") or now) <= now)
         ][:limit]
@@ -84,7 +85,9 @@ class _FakePool:
             return True
         return False
 
-    async def fail_copilot_run(self, *, tenant_id, run_id, worker_id, error_code, retry_at, max_attempts=2):
+    async def fail_copilot_run(
+        self, *, tenant_id, run_id, worker_id, error_code, retry_at, max_attempts=2
+    ):
         r = self.runs.get(run_id)
         if r and r["status"] == "processing" and r["worker_id"] == worker_id:
             r["status"] = "dead" if retry_at is None else "failed"
@@ -97,7 +100,9 @@ class _FakePool:
     async def recover_orphaned_runs(self, *, lease_seconds=60, max_recover=20, now=None):
         recovered = 0
         for r in self.runs.values():
-            if r["status"] == "processing" and (r.get("lease_expires_at") or datetime.now(UTC)) < datetime.now(UTC) - timedelta(seconds=lease_seconds):
+            if r["status"] == "processing" and (
+                r.get("lease_expires_at") or datetime.now(UTC)
+            ) < datetime.now(UTC) - timedelta(seconds=lease_seconds):
                 r["status"] = "queued"
                 r["error_code"] = "copilot_lease_recovered"
                 recovered += 1
@@ -174,8 +179,11 @@ def test_worker_completes_run_and_saves_draft():
     async def run():
         run_id = uuid4().hex
         await pool.start_run(
-            run_id=run_id, tenant_id="tenant-a", ticket_id="t-1",
-            operation_id=f"op-{uuid4().hex}", lease_seconds=60,
+            run_id=run_id,
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            operation_id=f"op-{uuid4().hex}",
+            lease_seconds=60,
         )
         result = await worker.run_once(limit=5)
         status = (await pool.get_run("tenant-a", run_id))["status"]
@@ -198,8 +206,11 @@ def test_worker_transient_failure_retries_then_dead():
     async def run():
         run_id = uuid4().hex
         await pool.start_run(
-            run_id=run_id, tenant_id="tenant-a", ticket_id="t-1",
-            operation_id=f"op-{uuid4().hex}", lease_seconds=60,
+            run_id=run_id,
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            operation_id=f"op-{uuid4().hex}",
+            lease_seconds=60,
         )
         # 第一轮：attempts=1，瞬时错误 -> retried（failed + next_attempt_at）
         r1 = await worker.run_once(limit=5)
@@ -226,8 +237,11 @@ def test_worker_recovers_orphaned_processing_run():
     async def run():
         run_id = uuid4().hex
         await pool.start_run(
-            run_id=run_id, tenant_id="tenant-a", ticket_id="t-1",
-            operation_id=f"op-{uuid4().hex}", lease_seconds=60,
+            run_id=run_id,
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            operation_id=f"op-{uuid4().hex}",
+            lease_seconds=60,
         )
         # 领取（processing）后不完成，租约过期（远超 worker 的 60s 租约阈值）
         await pool.claim_copilot_runs(worker_id="w-1", lease_seconds=60, limit=5)
@@ -258,7 +272,9 @@ def test_worker_stops_generation_when_lease_is_lost():
             await asyncio.Event().wait()
 
     service = BlockingService()
-    runtime = SimpleNamespace(copilot=service, copilot_repository=pool, audit=SimpleNamespace(pool=pool))
+    runtime = SimpleNamespace(
+        copilot=service, copilot_repository=pool, audit=SimpleNamespace(pool=pool)
+    )
     worker = CopilotWorker(runtime=runtime, max_attempts=2, lease_seconds=1)
 
     async def run():

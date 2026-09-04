@@ -59,7 +59,17 @@ def test_real_repository_lifecycle_http_style(monkeypatch):
                         work_start, work_end, first_response_minutes, resolution_minutes
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (tenant, "sla-vpn", "VPN SLA", "UTC", [0, 1, 2, 3, 4], time(9), time(18), 15, 120),
+                    (
+                        tenant,
+                        "sla-vpn",
+                        "VPN SLA",
+                        "UTC",
+                        [0, 1, 2, 3, 4],
+                        time(9),
+                        time(18),
+                        15,
+                        120,
+                    ),
                 )
             await it_policies.upsert(
                 tenant,
@@ -145,7 +155,10 @@ def test_real_repository_lifecycle_http_style(monkeypatch):
                 tenant_id=tenant,
                 ticket_id=ticket_id,
                 operation_id="op-life",
-                intent={"commands": [c.model_dump(mode="json") for c in first_commands], "result": {}},
+                intent={
+                    "commands": [c.model_dump(mode="json") for c in first_commands],
+                    "result": {},
+                },
             )
             ticket = await tickets.transition_many(
                 tenant,
@@ -166,7 +179,13 @@ def test_real_repository_lifecycle_http_style(monkeypatch):
                 actor_id="customer-1",
                 action=ResumeAction.PROVIDE_INFORMATION,
                 expected_version=ticket.version,
-                payload={"fields": {"device": "laptop-001"}},
+                payload={
+                    "fields": {
+                        "device": "laptop-001",
+                        "affected_system": "VPN",
+                        "impact": "无法远程办公",
+                    }
+                },
             )
             validated = validate_resume_command(
                 pending, resume_command, scopes={"ticket:customer", "ticket:system"}
@@ -181,10 +200,20 @@ def test_real_repository_lifecycle_http_style(monkeypatch):
                     result=resumed,
                 ),
             ]
+            # 恢复/第二次流程同样需要先登记工作流运行（与 ticket_intake / channel_processor
+            # 的生产范式一致），transition_many 才会在校验 operation_id 时命中已登记行。
+            await tickets.start_workflow_operation(
+                tenant_id=tenant,
+                ticket_id=ticket_id,
+                operation_id="op-life-resume",
+                command_type="resume",
+                expected_version=ticket.version,
+                checkpoint_thread_id=config["configurable"]["thread_id"],
+            )
             ticket = await tickets.transition_many(
                 tenant,
                 second_commands,
-                scopes={"ticket:system"},
+                scopes={"ticket:system", "ticket:customer"},
                 operation_id="op-life-resume",
             )
             assert ticket.status == TicketStatus.QUEUED

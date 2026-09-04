@@ -54,9 +54,7 @@ class CopilotService:
         ticket = await tickets.get(tenant_id, ticket_id)
         if ticket is None:
             raise LookupError("工单不存在")
-        overview = await runtime.ticket_operations.get_ticket_overview(
-            tenant_id, ticket_id
-        )
+        overview = await runtime.ticket_operations.get_ticket_overview(tenant_id, ticket_id)
         messages = overview.get("messages") or []
         message_text = "\n".join(
             f"[{m.get('direction')}] {m.get('actor_id')}: {m.get('content')}"
@@ -126,9 +124,7 @@ class CopilotService:
                     continue
                 if version < 1:
                     continue
-                allowed.add(
-                    (str(item["document_id"]), version, str(item["chunk_id"]))
-                )
+                allowed.add((str(item["document_id"]), version, str(item["chunk_id"])))
 
         gated = self.apply_gate(raw, request=request, allowed_citations=allowed)
 
@@ -265,9 +261,7 @@ class CopilotService:
             reasons.append("invalid_confidence")
         if not citations:
             reasons.append("missing_citations")
-        if request.category and any(
-            cat in request.category for cat in SENSITIVE_CATEGORIES
-        ):
+        if request.category and any(cat in request.category for cat in SENSITIVE_CATEGORIES):
             reasons.append("sensitive_category")
         if confidence < MIN_CONFIDENCE:
             reasons.append("low_confidence")

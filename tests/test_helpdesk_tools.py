@@ -242,6 +242,7 @@ def test_search_assets_keyword_filter_and_empty():
 
 def test_search_knowledge_is_tenant_scoped():
     """跨租户知识不可见；返回统一契约 {content, evidence}。"""
+
     async def run():
         runtime = _make_runtime(
             tenant_id="tenant-b",
@@ -322,9 +323,7 @@ def test_get_ticket_history_is_tenant_and_requester_scoped():
 def test_get_ticket_history_validates_input():
     async def run():
         runtime = _make_runtime()
-        bad = await get_ticket_history.coroutine(
-            requester_id="", config=_config(runtime)
-        )
+        bad = await get_ticket_history.coroutine(requester_id="", config=_config(runtime))
         return bad
 
     assert "requester_id" in asyncio.run(run())

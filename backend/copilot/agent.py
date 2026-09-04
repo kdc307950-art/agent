@@ -39,8 +39,8 @@ from .tool_adapter import (
 logger = logging.getLogger("langgraph.copilot")
 
 # 有界限制（PRD 初始值）
-MAX_ROUNDS = 3          # 最大轮次（每轮模型可发起多次工具调用）
-MAX_TOOL_CALLS = 6      # 总工具调用上限
+MAX_ROUNDS = 3  # 最大轮次（每轮模型可发起多次工具调用）
+MAX_TOOL_CALLS = 6  # 总工具调用上限
 MAX_TOOL_CALLS_PER_ROUND = 2
 MAX_CONTEXT_ITEMS = 12  # 注入模型的上下文条数上限
 SINGLE_TOOL_TIMEOUT_SECONDS = 3.0
@@ -95,10 +95,10 @@ def _system_prompt(request: CopilotRequest) -> str:
         "硬性规则：\n"
         "1. 只能调用上述只读工具；禁止发送消息、修改工单/资产/策略/知识。\n"
         "2. 基于检索证据作答；无证据时明确说明证据不足，不要编造。\n"
-        "3. 输出 JSON：{\"draft_answer\": 回复草稿, \"steps\": [排查步骤], "
-        "\"citations\": [{\"document_id\": ..., \"document_version\": ..., "
-        "\"chunk_id\": ...}], \"confidence\": 0.0-1.0, "
-        "\"needs_human_review\": true/false}。\n"
+        '3. 输出 JSON：{"draft_answer": 回复草稿, "steps": [排查步骤], '
+        '"citations": [{"document_id": ..., "document_version": ..., '
+        '"chunk_id": ...}], "confidence": 0.0-1.0, '
+        '"needs_human_review": true/false}。\n'
         "4. draft_answer 是给客服看的草稿，不是直接发给客户的消息。"
     )
 
@@ -245,9 +245,7 @@ class ResolutionCopilot:
                 break
             try:
                 async with asyncio.timeout(remaining_total):
-                    response = await self.model.ainvoke(
-                        messages, config=_runtime_config(runtime)
-                    )
+                    response = await self.model.ainvoke(messages, config=_runtime_config(runtime))
             except TimeoutError:
                 error_code = "copilot_timeout"
                 break
@@ -348,8 +346,7 @@ class ResolutionCopilot:
 
                 try:
                     async with asyncio.timeout(
-                        self.limits.single_tool_timeout_seconds
-                        + 2.0  # 治理包装自身开销余量
+                        self.limits.single_tool_timeout_seconds + 2.0  # 治理包装自身开销余量
                     ):
                         invocation: ToolInvocationResult = await governed_invoke(
                             tool_name=tool_name,
@@ -404,9 +401,7 @@ class ResolutionCopilot:
                         }
                     )
                     messages.append(
-                        ToolMessage(
-                            content=_truncate(invocation.content), tool_call_id=call_id
-                        )
+                        ToolMessage(content=_truncate(invocation.content), tool_call_id=call_id)
                     )
                 else:
                     # ACL 拒绝指标：scope/租户权限不足（治理层 denied）

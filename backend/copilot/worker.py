@@ -121,6 +121,7 @@ class CopilotWorker:
             lease_task = asyncio.create_task(
                 self._keep_lease_alive(tenant_id=tenant_id, run_id=run_id)
             )
+
         async def execute() -> dict:
             # 把身份快照读取也放入受租约监控的任务，避免领取后在上下文准备阶段
             # 阻塞过久而失去租约却仍开始模型调用。
@@ -296,7 +297,7 @@ class CopilotWorker:
             return "lease_lost"
         transient = error_code in TRANSIENT_ERROR_CODES
         if transient and attempts < self.max_attempts:
-            retry_at = datetime.now(UTC) + timedelta(seconds=min(2 ** attempts, 30))
+            retry_at = datetime.now(UTC) + timedelta(seconds=min(2**attempts, 30))
             updated = await self.runtime.copilot_repository.fail_copilot_run(
                 tenant_id=run["tenant_id"],
                 run_id=run["run_id"],

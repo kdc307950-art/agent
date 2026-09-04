@@ -116,7 +116,9 @@ def test_verify_citations_respects_department_acl(monkeypatch):
             assert await repo.verify_citations(no_dept, [("restricted-doc", 1, "c1")]) == []
 
             # it 部门：通过
-            it_dept = RetrievalPrincipal(tenant_id=tenant, departments=frozenset({"it"}), internal=True)
+            it_dept = RetrievalPrincipal(
+                tenant_id=tenant, departments=frozenset({"it"}), internal=True
+            )
             allowed = await repo.verify_citations(it_dept, [("restricted-doc", 1, "c1")])
             assert [e.citation_key for e in allowed] == [("restricted-doc", 1, "c1")]
 
@@ -169,8 +171,6 @@ def test_verify_citations_rejects_empty_expired_and_wrong_department(monkeypatch
             assert await repo.verify_citations(it_principal, [("expired-doc", 1, "c1")]) == []
 
             # 跨部门文档：it 部门不可引用 finance-only 文档
-            assert (
-                await repo.verify_citations(it_principal, [("finance-only-doc", 1, "c1")]) == []
-            )
+            assert await repo.verify_citations(it_principal, [("finance-only-doc", 1, "c1")]) == []
 
     asyncio.run(run())

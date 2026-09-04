@@ -5,16 +5,22 @@
       归一化字段 → 分类（关键词/模型）→ 应用租户 IT 策略 → 检查必填字段
       → 缺信息时 interrupt 追问客户 → 派单（团队/优先级/风险）→ 可选 RAG 拟答
     - 通过 LangGraph checkpointer 支持中断恢复（clarify 节点 interrupt）
+    - 可选 vpn_diagnose 桥接节点：对 it.vpn + 字段齐 + 服务注入的受理结果，
+      调用只读 VPN Diagnosis Agent 产出处置命令；仅把非升级命令交给业务校验，
+      must_handoff（no_evidence/low_confidence/multi_user_impact/identity_missing）
+      时不执行任何命令、不自动回复，仅标记转人工/升级并写审计。
 
 关键设计：
     - it_policy_provider 运行时按 tenant_id 动态查询策略，不在启动时预编译，
       支持租户策略热更新；无策略时回退内置 IntakePolicy 默认行为
     - clarify 节点用 interrupt 挂起等待客户补充，resume 后从同一 checkpoint 继续
     - compose_answer 可选：注入 rag_service 后才启用拟答，否则静默跳过
+    - vpn_diagnose 仅在注入 vpn_diagnosis 服务时加入图；否则完全惰性（状态机仍是外层控制器）
 """
 
 from __future__ import annotations
 
+from time import monotonic
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
@@ -22,6 +28,9 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from typing_extensions import TypedDict
+
+from backend.run_context import RunContext
+from backend.tool_governance import VPN_DIAGNOSIS_TOOLS
 
 from .domain import ActorType, ResumeAction
 from .intake import (
@@ -31,6 +40,7 @@ from .intake import (
     TicketClassifier,
     assess_and_dispatch,
     clarification_question,
+    classify_vpn_fault,
     normalize_fields,
 )
 
@@ -76,6 +86,17 @@ class HelpdeskIntakeState(TypedDict, total=False):
     auto_reply: bool
     answer_reason_codes: list[str]
     answer_status: str
+    # VPN Diagnosis Agent 桥接结果（可选；仅当注入 vpn_diagnosis 服务且命中
+    # it.vpn + 字段齐时填充）。状态机仍是外层控制器：这里只读诊断并落标记，
+    # 不直接改工单、不自动回复、不调用副作用动作。
+    vpn_diagnosis_run: bool
+    vpn_diagnosis_run_id: str | None
+    vpn_diagnosis_must_handoff: bool
+    vpn_diagnosis_handoff_reasons: list[str]
+    vpn_diagnosis_command: dict[str, Any] | None
+    vpn_diagnosis_evaluation: dict[str, Any] | None
+    vpn_diagnosis_error_code: str | None
+    vpn_diagnosis_next_action: str | None
     next: str
 
 
@@ -86,6 +107,8 @@ def build_helpdesk_intake_graph(
     checkpointer=None,
     rag_service=None,
     it_policy_provider=None,
+    vpn_diagnosis=None,
+    runtime_provider=None,
 ):
     """构建受理图。
 
@@ -299,6 +322,215 @@ def build_helpdesk_intake_graph(
             "identity_missing": identity_missing,
         }
 
+    async def _run_closed_loop(
+        state: HelpdeskIntakeState,
+        config: RunnableConfig,
+        runtime: Any,
+        closed_loop: Any,
+        tenant_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        """阶段二闭环：调用 VpnClosedLoopService.diagnose 落 VpnDiagnosisRun + 派步骤 + 状态机联动。
+
+        返回的 vpn_diagnosis_* 字段供 compose_answer / 时间线消费。闭环失败/无服务时优雅
+        返回转人工标记，不中断受理主流程（与只读诊断的失败语义一致）。
+        """
+        ticket_id = state.get("ticket_id", "")
+        run_context = RunContext(
+            run_id=f"vpn-closed-{ticket_id}",
+            request_id=f"vpn-closed-{ticket_id}",
+            tenant_id=tenant_id,
+            user_id=user_id,
+            thread_id=f"vpn:{tenant_id}:{ticket_id}",
+            scopes=frozenset({"ticket:agent"}),
+            deadline=monotonic() + 15.0,
+            allowed_tools=VPN_DIAGNOSIS_TOOLS,
+        )
+        try:
+            outcome: dict[str, Any] = await closed_loop.diagnose(
+                runtime=runtime, tenant_id=tenant_id, ticket_id=ticket_id, run_context=run_context
+            )
+        except Exception as exc:  # noqa: BLE001  闭环失败不冒泡，回退为转人工标记
+            _ = type(exc).__name__  # 留痕（不中断受理主流程）
+            return {
+                "vpn_diagnosis_run": True,
+                "vpn_diagnosis_must_handoff": True,
+                "vpn_diagnosis_handoff_reasons": ["diagnosis_failed"],
+                "vpn_diagnosis_command": None,
+                "vpn_diagnosis_evaluation": {
+                    "must_handoff": True,
+                    "handoff_reasons": ["diagnosis_failed"],
+                },
+                "vpn_diagnosis_error_code": "vpn_closed_loop_failed",
+            }
+        run = outcome.get("run") or {} if isinstance(outcome, dict) else {}
+        result = outcome.get("result") or {} if isinstance(outcome, dict) else {}
+        dispatch = outcome.get("dispatch") or {} if isinstance(outcome, dict) else {}
+        must_handoff = bool(result.get("must_handoff")) or str(dispatch.get("status")) == "handed_off"
+        return {
+            "vpn_diagnosis_run": True,
+            "vpn_diagnosis_run_id": run.get("run_id"),
+            "vpn_diagnosis_must_handoff": must_handoff,
+            "vpn_diagnosis_handoff_reasons": list(
+                (result.get("evaluation") or {}).get("handoff_reasons", [])
+            ),
+            "vpn_diagnosis_command": result.get("command"),
+            "vpn_diagnosis_evaluation": result.get("evaluation"),
+            "vpn_diagnosis_error_code": result.get("error_code"),
+            "vpn_diagnosis_next_action": run.get("next_action"),
+        }
+
+    async def vpn_diagnose_node(
+        state: HelpdeskIntakeState, config: RunnableConfig
+    ) -> dict[str, Any]:
+        """可选桥接节点：对 it.vpn + 字段齐的受理结果调用只读 VPN Diagnosis Agent。
+
+        状态机仍是外层控制器：
+            - 仅在注入 vpn_diagnosis 服务、分类为 it.vpn、字段齐全、有租户身份时触发；
+            - 调用 runtime.vpn_diagnosis 执行只读诊断，取回 DiagnosisCommand；
+            - 若 must_handoff（no_evidence/low_confidence/multi_user_impact/identity_missing）
+              则不执行任何命令、不自动回复，仅标记转人工/升级并写审计；
+            - 否则只把命令交给业务层校验（DiagnosisCommandValidator），禁止命令直接拒绝，
+              本节点绝不直接改工单 / 发消息 / 关单 / 重启网关等副作用。
+        """
+        if vpn_diagnosis is None:
+            return {"vpn_diagnosis_run": False}
+        # 惰性导入：backend.vpn 会反向导入 src.my_agent.helpdesk（经 executor 导入 domain），
+        # 若在模块顶层导入会造成循环。仅当需要构造 DiagnosisRequest / 校验命令时按需导入。
+        from backend.vpn import DiagnosisCommand, DiagnosisCommandValidator, DiagnosisRequest
+
+        category = state.get("category")
+        subcategory = state.get("subcategory") or "general"
+        if not (category == "it" and subcategory == "vpn"):
+            return {"vpn_diagnosis_run": False}
+        if state.get("missing_fields"):
+            # 字段不齐：交由状态机追问，不触发诊断（不改变既有分支语义）。
+            return {"vpn_diagnosis_run": False}
+        configurable = config.get("configurable") or {}
+        tenant_id = str(configurable.get("tenant_id") or "")
+        user_id = str(configurable.get("user_id") or "")
+        if not tenant_id:
+            return {
+                "vpn_diagnosis_run": False,
+                "vpn_diagnosis_must_handoff": True,
+                "vpn_diagnosis_handoff_reasons": ["identity_missing"],
+            }
+        runtime = runtime_provider() if callable(runtime_provider) else None
+        if runtime is None:
+            return {"vpn_diagnosis_run": False}
+
+        # 阶段二闭环：若运行时的 vpn_closed_loop（VpnClosedLoopService）已装配，
+        # 则走「诊断落库 + 状态机联动 + 给客户步骤/升级」闭环，而非仅只读诊断。
+        closed_loop = getattr(runtime, "vpn_closed_loop", None)
+        if closed_loop is not None:
+            return await _run_closed_loop(
+                state, config, runtime, closed_loop, tenant_id, user_id
+            )
+
+        text = state.get("text", "")
+        fault = classify_vpn_fault(text) if text else "connection_failed"
+        run_context = RunContext(
+            run_id=f"vpn-{state.get('ticket_id', '')}",
+            request_id=f"vpn-{state.get('ticket_id', '')}",
+            tenant_id=tenant_id,
+            user_id=user_id,
+            thread_id=f"vpn:{tenant_id}:{state.get('ticket_id', '')}",
+            scopes=frozenset({"ticket:agent"}),
+            deadline=monotonic() + 15.0,
+            allowed_tools=VPN_DIAGNOSIS_TOOLS,
+        )
+        request = DiagnosisRequest(
+            ticket_id=state.get("ticket_id", ""),
+            requester_id=state.get("requester_id", ""),
+            tenant_id=tenant_id,
+            ticket_text=text,
+            fault=fault,
+            asset_id=state.get("asset_id") or None,
+            current_status="",
+            identity_ok=bool(tenant_id and user_id),
+        )
+        try:
+            raw = await vpn_diagnosis.diagnose(request, runtime=runtime, run_context=run_context)
+            result = vpn_diagnosis.apply_handoff(raw, request)
+        except Exception as exc:
+            result = {
+                "must_handoff": True,
+                "error_code": "vpn_diagnosis_failed",
+                "command": None,
+                "evaluation": {
+                    "must_handoff": True,
+                    "handoff_reasons": [],
+                    "evidence_found": False,
+                    "confidence": 0.0,
+                },
+                "tool_trace": [],
+                "tool_evidence": [],
+            }
+            _ = type(exc).__name__  # 留痕（不向上冒泡，保证受理主流程不中断）
+
+        must_handoff = bool(result.get("must_handoff"))
+        command_payload = result.get("command")
+        evaluation = result.get("evaluation")
+        error_code = result.get("error_code")
+
+        # 非升级命令只有通过业务层校验才标记为可执行；升级/禁止命令一律拦截。
+        validated_command = None
+        if not must_handoff and isinstance(command_payload, dict):
+            try:
+                command = DiagnosisCommand.model_validate(command_payload)
+                DiagnosisCommandValidator().validate(command)
+                validated_command = command.model_dump(mode="json")
+            except Exception:
+                # 禁止/非法命令：本身已被模型校验或业务校验拒绝，降级为转人工。
+                must_handoff = True
+                handoff_reasons = list(
+                    result.get("evaluation", {}).get("handoff_reasons", [])
+                )
+                if "forbidden_command" not in handoff_reasons:
+                    handoff_reasons.append("forbidden_command")
+                result = {
+                    **result,
+                    "must_handoff": True,
+                    "evaluation": {
+                        **(result.get("evaluation") or {}),
+                        "must_handoff": True,
+                        "handoff_reasons": handoff_reasons,
+                    },
+                }
+                evaluation = result.get("evaluation")
+
+        # 写审计（转人工/升级）——只读诊断不产生任何工单副作用。
+        if must_handoff:
+            audit = getattr(runtime, "audit", None)
+            if audit is not None and run_context is not None:
+                try:
+                    await audit.record_event(
+                        run_context,
+                        "vpn_diagnosis_handoff",
+                        status="handoff",
+                        payload={
+                            "handoff_reasons": list(
+                                (evaluation or {}).get("handoff_reasons", [])
+                            ),
+                            "command": command_payload.get("command")
+                            if isinstance(command_payload, dict)
+                            else None,
+                        },
+                    )
+                except Exception:
+                    pass
+
+        return {
+            "vpn_diagnosis_run": True,
+            "vpn_diagnosis_must_handoff": must_handoff,
+            "vpn_diagnosis_handoff_reasons": list(
+                (evaluation or {}).get("handoff_reasons", [])
+            ),
+            "vpn_diagnosis_command": validated_command,
+            "vpn_diagnosis_evaluation": evaluation,
+            "vpn_diagnosis_error_code": str(error_code) if error_code else None,
+        }
+
     def route_after_completeness(state: HelpdeskIntakeState) -> str:
         return state["next"]
 
@@ -321,6 +553,15 @@ def build_helpdesk_intake_graph(
         {"clarify": "clarify", "dispatch": "dispatch"},
     )
     graph.add_edge("clarify", "check_completeness")
-    graph.add_edge("dispatch", "compose_answer")
+    if vpn_diagnosis is None:
+        # 未注入 VPN 服务：维持原有 dispatch -> compose_answer（兼容既有测试）。
+        graph.add_edge("dispatch", "compose_answer")
+    else:
+        # 注入 VPN 服务：dispatch -> vpn_diagnose -> compose_answer，
+        # vpn_diagnose_node 对非 it.vpn/字段不齐/无服务的路径是惰性透传（vpn_diagnosis_run=False），
+        # 不改变既有分支语义；命中 it.vpn + 字段齐时才做只读诊断并落转人工标记。
+        graph.add_node("vpn_diagnose", vpn_diagnose_node)
+        graph.add_edge("dispatch", "vpn_diagnose")
+        graph.add_edge("vpn_diagnose", "compose_answer")
     graph.add_edge("compose_answer", END)
     return graph.compile(checkpointer=checkpointer or MemorySaver())

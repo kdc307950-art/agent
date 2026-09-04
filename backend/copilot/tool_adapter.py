@@ -187,9 +187,7 @@ async def governed_invoke(
         result = await governance.awrap_tool_call(request, wrapped_execute)
     except Exception as exc:
         logger.warning("Copilot 工具 %s 治理调用异常: %s", tool_name, type(exc).__name__)
-        return ToolInvocationResult(
-            ok=False, content="工具调用失败，请稍后重试", status="failed"
-        )
+        return ToolInvocationResult(ok=False, content="工具调用失败，请稍后重试", status="failed")
 
     # 治理层返回 ToolMessage(status=error) 表示拒绝/超时/失败
     if isinstance(result, ToolMessage) and result.status == "error":

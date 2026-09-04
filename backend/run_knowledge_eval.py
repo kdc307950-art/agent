@@ -231,7 +231,12 @@ async def _run_eval(
             lambda: {"count": 0.0, "top1": 0.0, "recall": 0.0}
         )
         no_hits: list[str] = []
-        no_answer: dict[str, Any] = {"count": 0, "misrecalled": 0, "queries": [], "similarities": []}
+        no_answer: dict[str, Any] = {
+            "count": 0,
+            "misrecalled": 0,
+            "queries": [],
+            "similarities": [],
+        }
         acl: dict[str, Any] = {"count": 0, "leaked": 0, "queries": []}
         category_of = {
             doc_id: category
@@ -356,8 +361,7 @@ def _print_report(report: dict) -> None:
     acl = report["acl"]
     if acl["count"]:
         print(
-            f"ACL 隔离（单独记录，不计入召回指标）: {acl['count']} 条，"
-            f"泄露 {acl['leaked']} 条"
+            f"ACL 隔离（单独记录，不计入召回指标）: {acl['count']} 条，" f"泄露 {acl['leaked']} 条"
         )
         for query in acl["queries"]:
             print(f"  - {query}")
@@ -445,9 +449,7 @@ def _enforce_gate(report: dict, args: argparse.Namespace) -> None:
         ("Recall", args.fail_under_recall5),
         ("MRR", args.fail_under_mrr),
     ):
-        if threshold is not None and (
-            not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0
-        ):
+        if threshold is not None and (not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0):
             raise SystemExit(f"{name} 门禁阈值必须在 0 到 1 之间")
     checks = [
         (args.fail_under_top1, totals["top1"], "Top1"),

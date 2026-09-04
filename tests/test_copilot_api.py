@@ -65,7 +65,20 @@ class _FakeRepo:
     async def get_run_by_operation(self, tenant_id, ticket_id, operation_id):
         return self.runs.get((tenant_id, ticket_id, operation_id))
 
-    async def start_run(self, *, run_id, tenant_id, ticket_id, operation_id, agent_name="resolution_copilot", lease_seconds=60, requester_user_id="", requester_role=None, requester_departments=None, requester_internal=True):
+    async def start_run(
+        self,
+        *,
+        run_id,
+        tenant_id,
+        ticket_id,
+        operation_id,
+        agent_name="resolution_copilot",
+        lease_seconds=60,
+        requester_user_id="",
+        requester_role=None,
+        requester_departments=None,
+        requester_internal=True,
+    ):
         key = (tenant_id, ticket_id, operation_id)
         if key in self.runs:
             return False
@@ -88,7 +101,9 @@ class _FakeRepo:
                 return record
         return None
 
-    async def finish_run(self, *, run_id, tenant_id, status, tool_calls, latency_ms, error_code=None):
+    async def finish_run(
+        self, *, run_id, tenant_id, status, tool_calls, latency_ms, error_code=None
+    ):
         for key, record in self.runs.items():
             if record["run_id"] == run_id and key[0] == tenant_id:
                 record["status"] = status
@@ -265,6 +280,7 @@ def test_copilot_generation_success_and_latest():
     import asyncio
 
     repo = client.app.state.runtime.copilot_repository
+
     async def worker_complete():
         await repo.save_draft(
             draft_id=f"draft-{uuid4().hex}",
@@ -278,9 +294,13 @@ def test_copilot_generation_success_and_latest():
             needs_human_review=False,
         )
         await repo.finish_run(
-            run_id=run_id, tenant_id="tenant-a", status="completed",
-            tool_calls=2, latency_ms=100,
+            run_id=run_id,
+            tenant_id="tenant-a",
+            status="completed",
+            tool_calls=2,
+            latency_ms=100,
         )
+
     asyncio.run(worker_complete())
 
     # GET 状态：completed + 对应草稿（按 run_id 关联）
@@ -321,6 +341,7 @@ def test_copilot_operation_id_idempotent_replay():
 
     repo = client.app.state.runtime.copilot_repository
     run_id = first.json()["run_id"]
+
     async def worker_complete():
         await repo.save_draft(
             draft_id=f"draft-{uuid4().hex}",
@@ -334,9 +355,13 @@ def test_copilot_operation_id_idempotent_replay():
             needs_human_review=False,
         )
         await repo.finish_run(
-            run_id=run_id, tenant_id="tenant-a", status="completed",
-            tool_calls=1, latency_ms=50,
+            run_id=run_id,
+            tenant_id="tenant-a",
+            status="completed",
+            tool_calls=1,
+            latency_ms=50,
         )
+
     asyncio.run(worker_complete())
     third = client.post(
         "/tickets/t-1/copilot",
@@ -362,6 +387,7 @@ def test_copilot_approve_draft():
     )
     run_id = gen.json()["run_id"]
     repo = client.app.state.runtime.copilot_repository
+
     async def worker_complete():
         await repo.save_draft(
             draft_id="draft-approve-1",
@@ -375,9 +401,13 @@ def test_copilot_approve_draft():
             needs_human_review=False,
         )
         await repo.finish_run(
-            run_id=run_id, tenant_id="tenant-a", status="completed",
-            tool_calls=1, latency_ms=50,
+            run_id=run_id,
+            tenant_id="tenant-a",
+            status="completed",
+            tool_calls=1,
+            latency_ms=50,
         )
+
     asyncio.run(worker_complete())
 
     status = client.get(f"/tickets/t-1/copilot/{run_id}", headers=_headers())

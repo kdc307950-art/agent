@@ -213,9 +213,7 @@ async def get_ticket_messages(
         return "错误：limit 必须在 1 到 50 之间"
     runtime = _runtime(config)
     context = _context(config)
-    overview = await runtime.ticket_operations.get_ticket_overview(
-        context.tenant_id, ticket_id
-    )
+    overview = await runtime.ticket_operations.get_ticket_overview(context.tenant_id, ticket_id)
     messages = (overview.get("messages") or [])[-limit:]
     if not messages:
         return "该工单暂无消息"

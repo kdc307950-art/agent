@@ -96,9 +96,17 @@ class CopilotRepository:
                     WHERE copilot_runs.status IN ('expired', 'dead')
                     """,
                     (
-                        run_id, tenant_id, ticket_id, agent_name, operation_id, lease_seconds,
-                        requester_user_id, requester_role, list(requester_departments or []),
-                        requester_internal, lease_seconds,
+                        run_id,
+                        tenant_id,
+                        ticket_id,
+                        agent_name,
+                        operation_id,
+                        lease_seconds,
+                        requester_user_id,
+                        requester_role,
+                        list(requester_departments or []),
+                        requester_internal,
+                        lease_seconds,
                     ),
                 )
                 return cursor.rowcount == 1
@@ -120,9 +128,7 @@ class CopilotRepository:
                 )
                 return await cursor.fetchone()
 
-    async def get_run(
-        self, tenant_id: str, run_id: str
-    ) -> dict[str, Any] | None:
+    async def get_run(self, tenant_id: str, run_id: str) -> dict[str, Any] | None:
         """按 run_id 查询运行（GET /copilot/{run_id} 状态查询用）。
 
         含发起人身份快照字段（Worker 恢复真实身份构造 RunContext）。
@@ -557,9 +563,7 @@ class CopilotRepository:
                     ),
                 )
 
-    async def get_latest_draft(
-        self, tenant_id: str, ticket_id: str
-    ) -> dict[str, Any] | None:
+    async def get_latest_draft(self, tenant_id: str, ticket_id: str) -> dict[str, Any] | None:
         async with self.pool.connection() as connection:
             async with connection.cursor(row_factory=dict_row) as cursor:
                 await cursor.execute(

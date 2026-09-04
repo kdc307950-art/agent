@@ -58,6 +58,8 @@ from .telemetry import Telemetry
 from .ticket_api import admin_router, channel_router, identity_router
 from .ticket_api import router as ticket_router
 from .usage import extract_model_usage, usage_cost_usd
+from .vpn.api import router as vpn_reissue_router
+from .vpn.api_v2 import router as vpn_diagnosis_router
 from .worker_metrics import WorkerMetricsDB, prometheus_text
 
 logger = logging.getLogger("langgraph.api")
@@ -321,6 +323,8 @@ app.include_router(admin_router)
 app.include_router(identity_router)
 app.include_router(asset_router)
 app.include_router(knowledge_router)
+app.include_router(vpn_diagnosis_router)
+app.include_router(vpn_reissue_router)
 app.include_router(copilot_router)
 app.include_router(admin_copilot_router)
 app.add_middleware(AuditMiddleware)

@@ -79,8 +79,11 @@ def test_identity_snapshot_persisted_and_worker_uses_real_requester(monkeypatch)
 
             run_id = uuid4().hex
             await repo.start_run(
-                run_id=run_id, tenant_id=tenant, ticket_id=ticket_id,
-                operation_id=f"op-{uuid4().hex}", lease_seconds=60,
+                run_id=run_id,
+                tenant_id=tenant,
+                ticket_id=ticket_id,
+                operation_id=f"op-{uuid4().hex}",
+                lease_seconds=60,
                 requester_user_id="it-agent-1",
                 requester_role="agent",
                 requester_departments=["it"],
@@ -182,10 +185,16 @@ def test_department_acl_isolates_copilot_retrieval(monkeypatch):
 
             def make_ctx(departments):
                 return RunContext(
-                    run_id="run-a", request_id="req-a", tenant_id=tenant, user_id="u",
-                    thread_id="t", scopes=frozenset({"ticket:agent"}),
+                    run_id="run-a",
+                    request_id="req-a",
+                    tenant_id=tenant,
+                    user_id="u",
+                    thread_id="t",
+                    scopes=frozenset({"ticket:agent"}),
                     deadline=asyncio.get_running_loop().time() + 60,
-                    role="agent", departments=frozenset(departments), internal=True,
+                    role="agent",
+                    departments=frozenset(departments),
+                    internal=True,
                 )
 
             it_hits = await knowledge.lexical_search(
@@ -217,14 +226,21 @@ def test_identity_missing_blocks_worker(monkeypatch):
             run_id = uuid4().hex
             # requester_user_id 缺省为空（模拟旧数据/异常入队）
             await repo.start_run(
-                run_id=run_id, tenant_id=tenant, ticket_id=ticket_id,
-                operation_id=f"op-{uuid4().hex}", lease_seconds=60,
+                run_id=run_id,
+                tenant_id=tenant,
+                ticket_id=ticket_id,
+                operation_id=f"op-{uuid4().hex}",
+                lease_seconds=60,
                 requester_user_id="",
             )
-            runtime = SimpleNamespace(copilot=None, copilot_repository=repo, audit=audit, metrics=None)
+            runtime = SimpleNamespace(
+                copilot=None, copilot_repository=repo, audit=audit, metrics=None
+            )
             worker = CopilotWorker(runtime=runtime, max_attempts=2, lease_seconds=60)
             try:
-                await worker._build_run_context(tenant_id=tenant, ticket_id=ticket_id, run_id=run_id)
+                await worker._build_run_context(
+                    tenant_id=tenant, ticket_id=ticket_id, run_id=run_id
+                )
                 raised = False
             except RuntimeError as exc:
                 raised = str(exc) == "copilot_identity_missing"

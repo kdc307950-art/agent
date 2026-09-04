@@ -126,8 +126,10 @@ def test_holdout_cases_data_contract():
     kinds = {"metric": 0, "no_answer": 0, "acl": 0}
     for case in HOLDOUT_CASES:
         assert case["query"].strip()
-        assert "expected_document_ids" in case or case.get("expected_none") or case.get(
-            "forbidden_document_ids"
+        assert (
+            "expected_document_ids" in case
+            or case.get("expected_none")
+            or case.get("forbidden_document_ids")
         )
         if case.get("expected_none"):
             assert "expected_document_ids" not in case  # 无答案不计召回
@@ -160,9 +162,7 @@ def test_evaluate_no_answer_case_tracks_misrecall_only():
     # 无答案用例：hits 非空即误召回（未配置拒答阈值时），不进召回指标。
     result = _evaluate_case({"query": "x", "expected_none": True}, [], topk=5)
     assert result == {"kind": "no_answer", "misrecalled": False, "top_similarity": None}
-    leaked = _evaluate_case(
-        {"query": "x", "expected_none": True}, [_hit("vpn-001", 1)], topk=5
-    )
+    leaked = _evaluate_case({"query": "x", "expected_none": True}, [_hit("vpn-001", 1)], topk=5)
     assert leaked["misrecalled"] is True
 
 

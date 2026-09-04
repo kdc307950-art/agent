@@ -100,6 +100,79 @@ DEFAULT_TOOL_POLICIES: dict[str, ToolPolicy] = {
         retryable=False,
         side_effect=True,
     ),
+    # VPN Diagnosis Agent 6 个只读工具（全部 side_effect=False、scope=ticket:agent、
+    # retryable=True；不允许模型触碰任何副作用工具）。数据源统一走 runtime.vpn_adapter，
+    # 满足 docs/product/vpn-v1-scope.md 第 6 节「不做真实 VPN 自动诊断」。
+    "search_vpn_knowledge": ToolPolicy(
+        name="search_vpn_knowledge",
+        required_scopes=frozenset({"ticket:agent"}),
+        timeout_seconds=3.0,
+        max_input_chars=1_024,
+        retryable=True,
+        side_effect=False,
+    ),
+    "get_asset": ToolPolicy(
+        name="get_asset",
+        required_scopes=frozenset({"ticket:agent"}),
+        timeout_seconds=3.0,
+        max_input_chars=512,
+        retryable=True,
+        side_effect=False,
+    ),
+    "get_vpn_account_status": ToolPolicy(
+        name="get_vpn_account_status",
+        required_scopes=frozenset({"ticket:agent"}),
+        timeout_seconds=3.0,
+        max_input_chars=128,
+        retryable=True,
+        side_effect=False,
+    ),
+    "get_vpn_gateway_status": ToolPolicy(
+        name="get_vpn_gateway_status",
+        required_scopes=frozenset({"ticket:agent"}),
+        timeout_seconds=3.0,
+        max_input_chars=256,
+        retryable=True,
+        side_effect=False,
+    ),
+    "get_recent_similar_tickets": ToolPolicy(
+        name="get_recent_similar_tickets",
+        required_scopes=frozenset({"ticket:agent"}),
+        timeout_seconds=3.0,
+        max_input_chars=512,
+        retryable=True,
+        side_effect=False,
+    ),
+    "get_incident_status": ToolPolicy(
+        name="get_incident_status",
+        required_scopes=frozenset({"ticket:agent"}),
+        timeout_seconds=3.0,
+        max_input_chars=128,
+        retryable=True,
+        side_effect=False,
+    ),
+    # 客户端配置版本只读查询（reissue_vpn_config 前置校验的只读能力之一）。
+    "get_client_config_version": ToolPolicy(
+        name="get_client_config_version",
+        required_scopes=frozenset({"ticket:agent"}),
+        timeout_seconds=3.0,
+        max_input_chars=128,
+        retryable=True,
+        side_effect=False,
+    ),
+    # 受控审批式执行入口：重新下发标准客户端配置。
+    # side_effect=True（真实副作用，不自动重试）；scope 需 ticket:agent（执行侧）。
+    # 注意：仅允许标准配置交付（reissue_vpn_config），modify_vpn_config 等仍为 FORBIDDEN。
+    # 「已获审批」由 backend/vpn/approval.execute_approved_reissue 的 APPROVED 状态强制，
+    # 未审批/未授权经该执行门禁拒绝，绝不产生副作用。
+    "reissue_vpn_config": ToolPolicy(
+        name="reissue_vpn_config",
+        required_scopes=frozenset({"ticket:agent"}),
+        timeout_seconds=5.0,
+        max_input_chars=512,
+        retryable=False,
+        side_effect=True,
+    ),
 }
 
 
@@ -113,7 +186,29 @@ INTAKE_AGENT_TOOLS: frozenset[str] = frozenset({"search_knowledge", "search_asse
 RESOLUTION_COPILOT_TOOLS: frozenset[str] = frozenset(
     {"search_knowledge", "search_assets", "get_ticket_history", "get_ticket_messages"}
 )
-HUMAN_ACTION_TOOLS: frozenset[str] = frozenset({"send_message"})
+HUMAN_ACTION_TOOLS: frozenset[str] = frozenset(
+    {"send_message", "reissue_vpn_config"}
+)
+# VPN Diagnosis Agent 只读 profile：仅暴露 7 个只读诊断工具（无一含副作用），
+# 与 RESOLUTION_COPILOT_TOOLS 用法一致。运行期通过 RunContext.allowed_tools 注入，
+# ToolGovernance 据此拒绝任何未被授权的工具（模型伪造 reset_password/send_message 等
+# 未注册/禁止工具会被拦下并记 denied）。全部工具 side_effect=False、scope=ticket:agent、
+# retryable=True，见 DEFAULT_TOOL_POLICIES。
+VPN_DIAGNOSIS_TOOLS: frozenset[str] = frozenset(
+    {
+        "search_vpn_knowledge",
+        "get_asset",
+        "get_vpn_account_status",
+        "get_vpn_gateway_status",
+        "get_recent_similar_tickets",
+        "get_incident_status",
+        "get_client_config_version",
+    }
+)
+# VPN 受控审批执行动作 profile（side_effect=True）：重下发客户端配置。
+# 不加入 VPN_DIAGNOSIS_TOOLS（只读 Agent 不绑定），仅审批通过后的执行路径允许调用；
+# 未审批/未授权经 default policy + execute_approved_reissue 的 APPROVED 门禁拒绝。
+VPN_REISSUE_TOOLS: frozenset[str] = frozenset({"reissue_vpn_config"})
 
 
 def _transient(exc: Exception) -> bool:

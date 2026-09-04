@@ -2,7 +2,7 @@
 
 > 适用环境：`infra/compose.demo.yml` 一键启动（migrate → seed → agent → web 自动按依赖顺序执行）；浏览器访问 http://127.0.0.1:8000。
 > 前置：`DEEPSEEK_API_KEY` 已配置（自动分类 / 知识建议依赖模型；不配置时流程可走到派单，知识建议为空并转人工）。
-> 产品边界（目标客户 / 三类工单 / 主链路 / 非目标 / 人工介入规则）见 [docs/product/v1-scope.md](docs/product/v1-scope.md)。
+> 产品边界（目标客户 / VPN 受理与建议闭环（主产品 it.vpn）/ 主链路 / 非目标 / 人工介入规则）见 [docs/product/vpn-v1-scope.md](docs/product/vpn-v1-scope.md)。
 
 ## 演示账号
 
@@ -32,8 +32,8 @@ docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_
 | 1 | 打开工作台 | 浏览器访问 http://127.0.0.1:8000 ，粘贴 **customer-1** 令牌 | 进入「工单队列」，左侧导航含 资产 / 知识库 / IT 策略设置 |
 | 2 | 员工新建工单 | 点「新建」→ 标题「VPN 无法连接」→ 描述「笔记本连不上公司 VPN，提示错误码 809」→ 关联资产选 `laptop-001` → 提交 | 工单创建成功（status `new`），进入受理 |
 | 3 | 自动分类 | 受理图自动执行分类（it + vpn） | 工单 category 显示 `it.vpn`，加载租户 IT 策略 |
-| 4 | 必填字段追问 | 策略要求 device / operating_system / error_message / network | 工单进入「等待客户」，前端出现补充信息表单 |
-| 5 | 员工补充信息 | 填写：设备「laptop-001」、系统「Windows 11」、错误信息「809」、网络「办公网」→ 提交 | 缺失字段补齐，受理继续 |
+| 4 | 必填字段追问 | 策略要求 8 项固定字段：device / operating_system / vpn_client / client_version / error_code / network / multi_user_impacted / recent_change | 工单进入「等待客户」，前端出现补充信息表单 |
+| 5 | 员工补充信息 | 填写 8 项固定字段：设备「laptop-001」、系统「Windows 11」、VPN 客户端「公司客户端」、客户端版本「3.4.2」、错误码「809」、网络「办公网」、多人受影响「否」、最近变更「升级客户端」→ 提交 | 8 项必填字段补齐，受理继续 |
 | 6 | SLA 与派单 | 分类 `it.vpn` 命中 `sla-vpn`（首响 15 分钟 / 解决 2 小时）；路由规则派给 `team-it` | 工单 `queued`；详情页 SLA 显示首次响应/解决时限，处理团队 `team-it` |
 | 7 | 知识建议 | RAG 检索 `vpn-001`，生成建议回复并带引用 | 详情页「知识引用」出现《VPN 配置指南》（document_id vpn-001） |
 | 8 | 切换客服 | 粘贴 **agent-1** 令牌，刷新 | 队列中出现该工单，分类 it.vpn、优先级 normal、SLA 倒计时可见 |
@@ -46,11 +46,13 @@ docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_
 | 15 | 关闭工单 | 客服切回 agent-1，点「关闭工单」 | 工单 `closed`，闭环完成 |
 | 16 | 收尾检查 | `GET /tickets` 过滤、资产台账查看 laptop-001 的历史工单 | 资产页可看到该资产关联工单；全部操作已写入审计 |
 
+> 账号/权限、网络问题在 V1 演示中降为**旁路或转人工**，不作为演示主线（见 [docs/product/vpn-v1-scope.md](docs/product/vpn-v1-scope.md)）。
+
 ## 验收检查点
 
-- 分类准确：VPN 工单自动识别为 `it.vpn`（而非只到 `it`）。
+- 分类准确：VPN 工单自动识别为 `it.vpn` + `vpn_fault`（如 `connection_failed`，而非只到 `it`）。
 - SLA 正确：详情页策略 ID 为 `sla-vpn`，与默认 SLA 时限不同。
-- 字段补全：缺少 device / error_message 时会追问，补齐后继续。
+- 字段补全：缺少 8 项固定字段（如 device / error_code）时会追问，补齐后继续。
 - 知识引用：建议回复带文档 ID 与标题，无证据时不自动发送、转人工。
 - 权限边界：customer-1 看不到他人资产与他人工单；客服可处理全部队列。
 - 幂等建单：重复提交相同渠道事件不会重复建单（企业微信演示用 `/integrations/wecom/events`）。

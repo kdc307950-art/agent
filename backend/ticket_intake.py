@@ -324,9 +324,7 @@ async def apply_intake_resume(
     if run["status"] == "committed":
         snapshot = await runtime.intake_graph.aget_state(config)
         ticket = await runtime.tickets.get(tenant_id, ticket_id)
-        await ensure_sla_for_ticket_if_needed(
-            runtime, ticket, tenant_id=tenant_id, channel=channel
-        )
+        await ensure_sla_for_ticket_if_needed(runtime, ticket, tenant_id=tenant_id, channel=channel)
         return {
             "ticket": ticket,
             "result": {},

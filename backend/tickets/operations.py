@@ -311,7 +311,8 @@ class TicketOperationsRepository:
                 "risk_level": result.get("risk_level"),
             }
         handoff_reasons = sorted(
-            set(intake.get("dispatch_reason_codes") or []) | set(intake.get("answer_reason_codes") or [])
+            set(intake.get("dispatch_reason_codes") or [])
+            | set(intake.get("answer_reason_codes") or [])
         )
         return {
             "sla": sla,

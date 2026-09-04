@@ -100,7 +100,7 @@ uv run python -m backend.seed_demo --tenant demo
    - `tickets` 表新增工单（`channel=wecom`，`requester_id=你的企业微信外部 ID`，`category=it.vpn`）；
    - 前端客服工作台（`agent-1` 令牌）可见该工单与 SLA。
 3. 立刻**原样重发同一条消息**（或后台消息重试）：第二次不产生新工单（幂等）。
-4. 发送 `VPN 连不上`（缺 device/error_message）：工单进入 `awaiting_customer`，`outbox_events` 出现澄清消息。
+4. 发送 `VPN 连不上`（缺 device/error_code 等 8 项固定字段）：工单进入 `awaiting_customer`，`outbox_events` 出现澄清消息。
 5. 启动 Outbox worker 观察投递：
    ```powershell
    uv run python -m backend.run_outbox_worker --poll-interval 2 --batch-size 20
@@ -126,7 +126,7 @@ uv run python -m backend.seed_demo --tenant demo
 | 3 | 文本建单 | 员工在企业微信向应用发「VPN 无法连接」 | 返回 200；`tickets` 新增工单（channel=wecom，requester=员工外部 ID） |
 | 4 | 幂等建单 | 同一消息由微信重试推送/手动重放相同 `MsgId` | 第二次返回 `created: false`，不产生新工单（`inbound_events` 幂等键） |
 | 5 | 自动分类 | 查看工单 category | 识别为 `it.vpn`（关键词分类；真实准确率依赖模型，关键词基线为确定性兜底） |
-| 6 | 必填字段追问 | 工单进入受理后缺少 device / error_message | 工单 `awaiting_customer`；`outbox_events` 出现澄清消息，worker 投递到回调端点 |
+| 6 | 必填字段追问 | 工单进入受理后缺少 device / error_code 等 8 项固定字段 | 工单 `awaiting_customer`；`outbox_events` 出现澄清消息，worker 投递到回调端点 |
 | 7 | Outbox 回调 | 运行 `run_outbox_worker` 观察投递 | 回调端点收到 `X-Idempotency-Key`；重复投递被渠道侧去重 |
 | 8 | 门禁转人工 | 内容无检索证据 / 含高风险词 | 不自动发送建议；工单进人工队列（`reason_codes` 含 `missing_citations` / `sensitive_or_high_risk`） |
 

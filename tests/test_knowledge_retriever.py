@@ -66,7 +66,9 @@ def test_lexical_only_mode_without_embedding():
 def test_hybrid_mode_with_embedding_and_rrf():
     """配置 embedding：hybrid 模式，lexical + vector 双路 RRF 融合。"""
     repo = _FakeRepo([_hit("doc-a", "c1"), _hit("doc-b", "c2")])
-    vector = _FakeVector([_hit("doc-b", "c2", source="vector"), _hit("doc-c", "c3", source="vector")])
+    vector = _FakeVector(
+        [_hit("doc-b", "c2", source="vector"), _hit("doc-c", "c3", source="vector")]
+    )
     retriever = KnowledgeRetriever(repo, vector)
 
     result = asyncio.run(retriever.search(_principal(), "query"))

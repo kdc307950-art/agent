@@ -49,7 +49,9 @@ def _run_context(
     )
 
 
-async def _seed(repo, tenant: str, doc_id: str, visibility: str, departments=(), status="published"):
+async def _seed(
+    repo, tenant: str, doc_id: str, visibility: str, departments=(), status="published"
+):
     await repo.put_document(
         tenant,
         KnowledgeDocumentInput(
@@ -116,9 +118,14 @@ def test_across_tenant_and_department_acl(monkeypatch):
 
             # 财务部门坐席：不可见 IT restricted
             finance_agent = _run_context(
-                tenant_id=tenant_a, user_id="fin-1", departments=frozenset({"finance"}), internal=True
+                tenant_id=tenant_a,
+                user_id="fin-1",
+                departments=frozenset({"finance"}),
+                internal=True,
             )
-            hits_fin = await repo.lexical_search(retrieval_principal(finance_agent), "guide", limit=20)
+            hits_fin = await repo.lexical_search(
+                retrieval_principal(finance_agent), "guide", limit=20
+            )
             assert "it-guide" not in {h.document_id for h in hits_fin}
 
             # 租户 B 不可见租户 A 任何文档
@@ -182,14 +189,18 @@ def test_forged_departments_from_request_cannot_escalate(monkeypatch):
 
             # 服务端上下文：无部门（伪造的 "it" 未被接受）
             server_ctx = _run_context(tenant_id=tenant, user_id="agent-1", internal=True)
-            hits = await repo.lexical_search(retrieval_principal(server_ctx), "restricted", limit=20)
+            hits = await repo.lexical_search(
+                retrieval_principal(server_ctx), "restricted", limit=20
+            )
             assert "restricted-doc" not in {h.document_id for h in hits}
 
             # 对照：服务端确有 it 部门时才可见
             real_it = _run_context(
                 tenant_id=tenant, user_id="agent-1", departments=frozenset({"it"}), internal=True
             )
-            hits_real = await repo.lexical_search(retrieval_principal(real_it), "restricted", limit=20)
+            hits_real = await repo.lexical_search(
+                retrieval_principal(real_it), "restricted", limit=20
+            )
             assert "restricted-doc" in {h.document_id for h in hits_real}
 
     asyncio.run(run())

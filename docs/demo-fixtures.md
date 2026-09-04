@@ -12,13 +12,13 @@
 | IT 客服 | `agent-1` | `... --role helpdesk-agent` | team-it 成员，全年排班 |
 | IT 管理员 | `admin-1` | `... --role helpdesk-it-admin` | 管理资产/策略/知识 |
 
-## 三类演示工单（固定样例）
+## VPN 主线演示工单（固定样例）
 
-| 工单 | 输入文本 | 预期分类 | 必填字段 | SLA | 目标团队 |
+| 工单 | 输入文本 | 预期分类 | 必填字段（8 项固定） | SLA | 目标团队 |
 | --- | --- | --- | --- | --- | --- |
-| VPN | `VPN 无法连接，错误码 809` | `it.vpn` | device / operating_system / error_message / network | `sla-vpn`（15 分钟首响 / 2 小时解决） | team-it |
-| 账号 | `SSO 登录失败` | `it.account` | 设备/影响范围（内置字段） | `sla-account`（30/180） | team-it |
-| 网络 | `办公室断网了` | `it.network` | 设备/影响范围（内置字段） | `sla-network`（30/180） | team-it |
+| VPN（主线） | `VPN 无法连接，错误码 809` | `it.vpn` + `vpn_fault`=connection_failed | device / operating_system / vpn_client / client_version / error_code / network / multi_user_impacted / recent_change | `sla-vpn`（15 分钟首响 / 2 小时解决） | team-it |
+| 账号（旁路/转人工） | `SSO 登录失败` | `it.account` | 8 项固定字段（V1 不作主演示） | `sla-account`（30/180） | 转人工为主 |
+| 网络（旁路/转人工） | `办公室断网了` | `it.network` | 8 项固定字段（V1 不作主演示） | `sla-network`（30/180） | 转人工为主 |
 
 ## 部门与 ACL
 
@@ -48,4 +48,4 @@
 
 ## 演示路径的可追溯性
 
-`Web 建单 → 点击「新建」→ 选择 laptop-001 → 提交「VPN 无法连接，错误码 809」→ 缺字段追问 → 补充 device/operating_system/error_message/network → 自动分类 it.vpn → SLA sla-vpn → 派单 team-it → agent-1 接单 → 处理 → 解决 → 回访 → 关闭`。
+`Web 建单 → 点击「新建」→ 选择 laptop-001 → 提交「VPN 无法连接，错误码 809」→ 缺字段追问 → 补充 device/operating_system/vpn_client/client_version/error_code/network/multi_user_impacted/recent_change → 自动分类 it.vpn + vpn_fault=connection_failed → SLA sla-vpn → 派单 team-it → agent-1 接单 → 处理 → 解决 → 回访 → 关闭`。

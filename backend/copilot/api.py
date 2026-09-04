@@ -260,9 +260,7 @@ async def get_copilot_run_status(
     # 守卫：run_id == "latest" 时交给 latest 语义（该路径先于静态路由被捕获）
     if run_id == "latest":
         runtime = _copilot_runtime(request)
-        draft = await runtime.copilot_repository.get_latest_draft(
-            principal.tenant_id, ticket_id
-        )
+        draft = await runtime.copilot_repository.get_latest_draft(principal.tenant_id, ticket_id)
         return {"draft": draft}
     runtime = _copilot_runtime(request)
     run = await runtime.copilot_repository.get_run(principal.tenant_id, run_id)
@@ -299,9 +297,7 @@ async def get_copilot_latest(
     """
     _require_copilot_scope(principal)
     runtime = _copilot_runtime(request)
-    draft = await runtime.copilot_repository.get_latest_draft(
-        principal.tenant_id, ticket_id
-    )
+    draft = await runtime.copilot_repository.get_latest_draft(principal.tenant_id, ticket_id)
     return {"draft": draft}
 
 

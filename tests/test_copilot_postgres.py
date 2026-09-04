@@ -278,7 +278,9 @@ def test_copilot_lease_expired_run_is_recovered(monkeypatch):
                 lease_seconds=1,  # 极短租约
             )
             assert created is True
-            assert (await repo.get_run_by_operation(tenant, ticket_id, operation_id))["status"] == "queued"
+            assert (await repo.get_run_by_operation(tenant, ticket_id, operation_id))[
+                "status"
+            ] == "queued"
 
             # 模拟 Worker 领取（processing + worker_id + 租约）
             claimed = await repo.claim_copilot_runs(worker_id="worker-1", lease_seconds=1, limit=5)
@@ -302,7 +304,9 @@ def test_copilot_lease_expired_run_is_recovered(monkeypatch):
             assert existing["error_code"] == "copilot_lease_recovered"
 
             # 回队后可被重新领取（崩溃后任务可恢复）
-            re_claimed = await repo.claim_copilot_runs(worker_id="worker-2", lease_seconds=60, limit=5)
+            re_claimed = await repo.claim_copilot_runs(
+                worker_id="worker-2", lease_seconds=60, limit=5
+            )
             assert len(re_claimed) == 1
             assert re_claimed[0]["worker_id"] == "worker-2"
         finally:
@@ -329,15 +333,21 @@ def test_copilot_worker_complete_and_fail_dead(monkeypatch):
             # 完成路径
             run_id = uuid4().hex
             await repo.start_run(
-                run_id=run_id, tenant_id=tenant, ticket_id=ticket_id,
-                operation_id=f"op-{uuid4().hex}", lease_seconds=60,
+                run_id=run_id,
+                tenant_id=tenant,
+                ticket_id=ticket_id,
+                operation_id=f"op-{uuid4().hex}",
+                lease_seconds=60,
             )
             claimed = await repo.claim_copilot_runs(worker_id="w-ok", lease_seconds=60, limit=20)
             ok_run = next((r for r in claimed if r["run_id"] == run_id), None)
             assert ok_run is not None, "claim 应领取到本 run"
             completed = await repo.complete_copilot_run(
-                tenant_id=tenant, run_id=run_id, worker_id="w-ok",
-                tool_calls=2, latency_ms=120,
+                tenant_id=tenant,
+                run_id=run_id,
+                worker_id="w-ok",
+                tool_calls=2,
+                latency_ms=120,
             )
             assert completed is True
             assert (await repo.get_run(tenant, run_id))["status"] == "completed"
@@ -345,13 +355,20 @@ def test_copilot_worker_complete_and_fail_dead(monkeypatch):
             # 瞬时错误：退避重试（failed + next_attempt_at）
             run2 = uuid4().hex
             await repo.start_run(
-                run_id=run2, tenant_id=tenant, ticket_id=ticket_id,
-                operation_id=f"op-{uuid4().hex}", lease_seconds=60,
+                run_id=run2,
+                tenant_id=tenant,
+                ticket_id=ticket_id,
+                operation_id=f"op-{uuid4().hex}",
+                lease_seconds=60,
             )
             await repo.claim_copilot_runs(worker_id="w-fail", lease_seconds=60, limit=5)
             retried = await repo.fail_copilot_run(
-                tenant_id=tenant, run_id=run2, worker_id="w-fail",
-                error_code="model_failed", retry_at=None, max_attempts=3,
+                tenant_id=tenant,
+                run_id=run2,
+                worker_id="w-fail",
+                error_code="model_failed",
+                retry_at=None,
+                max_attempts=3,
             )
             # retry_at=None -> dead
             assert retried is True

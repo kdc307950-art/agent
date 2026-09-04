@@ -8,7 +8,8 @@
 
 生成内容（租户默认 `demo`）：
     - SLA 策略：sla-vpn / sla-account / sla-network / sla-default（Asia/Shanghai 工作日历）
-    - IT 策略：it.vpn -> sla-vpn（必填字段 device / operating_system / error_message / network）、it -> sla-default
+    - IT 策略：it.vpn -> sla-vpn（必填 8 项固定字段 device / operating_system / vpn_client /
+      client_version / error_code / network / multi_user_impacted / recent_change）、it -> sla-default
     - 路由规则：it -> team-it，派单给排班中且有空闲容量的成员
     - 客服团队 team-it、成员 agent-1、全年排班
     - 9 篇已发布知识文档（8 篇 visibility=public，客户建单的 RAG 建议可召回；
@@ -51,7 +52,21 @@ SLA_POLICIES = [
 ]
 
 IT_POLICIES = [
-    ("it.vpn", "sla-vpn", ("device", "operating_system", "error_message", "network")),
+    # it.vpn 固定 8 项受理字段（见 docs/product/vpn-v1-scope.md 第 3 节）
+    (
+        "it.vpn",
+        "sla-vpn",
+        (
+            "device",
+            "operating_system",
+            "vpn_client",
+            "client_version",
+            "error_code",
+            "network",
+            "multi_user_impacted",
+            "recent_change",
+        ),
+    ),
     ("it", "sla-default", ()),
 ]
 

@@ -183,11 +183,7 @@ def _dump_channel_identity(item: object) -> dict[str, Any]:
     model_dump = getattr(item, "model_dump", None)
     if callable(model_dump):
         return dict(model_dump(mode="json"))
-    return {
-        key: value
-        for key, value in vars(item).items()
-        if not key.startswith("_")
-    }
+    return {key: value for key, value in vars(item).items() if not key.startswith("_")}
 
 
 def _runtime(request: Request):
@@ -518,9 +514,7 @@ async def start_ticket_intake(
         )
         if existing is not None and existing["status"] == "committed":
             # 幂等重试：操作已提交，直接返回当前状态，不再重复建单/受理
-            await ensure_sla_for_ticket_if_needed(
-                runtime, ticket, tenant_id=principal.tenant_id
-            )
+            await ensure_sla_for_ticket_if_needed(runtime, ticket, tenant_id=principal.tenant_id)
             return {
                 "ticket": ticket,
                 "state": {},
@@ -548,9 +542,7 @@ async def start_ticket_intake(
         if run["status"] == "committed":
             # 并发下另一个请求已完成同一 operation：幂等返回
             ticket = await runtime.tickets.get(principal.tenant_id, ticket_id)
-            await ensure_sla_for_ticket_if_needed(
-                runtime, ticket, tenant_id=principal.tenant_id
-            )
+            await ensure_sla_for_ticket_if_needed(runtime, ticket, tenant_id=principal.tenant_id)
             return {
                 "ticket": ticket,
                 "state": {},
@@ -676,9 +668,7 @@ async def resume_ticket_intake(
             tenant_id=principal.tenant_id, ticket_id=ticket_id, operation_id=payload.operation_id
         )
         if existing is not None and existing["status"] == "committed":
-            await ensure_sla_for_ticket_if_needed(
-                runtime, ticket, tenant_id=principal.tenant_id
-            )
+            await ensure_sla_for_ticket_if_needed(runtime, ticket, tenant_id=principal.tenant_id)
             return {
                 "ticket": ticket,
                 "state": {},
@@ -1207,9 +1197,7 @@ async def delete_channel_identity(
     """删除可信渠道身份映射。"""
     _require_scope(principal, "security:admin")
     runtime = _runtime(request)
-    deleted = await runtime.channel_identities.delete(
-        principal.tenant_id, channel, requester_id
-    )
+    deleted = await runtime.channel_identities.delete(principal.tenant_id, channel, requester_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="渠道身份不存在")
     audit = getattr(runtime, "audit", None)

@@ -410,6 +410,33 @@ class TicketRepository:
                 )
                 return cursor.rowcount == 1
 
+    async def mark_workflow_operation_committed(
+        self,
+        *,
+        tenant_id: str,
+        ticket_id: str,
+        operation_id: str,
+        result_hash: str,
+    ) -> bool:
+        """把一次工作流运行置为 committed 终态并写 result_hash（幂等锚点）。
+
+        仅允许从 started / intent_recorded 推进到 committed（与 start_workflow_operation /
+        mark_workflow_operation_failed 同约束），供 reissue_vpn_config 等动作的成功路径
+        落一条机器可读成功终态（C1）。
+        """
+        async with self.pool.connection() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    UPDATE ticket_workflow_runs
+                    SET status = 'committed', result_hash = %s, updated_at = now()
+                    WHERE tenant_id = %s AND ticket_id = %s AND operation_id = %s
+                      AND status IN ('started', 'intent_recorded')
+                    """,
+                    (result_hash, tenant_id, ticket_id, operation_id),
+                )
+                return cursor.rowcount == 1
+
     async def list_recoverable_workflow_operations(
         self,
         *,

@@ -205,21 +205,19 @@ def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
             reasons.append("team")
         if mode == "db" and item["forbidden_leak"]:
             reasons.append("acl_leak")
-        if (
-            mode == "db"
-            and item["reasonable_expected"]
-            and item["reference_supported"] is False
-        ):
+        if mode == "db" and item["reasonable_expected"] and item["reference_supported"] is False:
             reasons.append("reference_miss")
         if reasons:
-            failures.append({
-                "index": item["index"],
-                "scenario": item["scenario"],
-                "text": item["text"],
-                "expected_category": item["expected_category"],
-                "actual_category": item["actual_category"],
-                "reasons": reasons,
-            })
+            failures.append(
+                {
+                    "index": item["index"],
+                    "scenario": item["scenario"],
+                    "text": item["text"],
+                    "expected_category": item["expected_category"],
+                    "actual_category": item["actual_category"],
+                    "reasons": reasons,
+                }
+            )
 
     measured_support = [item for item in results if item["reference_supported"] is not None]
     support_denominator = len([item for item in measured_support if item["reasonable_expected"]])
@@ -241,9 +239,7 @@ def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
             },
         },
         "field_completion": {
-            "detection_rate": _rate(
-                sum(int(item["field_check_ok"]) for item in results), total
-            ),
+            "detection_rate": _rate(sum(int(item["field_check_ok"]) for item in results), total),
             "auto_complete_rate": _rate(
                 sum(int(not item["actual_missing"]) for item in results), total
             ),
@@ -255,9 +251,7 @@ def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
             "expected_rate": _rate(
                 sum(int(item["expected_human_takeover"]) for item in results), total
             ),
-            "policy_ok_rate": _rate(
-                sum(int(item["manual_ok"]) for item in results), total
-            ),
+            "policy_ok_rate": _rate(sum(int(item["manual_ok"]) for item in results), total),
         },
         "team": {
             "checked": sum(int(item["team_checked"]) for item in results),
@@ -275,9 +269,7 @@ def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
             ),
             "reference_support_denominator": support_denominator if mode == "db" else None,
             "acl_leaks": (
-                sum(int(item["forbidden_leak"]) for item in results)
-                if mode == "db"
-                else None
+                sum(int(item["forbidden_leak"]) for item in results) if mode == "db" else None
             ),
         },
         "latency_ms": {
@@ -301,7 +293,9 @@ async def _run_eval(database_url: str | None, tenant_id: str) -> dict[str, Any]:
     repository: KnowledgeRepository | None = None
     pool: AsyncConnectionPool | None = None
     if database_url:
-        pool = AsyncConnectionPool(database_url, min_size=1, max_size=2, open=False, name="ticket-eval")
+        pool = AsyncConnectionPool(
+            database_url, min_size=1, max_size=2, open=False, name="ticket-eval"
+        )
         await pool.open(wait=True)
         repository = KnowledgeRepository(pool)
     try:
@@ -320,20 +314,24 @@ async def _run_eval(database_url: str | None, tenant_id: str) -> dict[str, Any]:
         "total_cases": ticket_eval_case_count(),
         "scenario_counts": ticket_eval_scenario_counts(),
         "agent": "deterministic-keyword-classifier + v1-intake-policy",
-        ** _summarize(results),
+        **_summarize(results),
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="IT 服务台 V1 工单链路评测")
-    parser.add_argument("--json", default="docs/evaluation/ticket-eval-report.json", help="报告输出路径")
+    parser.add_argument(
+        "--json", default="docs/evaluation/ticket-eval-report.json", help="报告输出路径"
+    )
     parser.add_argument(
         "--database-url",
         default=os.getenv("TEST_DATABASE_URL", "").strip() or None,
         help="可选 PostgreSQL 连接串；配置后执行真实词法检索",
     )
     parser.add_argument("--tenant", default="demo", help="知识库租户（db 模式使用）")
-    parser.add_argument("--require-db", action="store_true", help="只允许 PostgreSQL 真实检索模式通过")
+    parser.add_argument(
+        "--require-db", action="store_true", help="只允许 PostgreSQL 真实检索模式通过"
+    )
     parser.add_argument("--fail-under-classification", type=float, default=0.0)
     parser.add_argument("--fail-under-field-rate", type=float, default=0.0)
     parser.add_argument("--fail-under-reference", type=float, default=1.0)

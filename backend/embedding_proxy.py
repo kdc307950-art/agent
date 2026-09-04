@@ -155,9 +155,7 @@ def create_app(
     @app.post("/")
     async def embed(
         request: EmbeddingRequest,
-        x_embedding_proxy_token: str | None = Header(
-            default=None, alias="X-Embedding-Proxy-Token"
-        ),
+        x_embedding_proxy_token: str | None = Header(default=None, alias="X-Embedding-Proxy-Token"),
     ) -> dict[str, Any]:
         if proxy_token is not None and not (
             x_embedding_proxy_token is not None
@@ -165,9 +163,7 @@ def create_app(
         ):
             raise HTTPException(status_code=401, detail="embedding proxy authentication required")
         try:
-            async with httpx.AsyncClient(
-                timeout=timeout_seconds, transport=transport
-            ) as client:
+            async with httpx.AsyncClient(timeout=timeout_seconds, transport=transport) as client:
                 response = await client.post(
                     upstream,
                     json={"input": request.texts, "model": model},
@@ -212,7 +208,9 @@ def _resolve_config(args: Any) -> dict[str, Any]:
     upstream = args.upstream or os.getenv("EMBEDDING_UPSTREAM", "").strip()
     model = args.model or os.getenv("EMBEDDING_MODEL", "").strip()
     api_key = args.api_key or os.getenv("OPENAI_API_KEY", "").strip() or None
-    proxy_token = getattr(args, "proxy_token", None) or os.getenv("EMBEDDING_PROXY_TOKEN", "").strip() or None
+    proxy_token = (
+        getattr(args, "proxy_token", None) or os.getenv("EMBEDDING_PROXY_TOKEN", "").strip() or None
+    )
     host = args.host or os.getenv("EMBEDDING_HOST", "").strip() or "127.0.0.1"
     dimension = args.dimension
     if dimension is None and os.getenv("EMBEDDING_DIMENSION", "").strip():
@@ -222,7 +220,9 @@ def _resolve_config(args: Any) -> dict[str, Any]:
             raise SystemExit("EMBEDDING_DIMENSION 必须是整数") from exc
     port = args.port
     if port is None:
-        raw_port = os.getenv("EMBEDDING_PORT", "").strip() or os.getenv("PORT", "").strip() or "8100"
+        raw_port = (
+            os.getenv("EMBEDDING_PORT", "").strip() or os.getenv("PORT", "").strip() or "8100"
+        )
         try:
             port = int(raw_port)
         except ValueError as exc:
@@ -246,9 +246,13 @@ def _resolve_config(args: Any) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="OpenAI 兼容 embedding 契约适配代理（POST / 接收 {\"texts\": [...]}）"
+        description='OpenAI 兼容 embedding 契约适配代理（POST / 接收 {"texts": [...]}）'
     )
-    parser.add_argument("--upstream", default=None, help="OpenAI 兼容 /v1/embeddings 地址（默认读 EMBEDDING_UPSTREAM）")
+    parser.add_argument(
+        "--upstream",
+        default=None,
+        help="OpenAI 兼容 /v1/embeddings 地址（默认读 EMBEDDING_UPSTREAM）",
+    )
     parser.add_argument(
         "--api-key", default=None, help="上游 API Key（默认读 OPENAI_API_KEY 环境变量）"
     )
@@ -264,7 +268,9 @@ def main() -> None:
         default=None,
         help="期望维度（强校验；默认读 EMBEDDING_DIMENSION）",
     )
-    parser.add_argument("--host", default=None, help="监听地址（默认读 EMBEDDING_HOST，否则 127.0.0.1）")
+    parser.add_argument(
+        "--host", default=None, help="监听地址（默认读 EMBEDDING_HOST，否则 127.0.0.1）"
+    )
     parser.add_argument(
         "--port", type=int, default=None, help="监听端口（默认读 EMBEDDING_PORT/PORT，否则 8100）"
     )

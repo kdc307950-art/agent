@@ -100,17 +100,25 @@ def _vpn_cases() -> list[TicketEvalCase]:
     for err in _VPN_ERRORS:
         for template in templates:
             text = template(err)
-            cases.append({
-                "scenario": "vpn",
-                "text": text,
-                "asset_id": "laptop-001",
-                "provided_fields": _full_fields(text),
-                "expected_category": "it.vpn",
-                "required_fields": ("title", "description", "requester_id", "affected_system", "impact"),
-                "expected_team": "team-it",
-                "expected_document_ids": DOC_BY_CATEGORY["vpn"],
-                "expected_human_takeover": False,
-            })
+            cases.append(
+                {
+                    "scenario": "vpn",
+                    "text": text,
+                    "asset_id": "laptop-001",
+                    "provided_fields": _full_fields(text),
+                    "expected_category": "it.vpn",
+                    "required_fields": (
+                        "title",
+                        "description",
+                        "requester_id",
+                        "affected_system",
+                        "impact",
+                    ),
+                    "expected_team": "team-it",
+                    "expected_document_ids": DOC_BY_CATEGORY["vpn"],
+                    "expected_human_takeover": False,
+                }
+            )
     return cases
 
 
@@ -146,7 +154,13 @@ def _account_cases() -> list[TicketEvalCase]:
             "asset_id": None,
             "provided_fields": _full_fields(text),
             "expected_category": "it.account",
-            "required_fields": ("title", "description", "requester_id", "affected_system", "impact"),
+            "required_fields": (
+                "title",
+                "description",
+                "requester_id",
+                "affected_system",
+                "impact",
+            ),
             "expected_team": "team-it",
             "expected_document_ids": DOC_BY_CATEGORY["account"],
             "expected_human_takeover": False,
@@ -184,17 +198,25 @@ def _network_cases() -> list[TicketEvalCase]:
     cases: list[TicketEvalCase] = []
     for text, category in _NETWORK_CASES_RAW:
         sub = category.split(".", 1)[1]
-        cases.append({
-            "scenario": "network",
-            "text": text,
-            "asset_id": None,
-            "provided_fields": _full_fields(text),
-            "expected_category": category,
-            "required_fields": ("title", "description", "requester_id", "affected_system", "impact"),
-            "expected_team": "team-it",
-            "expected_document_ids": DOC_BY_CATEGORY.get(sub, ()),
-            "expected_human_takeover": False,
-        })
+        cases.append(
+            {
+                "scenario": "network",
+                "text": text,
+                "asset_id": None,
+                "provided_fields": _full_fields(text),
+                "expected_category": category,
+                "required_fields": (
+                    "title",
+                    "description",
+                    "requester_id",
+                    "affected_system",
+                    "impact",
+                ),
+                "expected_team": "team-it",
+                "expected_document_ids": DOC_BY_CATEGORY.get(sub, ()),
+                "expected_human_takeover": False,
+            }
+        )
     return cases
 
 
@@ -217,18 +239,31 @@ def _fields_missing_cases() -> list[TicketEvalCase]:
     cases: list[TicketEvalCase] = []
     for text, category, missing in _FIELDS_MISSING_RAW:
         sub = category.split(".", 1)[1] if "." in category else None
-        out_of_scope = category.startswith("finance") or category.startswith("admin") or category.startswith("product") or category in ("other",)
-        cases.append({
-            "scenario": "fields_missing",
-            "text": text,
-            "asset_id": None,
-            "provided_fields": _missing_fields(text, missing),
-            "expected_category": category,
-            "required_fields": ("title", "description", "requester_id", "affected_system", "impact"),
-            "expected_team": "team-service-desk" if out_of_scope else "team-it",
-            "expected_document_ids": DOC_BY_CATEGORY.get(sub, ()) if sub else (),
-            "expected_human_takeover": bool(out_of_scope),
-        })
+        out_of_scope = (
+            category.startswith("finance")
+            or category.startswith("admin")
+            or category.startswith("product")
+            or category in ("other",)
+        )
+        cases.append(
+            {
+                "scenario": "fields_missing",
+                "text": text,
+                "asset_id": None,
+                "provided_fields": _missing_fields(text, missing),
+                "expected_category": category,
+                "required_fields": (
+                    "title",
+                    "description",
+                    "requester_id",
+                    "affected_system",
+                    "impact",
+                ),
+                "expected_team": "team-service-desk" if out_of_scope else "team-it",
+                "expected_document_ids": DOC_BY_CATEGORY.get(sub, ()) if sub else (),
+                "expected_human_takeover": bool(out_of_scope),
+            }
+        )
     return cases
 
 
@@ -245,17 +280,25 @@ def _no_knowledge_cases() -> list[TicketEvalCase]:
     cases: list[TicketEvalCase] = []
     for text, category in _NO_KNOWLEDGE_RAW:
         out_of_scope = category == "other"
-        cases.append({
-            "scenario": "no_knowledge",
-            "text": text,
-            "asset_id": None,
-            "provided_fields": _full_fields(text),
-            "expected_category": category,
-            "required_fields": ("title", "description", "requester_id", "affected_system", "impact"),
-            "expected_team": "team-service-desk" if out_of_scope else "team-it",
-            "expected_document_ids": (),
-            "expected_human_takeover": True,
-        })
+        cases.append(
+            {
+                "scenario": "no_knowledge",
+                "text": text,
+                "asset_id": None,
+                "provided_fields": _full_fields(text),
+                "expected_category": category,
+                "required_fields": (
+                    "title",
+                    "description",
+                    "requester_id",
+                    "affected_system",
+                    "impact",
+                ),
+                "expected_team": "team-service-desk" if out_of_scope else "team-it",
+                "expected_document_ids": (),
+                "expected_human_takeover": True,
+            }
+        )
     return cases
 
 
@@ -272,19 +315,27 @@ def _acl_cases() -> list[TicketEvalCase]:
     cases: list[TicketEvalCase] = []
     for text, category in _ACL_RAW:
         out_of_scope = category.startswith("finance")
-        cases.append({
-            "scenario": "acl",
-            "text": text,
-            "asset_id": None,
-            "provided_fields": _full_fields(text),
-            "expected_category": category,
-            "required_fields": ("title", "description", "requester_id", "affected_system", "impact"),
-            "expected_team": "team-service-desk" if out_of_scope else "team-it",
-            "expected_document_ids": (),
-            "expected_human_takeover": True,
-            "departments": ("it",),
-            "forbidden_document_ids": ("finance-001",),
-        })
+        cases.append(
+            {
+                "scenario": "acl",
+                "text": text,
+                "asset_id": None,
+                "provided_fields": _full_fields(text),
+                "expected_category": category,
+                "required_fields": (
+                    "title",
+                    "description",
+                    "requester_id",
+                    "affected_system",
+                    "impact",
+                ),
+                "expected_team": "team-service-desk" if out_of_scope else "team-it",
+                "expected_document_ids": (),
+                "expected_human_takeover": True,
+                "departments": ("it",),
+                "forbidden_document_ids": ("finance-001",),
+            }
+        )
     return cases
 
 

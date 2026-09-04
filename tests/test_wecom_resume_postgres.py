@@ -35,7 +35,8 @@ def _payload(content: str, requester: str = "ext-user-1"):
 
 FULL_REPLY = (
     "affected_system: 公司 VPN\ndevice: laptop-001\noperating_system: Windows 11\n"
-    "error_message: 809\nimpact: 无法远程办公\nnetwork: 办公网"
+    "vpn_client: 公司客户端\nclient_version: 3.4.2\nerror_code: 809\nnetwork: 办公网\n"
+    "multi_user_impacted: 否\nrecent_change: 升级客户端\nimpact: 无法远程办公"
 )
 
 

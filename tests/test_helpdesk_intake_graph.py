@@ -314,7 +314,11 @@ def test_it_policy_provider_absent_uses_defaults():
     [
         (TicketCategory.FINANCE, "报销发票付款流程咨询", {"finance_topic": "报销"}),
         (TicketCategory.ADMIN, "会议室门禁工位申请", {"request_type": "工位"}),
-        (TicketCategory.PRODUCT, "产品页面订单功能问题", {"product_name": "订单页", "impact": "无法下单"}),
+        (
+            TicketCategory.PRODUCT,
+            "产品页面订单功能问题",
+            {"product_name": "订单页", "impact": "无法下单"},
+        ),
         (TicketCategory.OTHER, "我需要一些帮助", {}),
     ],
 )

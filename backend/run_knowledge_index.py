@@ -86,9 +86,7 @@ async def _mark_ready(pool, chunk: dict, model: str) -> None:
 
 async def _run(tenant_id: str, conninfo: str, *, batch_size: int, embed: bool) -> dict:
     if batch_size < 1 or batch_size > HttpEmbeddingProvider.EMBED_BATCH_SIZE:
-        raise ValueError(
-            f"batch_size 必须在 1 到 {HttpEmbeddingProvider.EMBED_BATCH_SIZE} 之间"
-        )
+        raise ValueError(f"batch_size 必须在 1 到 {HttpEmbeddingProvider.EMBED_BATCH_SIZE} 之间")
     embedding_endpoint = os.getenv("KNOWLEDGE_EMBEDDING_ENDPOINT", "").strip()
     try:
         dimension = int(os.getenv("KNOWLEDGE_EMBEDDING_DIMENSION", "1536"))

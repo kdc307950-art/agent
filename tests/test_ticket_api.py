@@ -358,8 +358,6 @@ class FakeItPolicies:
         return self.items.pop((tenant_id, category), None) is not None
 
 
-
-
 class FakeChannelIdentities:
     def __init__(self):
         self.items = {}
@@ -383,9 +381,7 @@ class FakeChannelIdentities:
 
     async def list_admin(self, tenant_id, *, limit=100):
         return [
-            record
-            for (tid, _channel, _requester), record in self.items.items()
-            if tid == tenant_id
+            record for (tid, _channel, _requester), record in self.items.items() if tid == tenant_id
         ][:limit]
 
     async def delete(self, tenant_id, channel, requester_id):
@@ -394,6 +390,7 @@ class FakeChannelIdentities:
             return False
         del self.items[key]
         return True
+
 
 class FakeKnowledge:
     def __init__(self):
@@ -795,8 +792,12 @@ def test_intake_retry_repairs_sla_after_transition_was_committed(monkeypatch):
         "expected_version": 0,
     }
     with TestClient(module.app) as client:
-        first = client.post("/tickets/ticket-1/intake", headers=headers("ticket:customer"), json=body)
-        second = client.post("/tickets/ticket-1/intake", headers=headers("ticket:customer"), json=body)
+        first = client.post(
+            "/tickets/ticket-1/intake", headers=headers("ticket:customer"), json=body
+        )
+        second = client.post(
+            "/tickets/ticket-1/intake", headers=headers("ticket:customer"), json=body
+        )
 
     assert first.status_code == 500
     assert second.status_code == 200
@@ -1574,8 +1575,6 @@ def test_admin_operations_are_audited(monkeypatch):
     assert all(event["tenant_id"] == "tenant-a" for event in audit.admin_events)
 
 
-
-
 def test_channel_identity_admin_api_rejects_foreign_asset_and_requires_admin(monkeypatch):
     """Day 3-4：可信渠道身份只允许 security:admin 管理；资产必须归属该渠道用户。"""
     module, _tickets, _intake = load_app(monkeypatch)
@@ -1589,19 +1588,34 @@ def test_channel_identity_admin_api_rejects_foreign_asset_and_requires_admin(mon
         client.post(
             "/assets",
             headers=admin,
-            json={"asset_id": "asset-1", "asset_no": "A-1", "asset_type": "laptop", "owner_user_id": "user-1"},
+            json={
+                "asset_id": "asset-1",
+                "asset_no": "A-1",
+                "asset_type": "laptop",
+                "owner_user_id": "user-1",
+            },
         )
 
         forbidden = client.get("/admin/channel-identities", headers=headers("ticket:agent"))
         foreign_asset = client.put(
             "/admin/channel-identities/wecom/ext-user-1",
             headers=admin,
-            json={"channel": "wecom", "requester_id": "ext-user-1", "departments": ["finance"], "asset_id": "asset-1"},
+            json={
+                "channel": "wecom",
+                "requester_id": "ext-user-1",
+                "departments": ["finance"],
+                "asset_id": "asset-1",
+            },
         )
         own_asset = client.put(
             "/admin/channel-identities/wecom/user-1",
             headers=admin,
-            json={"channel": "wecom", "requester_id": "user-1", "departments": ["finance"], "asset_id": "asset-1"},
+            json={
+                "channel": "wecom",
+                "requester_id": "user-1",
+                "departments": ["finance"],
+                "asset_id": "asset-1",
+            },
         )
         listed = client.get("/admin/channel-identities", headers=admin)
 
@@ -1610,6 +1624,7 @@ def test_channel_identity_admin_api_rejects_foreign_asset_and_requires_admin(mon
     assert own_asset.status_code == 200
     assert own_asset.json()["departments"] == ["finance"]
     assert [item["requester_id"] for item in listed.json()["items"]] == ["user-1"]
+
 
 def test_full_lifecycle_http_regression_vpn(monkeypatch):
     """Day 6：VPN 主链路完整 HTTP 回归（创建→追问→补全→分类→派单→接单→处理→解决→回访→关闭）。"""
@@ -1649,7 +1664,12 @@ def test_full_lifecycle_http_regression_vpn(monkeypatch):
         assert intake_resp.json()["ticket"]["status"] == "awaiting_customer"
 
         # 客户补充信息后恢复受理（Fake 图改为返回派单结果）
-        intake.result = {"category": "it", "subcategory": "vpn", "dispatch_team_id": "team-it", "priority": "normal"}
+        intake.result = {
+            "category": "it",
+            "subcategory": "vpn",
+            "dispatch_team_id": "team-it",
+            "priority": "normal",
+        }
         resume_resp = client.post(
             "/tickets/ticket-1/resume",
             headers=headers("ticket:customer"),
@@ -1679,6 +1699,7 @@ def test_full_lifecycle_http_regression_vpn(monkeypatch):
                     "payload": {},
                 },
             )
+
         # 客服接单 → 开始处理 → 解决
         assigned = transition("assign", "agent", ("ticket:agent",))
         assert assigned.status_code == 200

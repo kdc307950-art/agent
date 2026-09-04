@@ -223,9 +223,7 @@ async def get_ticket_messages(
         return "错误：limit 必须在 1 到 50 之间"
     runtime = _runtime(config)
     context = _context(config)
-    overview = await runtime.ticket_operations.get_ticket_overview(
-        context.tenant_id, ticket_id
-    )
+    overview = await runtime.ticket_operations.get_ticket_overview(context.tenant_id, ticket_id)
     messages = (overview.get("messages") or [])[-limit:]
     if not messages:
         return "该工单暂无消息"
@@ -288,7 +286,18 @@ async def send_message(
     return "消息已入队，将由 Outbox 异步投递" if created else "消息写入失败（幂等冲突）"
 
 
-HELPDESK_TOOLS = [search_assets, search_knowledge, get_ticket_history, get_ticket_messages, send_message]
+HELPDESK_TOOLS = [
+    search_assets,
+    search_knowledge,
+    get_ticket_history,
+    get_ticket_messages,
+    send_message,
+]
 
 # Resolution Copilot（Agent 2）只读工具集：仅检索与汇总，无任何副作用工具
-RESOLUTION_COPILOT_TOOLS = [search_assets, search_knowledge, get_ticket_history, get_ticket_messages]
+RESOLUTION_COPILOT_TOOLS = [
+    search_assets,
+    search_knowledge,
+    get_ticket_history,
+    get_ticket_messages,
+]

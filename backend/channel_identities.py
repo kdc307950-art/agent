@@ -86,9 +86,11 @@ class ChannelIdentityRepository:
                         departments, asset_id, internal, mapping_source, active
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (tenant_id, channel, requester_id) DO UPDATE SET
-                        external_user_id = EXCLUDED.external_user_id,
+                        -- 部分更新语义：未提供的可选字段（external_user_id/asset_id）保留原值，
+                        -- 避免一次未带该字段的 upsert 把可信身份映射误清成 NULL。
+                        external_user_id = COALESCE(EXCLUDED.external_user_id, channel_identities.external_user_id),
                         departments = EXCLUDED.departments,
-                        asset_id = EXCLUDED.asset_id,
+                        asset_id = COALESCE(EXCLUDED.asset_id, channel_identities.asset_id),
                         internal = EXCLUDED.internal,
                         mapping_source = EXCLUDED.mapping_source,
                         active = EXCLUDED.active,
@@ -112,9 +114,7 @@ class ChannelIdentityRepository:
             raise RuntimeError("渠道身份写入后未返回行")
         return _row_to_identity(row)
 
-    async def get(
-        self, tenant_id: str, channel: str, requester_id: str
-    ) -> ChannelIdentity | None:
+    async def get(self, tenant_id: str, channel: str, requester_id: str) -> ChannelIdentity | None:
         async with self.pool.connection() as connection:
             async with connection.cursor(row_factory=dict_row) as cursor:
                 await cursor.execute(
@@ -145,4 +145,3 @@ class ChannelIdentityRepository:
                     (tenant_id, channel, requester_id),
                 )
                 return cursor.rowcount == 1
-

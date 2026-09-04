@@ -24,3 +24,19 @@ graphflow-out/
 
 # 通用 node_modules（避免误提交依赖）
 node_modules/
+
+# AgentTeams 团队状态（本地运行目录，不提交）
+.agent-teams/
+
+# 本地质量报告临时文件
+ruff_report.txt
+mypy_report.txt
+
+# pytest tmp_path 基目录（沙箱下可能被锁，禁止提交）
+.pytest_tmp/
+.ptmp_work/
+
+# 本地运行临时产物（不提交）
+.ws_tmp/
+jieba.cache
+.ptmp/

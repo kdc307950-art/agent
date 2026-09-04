@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/kdc307950-art/agent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kdc307950-art/agent/actions/workflows/ci.yml)
 
-面向中小企业客服、IT、行政支持部门的多租户工单自动处置系统骨架，首个落地形态是**内部 IT 服务台（V1 仅 Web 闭环）**：员工通过 Web 提交工单，系统自动分类（`it.vpn` / `it.account` / `it.network` 等子分类）、按租户 IT 策略追问必填字段、加载对应 SLA、规则派单，Agent 检索知识库生成带引用的建议，客服在响应式工作台上完成接单、处理、回访与关闭。企业微信等渠道代码保留为**非 V1 能力**，未纳入演示与验收。
+面向中小企业客服、IT、行政支持部门的多租户工单自动处置系统骨架，首个落地形态是**内部 IT 服务台（V1 仅 Web 闭环）**：**V1 演示主线只有 `it.vpn`（VPN 受理与建议闭环）**——员工通过 Web 提交 VPN 故障，系统自动分类（`it.vpn` + `vpn_fault`）、按租户 IT 策略追问 8 项固定字段、加载对应 SLA、规则派单，Agent 检索知识库生成带引用的建议，客服在响应式工作台上完成接单、处理、回访与关闭；账号/权限、网络降为**旁路或转人工**。企业微信等渠道代码保留为**非 V1 能力**，未纳入演示与验收。
 
 技术底座：确定性工单状态机 + LangGraph 受理/补全/分类/派单图 + Agentic RAG 引用门禁，运行在多租户隔离、PostgreSQL Checkpoint、审计、Redis 限流、预算和 Outbox 之上。
 
-**V1 产品边界（一句话）**：面向中小企业内部 IT 服务台，员工从 Web 报 VPN、账号/权限、网络故障，系统自动分类、补字段、加载 SLA、派单并给出带引用的建议，人工确认后解决关闭；企业微信等渠道保留代码但**非 V1 能力**。完整范围见 [docs/product/v1-scope.md](docs/product/v1-scope.md)：目标客户、三类工单、主链路（Web 闭环）、非目标功能与人工介入规则；验证指标与未验证边界见 [docs/evaluation/v1-report.md](docs/evaluation/v1-report.md)。
+**V1 产品边界（一句话）**：面向中小企业内部 IT 服务台，**V1 演示主线只有 `it.vpn`**——员工从 Web 报 VPN 故障，系统自动分类（`it.vpn` + `vpn_fault`）、按 8 项固定字段补齐、加载 SLA、派单并给出带引用的建议，人工确认后解决关闭；账号/权限、网络作为**旁路或转人工**保留能力，不再与 `it.vpn` 并列为主演示。企业微信等渠道保留代码但**非 V1 能力**。完整范围见 [docs/product/vpn-v1-scope.md](docs/product/vpn-v1-scope.md)：目标客户、VPN 受理与建议闭环（主产品 it.vpn）、主链路（Web 闭环）、非目标功能与人工介入规则；验证指标与未验证边界见 [docs/evaluation/v1-report.md](docs/evaluation/v1-report.md)。
 
 **三档验证口径（请勿混淆）**：
 1. **本地演示**：`docker compose -f infra/compose.demo.yml up --build -d` → 浏览器访问 `http://127.0.0.1:8000` → 页面粘贴 `docker compose exec agent ... issue_dev_token` 输出；只验证“能跑通闭环”，不产生评测数字。
