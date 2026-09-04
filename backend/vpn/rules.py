@@ -292,12 +292,13 @@ def evaluate_evidence(evidence: VpnEvidence) -> EvidenceDiagnosis:
             must_handoff=True,
         )
 
-    # R2 账号锁定：必须人工(it.account)，不能给 VPN 自动建议
-    if evidence.account_status == AccountStatus.LOCKED:
+    # R2 账号锁定/禁用：必须人工(it.account)，不能给 VPN 自动建议
+    # DISABLED（账户已禁用/冻结）同样属于账号侧主问题，与 LOCKED 一致归 account_locked。
+    if evidence.account_status in (AccountStatus.LOCKED, AccountStatus.DISABLED):
         return EvidenceDiagnosis(
             hypothesis=HYPOTHESIS_ACCOUNT_LOCKED,
             confidence=0.95,
-            evidence=[f"账号状态={evidence.account_status.value}（锁定）"],
+            evidence=[f"账号状态={evidence.account_status.value}（锁定/禁用，需人工处理）"],
             ruled_out=[
                 HYPOTHESIS_GATEWAY_DOWN,
                 HYPOTHESIS_CLIENT_VERSION_OUTDATED,
@@ -427,6 +428,12 @@ def build_evidence_from_case(case: Mapping[str, Any], *, identity_ok: bool = Tru
 
     依据样本提供的字段与故障标签构造确定性证据，供 ``evaluate_evidence`` 产出
     结构化假设并暴露给 M3 真实口径。字段缺失时回退，绝不抛异常。
+
+    D6 修复：S6 账号锁定样本（provided_fields 无 account_status、expected_document_ids=()）
+    若只按字段会得到 account_status=UNKNOWN -> 落入 no_evidence，M3 hypothesis 不再是
+    `account_locked`。这里用 ``_account_status_from_text`` 从文案文本检测账号锁定/禁用
+    主因信号（账号被锁/已禁用/登录被锁/多次失败），把 account_status 置为 LOCKED/DISABLED，
+    使规则命中 R2（账号锁定 -> it.account + must_escalate）。
     """
     provided = dict(case.get("provided_fields") or {})
     client_version = str(provided.get("client_version") or case.get("client_version") or "")
@@ -439,6 +446,12 @@ def build_evidence_from_case(case: Mapping[str, Any], *, identity_ok: bool = Tru
     # 网关状态：样本未直接提供，用知识命中/字段推断；未知时保留 UNKNOWN。
     gateway_status = normalize_gateway_status(provided.get("gateway_status"))
     account_status = normalize_account_status(provided.get("account_status"))
+    # D6：字段未显式给出账号状态时，从文案文本检测账号锁定/禁用主因信号。
+    if account_status == AccountStatus.UNKNOWN:
+        text = str(case.get("text") or "") + " " + str(case.get("fault_hypothesis") or "")
+        detected = _account_status_from_text(text)
+        if detected != AccountStatus.UNKNOWN:
+            account_status = detected
     return VpnEvidence(
         fault=fault,
         account_status=account_status,
@@ -451,6 +464,78 @@ def build_evidence_from_case(case: Mapping[str, Any], *, identity_ok: bool = Tru
         knowledge_hit=bool(case.get("expected_document_ids") or case.get("has_evidence")),
         has_asset=bool(provided.get("asset_id") or case.get("asset_id")),
     )
+
+
+# 账号锁定/禁用主因信号词（与 intake._ACCOUNT_LOCKOUT_PRIMARY_TERMS 口径对齐，并补充多处关键词）。
+_ACCOUNT_LOCKOUT_EXPLICIT_TERMS = (
+    "账号被锁",
+    "账户被锁",
+    "账号锁定",
+    "账户锁定",
+    "账号被禁用",
+    "账户被禁用",
+    "被禁用",
+    "已被禁用",
+    "已禁用",
+    "禁用",
+    "登录被锁",
+    "登录被禁用",
+    "被锁死",
+    "被锁住",
+    "锁住",
+    "锁定了",
+    "被锁了",
+    "账户被冻结",
+    "账号被冻结",
+    "锁定导致",
+    "disabled",
+    "locked",
+    "lockout",
+)
+# 弱信号：多次失败/锁定嫌疑（需叠加账号上下文，且不被「认证失败」排除后仍判定）。
+_ACCOUNT_LOCKOUT_WEAK_TERMS = (
+    "多次登录失败",
+    "多次错误密码",
+    "多次密码错误",
+    "连续登录失败",
+    "登录被锁定",
+    "账号被停用",
+    "账户被停用",
+    "停用",
+)
+# 排除词：单纯「登录失败/密码错误」一次失败属认证类，不应误判为账号锁定。
+_ACCOUNT_LOCKOUT_EXCLUDE_TERMS = ("登录失败", "密码错误", "认证失败", "身份验证", "验证码", "用户名", "证书")
+
+
+def _account_status_from_text(text: str) -> AccountStatus:
+    """从文案文本检测账号锁定/禁用主因信号（确定性、纯函数）。
+
+    - 命中**显式锁定/禁用词**（账号被锁/锁定/已禁用/冻结/disabled/locked）-> LOCKED/DISABLED；
+    - 未命中显式词时，命中**弱信号**（多次失败/停用）且**未落入**认证失败排除框架 -> LOCKED/DISABLED；
+    - 其余 -> AccountStatus.UNKNOWN（不做臆断，保留 auth/connection 假设）。
+    """
+    if not text:
+        return AccountStatus.UNKNOWN
+    normalized = str(text).casefold()
+
+    # 显式锁定/禁用词优先（即使伴随"登录失败"等，仍以账号锁定为主因——修复 D6）。
+    if any(term.casefold() in normalized for term in _ACCOUNT_LOCKOUT_EXPLICIT_TERMS):
+        if any(term.casefold() in normalized for term in ("禁用", "停用", "冻结", "disabled")):
+            return AccountStatus.DISABLED
+        return AccountStatus.LOCKED
+
+    # 弱信号：仅在未落入认证失败排除框架时才升级为账号锁定。
+    if any(term.casefold() in normalized for term in _ACCOUNT_LOCKOUT_WEAK_TERMS):
+        if any(term.casefold() in normalized for term in _ACCOUNT_LOCKOUT_EXCLUDE_TERMS):
+            return AccountStatus.UNKNOWN
+        return AccountStatus.LOCKED
+
+    return AccountStatus.UNKNOWN
+
+
+def is_account_lockout_text(text: str) -> bool:
+    """判定文案是否为账号锁定/禁用主因（供 intake/规则/评测复用；纯函数）。"""
+    return _account_status_from_text(text) in (AccountStatus.LOCKED, AccountStatus.DISABLED)
 
 
 def _has_credible_evidence(evidence: VpnEvidence) -> bool:

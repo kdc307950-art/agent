@@ -12,10 +12,19 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from .agent import VpnDiagnosisAgent
 from .models import DiagnosisRequest, evaluate_handoff
+from .rules import (
+    AccountStatus,
+    GatewayStatus,
+    VpnEvidence,
+    evaluate_evidence,
+    normalize_account_status,
+    normalize_gateway_status,
+)
 
 logger = logging.getLogger("langgraph.vpn")
 
@@ -104,12 +113,15 @@ class VpnDiagnosisService:
 
     @staticmethod
     def apply_handoff(raw: dict[str, Any], request: DiagnosisRequest) -> dict[str, Any]:
-        """独立诊断门禁（evaluate_handoff 四类必须转人工）。
+        """独立诊断门禁（evaluate_handoff 四类必须转人工）+ 证据链结构化假设落定。
 
         对 Agent 输出做最终安全裁定：
             - error_code 非空 -> 强制 must_handoff=True
             - command 为 None -> 强制 must_handoff=True
             - 否则复用 agent 侧 evaluate_handoff 判定（multi_user/identity/no_evidence/low_confidence）
+        同时把工具证据归一化为 VpnEvidence，调用 rules.evaluate_evidence 得到结构化
+        EvidenceDiagnosis（hypothesis/confidence/evidence/ruled_out/next_action/reason_codes），
+        写入 result["evidence_chain"]，供 VpnDiagnosisRun 落库与 M3 真实口径消费。
         恒不自动发客户消息、不改工单（本层只做裁定）。
         """
         if not isinstance(raw, dict):
@@ -136,6 +148,11 @@ class VpnDiagnosisService:
         result["must_handoff"] = must_handoff
         result["evaluation"] = evaluation
         result["request"] = request.model_dump(mode="json")
+
+        # 阶段三：证据链结构化假设（M3 真实口径）。把工具证据归一化为 VpnEvidence，
+        # 调用 rules.evaluate_evidence 得到结构化 hypothesis。用 rules 优先级覆盖
+        # agent 侧猜测，保证评测拿到确定性的 hypothesis/evidence/ruled_out/confidence。
+        result["evidence_chain"] = _evidence_chain_diagnosis(raw, request)
         return result
 
     async def run_with_context(
@@ -169,3 +186,64 @@ def _command_confidence(command: Any) -> float:
     except (TypeError, ValueError, OverflowError):
         return 0.0
     return max(0.0, min(1.0, value))
+
+
+def _evidence_chain_diagnosis(raw: dict[str, Any], request: DiagnosisRequest) -> dict[str, Any]:
+    """把 Agent 工具证据归一化为 VpnEvidence 并产出证据链结构化假设（M3 真实口径）。
+
+    从 tool_evidence（工具返回的依据）/ tool_trace 提取账号/网关/知识/多用户信号，
+    归一化为 VpnEvidence，调用 rules.evaluate_evidence 得到确定性 EvidenceDiagnosis。
+    返回 JSON 兼容 dict（hypothesis/confidence/evidence/ruled_out/next_action/reason_codes/
+    must_handoff），供 VpnDiagnosisRun 落库与 M3 fault_hypothesis 消费。
+    """
+    tool_evidence = raw.get("tool_evidence") or []
+    evidence_hint = raw.get("evidence_chain") or {}
+    account = AccountStatus.UNKNOWN
+    gateway = GatewayStatus.UNKNOWN
+    knowledge_hit = False
+    has_asset = False
+    client_version = ""
+    required_version = ""
+    error_code = ""
+    multi_user = request.fault == "multi_user_impact"
+
+    for item in tool_evidence:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content") or ""
+        tool_name = str(item.get("tool_name") or "")
+        text = str(content).casefold()
+        if "account" in tool_name or ("账号" in text and "status" in text):
+            account = normalize_account_status(_status_from_content(content))
+        elif "gateway" in tool_name or "网关" in text:
+            gateway = normalize_gateway_status(_status_from_content(content))
+        elif "config_version" in tool_name or "client_version" in tool_name:
+            client_version = str(content or "") or client_version
+        elif "knowledge" in tool_name or "知识库" in text:
+            knowledge_hit = True
+        elif "asset" in tool_name:
+            has_asset = True
+
+    evidence = VpnEvidence(
+        fault=request.fault,
+        account_status=account,
+        gateway_status=gateway,
+        client_version=client_version,
+        required_version=required_version,
+        error_code=error_code,
+        multi_user_impact=multi_user,
+        identity_ok=request.identity_ok,
+        knowledge_hit=knowledge_hit or bool(evidence_hint),
+        has_asset=has_asset,
+    )
+    diagnosis = evaluate_evidence(evidence)
+    return diagnosis.to_dict()
+
+
+_STATUS_KW_RE = re.compile(r"(active|locked|disabled|expired|up|degraded|down)", re.IGNORECASE)
+
+
+def _status_from_content(content: str) -> dict[str, str]:
+    """从工具返回的展示文本中提取状态关键词，返回 ``{"status": ...}`` 供信号归一化。"""
+    match = _STATUS_KW_RE.search(str(content or "").casefold())
+    return {"status": match.group(0).lower() if match else "unknown"}

@@ -249,11 +249,16 @@ class KeywordTicketClassifier:
             confidence = 0.6
         subcategory = "general"
         if category == TicketCategory.IT:
-            for key, keywords in self._IT_SUBCATEGORY_KEYWORDS.items():
-                if any(keyword.casefold() in normalized for keyword in keywords):
-                    subcategory = key
-                    confidence = min(1.0, confidence + 0.1)
-                    break
+            # D6：账号锁定为主因时优先归 it.account（即使文本同时含 "vpn/远程接入"）。
+            if _is_account_lockout_primary(normalized):
+                subcategory = "account"
+                confidence = min(1.0, confidence + 0.1)
+            else:
+                for key, keywords in self._IT_SUBCATEGORY_KEYWORDS.items():
+                    if any(keyword.casefold() in normalized for keyword in keywords):
+                        subcategory = key
+                        confidence = min(1.0, confidence + 0.1)
+                        break
         if tied:
             confidence = min(confidence, 0.5)
         needs_review = tied or confidence < 0.5
@@ -269,6 +274,148 @@ class KeywordTicketClassifier:
 # 敏感操作词 -> risk=high；高影响词 -> risk=high + priority=urgent
 _SENSITIVE_TERMS = ("删除数据", "开通权限", "管理员权限", "转账", "付款审批", "离职")
 _HIGH_IMPACT_TERMS = ("全部用户", "全公司", "生产环境", "业务中断", "无法办公", "数据泄露")
+
+# D6 修复：账号锁定-VPN 混淆。历史缺口（summary-vpn-v2.md D6）——
+# 含字面 "VPN/远程接入" 的文本被 it.vpn 子分类优先命中（vpn 先于 account），导致 S6
+# 5 条本应归 it.account（账号锁定为主因）的样本被归 it.vpn。这里做「主问题/关联问题分离」：
+# 当文本显式表达账号锁定为主因（_ACCOUNT_LOCKOUT_PRIMARY_TERMS）且**不落入** VPN 认证失败
+# 框架（v1 的 "VPN 登录失败，账号被锁定" 仍是 it.vpn 认证类），优先归 it.account。
+_ACCOUNT_LOCKOUT_PRIMARY_TERMS = (
+    "账号被锁定",
+    "账号被锁",
+    "账户被锁",
+    "账户锁定",
+    "账号锁定",
+    "锁定导致",
+    "被锁定",
+    "被锁了",
+    "被锁死",
+    "锁住了",
+)
+# VPN 认证/登录失败框架：这类文本的账号锁定是认证失败的伴生结果，主因仍是 VPN 认证类（it.vpn）。
+_VPN_AUTH_FAILURE_TERMS = ("登录失败", "密码错误", "认证失败", "身份验证", "验证码", "用户名", "证书")
+
+
+def _is_account_lockout_primary(text: str) -> bool:
+    """判定账号锁定是否为**主问题**（而非 VPN 认证失败的伴生结果）。
+
+    D6：命中账号锁定主因词列表，且未落入 VPN 认证失败框架时返回 True，
+    供 it 子分类优先归 it.account（与 vpn 关键词共存时账号主因优先）。
+    """
+    normalized = text.casefold()
+    lockout_hit = any(term in normalized for term in _ACCOUNT_LOCKOUT_PRIMARY_TERMS)
+    if not lockout_hit:
+        return False
+    # 若同时落入 VPN 认证/登录失败框架，则视为 VPN 认证类为主（保留 it.vpn）。
+    if any(term in normalized for term in _VPN_AUTH_FAILURE_TERMS):
+        return False
+    return True
+
+# ---- VPN V1 专项（docs/product/vpn-v1-scope.md 第 2/3/4 节）----
+# 固定 5 类 VPN 故障（vpn_fault 枚举值），作为 it.vpn 的纵向故障维度。
+VPN_FAULT_CONNECTION_FAILED = "connection_failed"
+VPN_FAULT_FREQUENT_DISCONNECT = "frequent_disconnect"
+VPN_FAULT_AUTH_FAILED = "auth_failed"
+VPN_FAULT_INTRANET_UNREACHABLE = "intranet_unreachable"
+VPN_FAULT_MULTI_USER_IMPACT = "multi_user_impact"
+VPN_FAULTS: tuple[str, ...] = (
+    VPN_FAULT_CONNECTION_FAILED,
+    VPN_FAULT_FREQUENT_DISCONNECT,
+    VPN_FAULT_AUTH_FAILED,
+    VPN_FAULT_INTRANET_UNREACHABLE,
+    VPN_FAULT_MULTI_USER_IMPACT,
+)
+
+# 场景边界矩阵的三态（scope 文档第 4 节）
+BOUNDARY_AUTO_SUGGEST = "auto_suggest"
+BOUNDARY_MUST_ASK = "must_ask"
+BOUNDARY_MUST_ESCALATE = "must_escalate"
+
+# vpn_fault 关键词判定（顺序即优先级：群体 > 认证 > 频繁掉线 > 内网 > 连接）。
+# 每张 VPN 工单必须且只归一类的兜底：无任何信号时归 connection_failed。
+_VPN_FAULT_KEYWORDS: Mapping[str, tuple[str, ...]] = {
+    VPN_FAULT_MULTI_USER_IMPACT: (
+        "多人", "整个部门", "整个团队", "全公司", "所有人", "所有同事",
+        "同事", "大面积", "集体", "大规模", "大家", "同时",
+    ),
+    VPN_FAULT_AUTH_FAILED: (
+        "认证失败", "身份验证", "用户名或密码", "用户名密码", "密码错误",
+        "账号密码", "证书过期", "证书无效", "证书已过期", "错误码691",
+        "错误码 691", "验证码", "登录失败",
+    ),
+    VPN_FAULT_FREQUENT_DISCONNECT: (
+        "频繁掉线", "频繁断开", "频繁断线", "不断重连", "反复重连",
+        "经常掉线", "老是掉线", "反复掉线", "一直掉线", "自动断开",
+        "连接不稳定", "网络不稳定", "掉线", "断线",
+    ),
+    VPN_FAULT_INTRANET_UNREACHABLE: (
+        "内网不可达", "访问不了内网", "内网不通", "无法访问内网",
+        "ping不通", "ping 不通", "远程桌面不通", "打不开内网",
+        "访问不了服务器", "内网访问不了", "无法访问内网资源",
+    ),
+    VPN_FAULT_CONNECTION_FAILED: (
+        "连不上", "无法建立连接", "无法连接", "连接失败", "一直转圈",
+        "连接超时", "接入失败", "无法联网", "建立连接", "错误码809",
+        "错误码 809", "错误码800", "错误码 800",
+    ),
+}
+
+
+def classify_vpn_fault(text: str) -> str:
+    """按关键词判定 vpn_fault（确定性基线，默认 connection_failed）。
+
+    优先级：multi_user_impact > auth_failed > frequent_disconnect >
+    intranet_unreachable > connection_failed；无任何信号时归 connection_failed，
+    作为「只能归一类且必须归一类的兜底」。只做关键词判定，不改变既有 classify()。
+    """
+    normalized = text.casefold()
+    for fault, keywords in _VPN_FAULT_KEYWORDS.items():
+        if any(keyword.casefold() in normalized for keyword in keywords):
+            return fault
+    return VPN_FAULT_CONNECTION_FAILED
+
+
+def contains_sensitive_term(text: str) -> bool:
+    """是否命中敏感词（删除数据/开通权限等）——风险判定前置规则。"""
+    normalized = text.casefold()
+    return any(term.casefold() in normalized for term in _SENSITIVE_TERMS)
+
+
+def contains_high_impact_term(text: str) -> bool:
+    """是否命中高影响词（全公司/生产环境等）——群体/关键业务影响判定。"""
+    normalized = text.casefold()
+    return any(term.casefold() in normalized for term in _HIGH_IMPACT_TERMS)
+
+
+def boundary_vpn(
+    vpn_fault: str,
+    fields_complete: bool,
+    has_sensitive_risk: bool,
+    has_high_impact: bool,
+    has_evidence: bool,
+    *,
+    has_account_lockout: bool = False,
+) -> str:
+    """VPN 场景边界矩阵（scope 文档第 4 节决策函数，确定性、可单测）。
+
+    返回三态之一：auto_suggest / must_ask / must_escalate。
+    顺序严格：字段不全先追问 -> 账号锁定/禁用升级（D6：账号锁定必须 it.account + 人工）
+    -> 认证类高风险升级 -> 群体故障升级 -> 敏感/高影响升级 -> 无依据升级 -> 允许自动建议。
+    """
+    if not fields_complete:
+        return BOUNDARY_MUST_ASK
+    # D6：账号锁定/禁用 -> 必须人工（it.account），不给任何 VPN 自动建议。
+    if has_account_lockout:
+        return BOUNDARY_MUST_ESCALATE
+    if vpn_fault == VPN_FAULT_AUTH_FAILED:
+        return BOUNDARY_MUST_ESCALATE
+    if vpn_fault == VPN_FAULT_MULTI_USER_IMPACT:
+        return BOUNDARY_MUST_ESCALATE
+    if has_sensitive_risk or has_high_impact:
+        return BOUNDARY_MUST_ESCALATE
+    if not has_evidence:
+        return BOUNDARY_MUST_ESCALATE
+    return BOUNDARY_AUTO_SUGGEST
 
 
 def normalize_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
@@ -335,9 +482,11 @@ def assess_and_dispatch(
     if not reasons:
         reasons.append("category_rule")
 
-    target_team = policy.team_by_category[category] if in_scope else policy.team_by_category[
-        TicketCategory.OTHER
-    ]
+    target_team = (
+        policy.team_by_category[category]
+        if in_scope
+        else policy.team_by_category[TicketCategory.OTHER]
+    )
     return DispatchDecision(
         team_id=target_team,
         priority=priority,

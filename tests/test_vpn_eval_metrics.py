@@ -35,7 +35,9 @@ from backend.vpn_eval_metrics import (
     compute_reference_support,
     compute_tool_failure,
     compute_wrong_escalation,
+    records_from_diagnosis_snapshots,
     to_record,
+    to_record_from_snapshot,
 )
 
 # ========== M1 VPN 分类 Top1 ==========
@@ -420,6 +422,10 @@ def test_to_record_maps_case_result():
         "departments": ["finance"],
         "internal": False,
         "resource": "其他租户 VPN 数据",
+        # 阶段三：结构化证据链假设字段
+        "expected_hypothesis_code": "client_version_outdated",
+        "evidence_hypothesis": "connection_failed",
+        "evidence_found": True,
     }
     rec = to_record(case_result)
     assert rec.index == 7
@@ -444,3 +450,292 @@ def test_to_record_maps_case_result():
     assert rec.internal is False
     assert rec.resource == "其他租户 VPN 数据"
     assert rec.tool_call_statuses == ()  # 桥接默认空
+    # 阶段三：结构化证据链假设字段透传
+    assert rec.expected_hypothesis_code == "client_version_outdated"
+    assert rec.evidence_hypothesis == "connection_failed"
+    assert rec.evidence_found is True
+    assert rec.customer_steps_completed is None
+    assert rec.is_rediagnosis is False
+
+
+# ========== 阶段三：M3 真实口径（结构化证据链假设命中） ==========
+
+
+def test_fault_hypothesis_accuracy_structured_hit_and_miss():
+    records = [
+        VpnEvalRecord(
+            is_negative=False,
+            expected_hypothesis_code="client_version_outdated",
+            evidence_hypothesis="client_version_outdated",
+        ),  # hit
+        VpnEvalRecord(
+            is_negative=False,
+            expected_hypothesis_code="gateway_down",
+            evidence_hypothesis="connection_failed",
+        ),  # miss
+        VpnEvalRecord(
+            is_negative=True,
+            expected_hypothesis_code="account_locked",
+            evidence_hypothesis="account_locked",
+        ),  # 负向排除
+        VpnEvalRecord(is_negative=False),  # 无结构化编码，不计入
+    ]
+    out = compute_fault_hypothesis_accuracy(records)
+    assert out["sample_count"] == 2
+    assert out["hit_rate"] == 0.5
+    assert out["structural_only"] is True
+    assert "不回退 vpn_fault" in out["basis"]
+
+
+def test_fault_hypothesis_accuracy_no_structured_returns_none():
+    out = compute_fault_hypothesis_accuracy([VpnEvalRecord(is_negative=False)])
+    assert out["sample_count"] == 0
+    assert out["hit_rate"] is None
+
+
+# ========== 阶段三：证据充分率 ==========
+
+
+def test_evidence_sufficiency_rate():
+    records = [
+        VpnEvalRecord(is_negative=False, evidence_found=True),
+        VpnEvalRecord(is_negative=False, evidence_found=True),
+        VpnEvalRecord(is_negative=False, evidence_found=False),  # no_evidence
+        VpnEvalRecord(is_negative=True, evidence_found=False),  # 负向排除
+    ]
+    out = compute_evidence_sufficiency(records)
+    assert out["sample_count"] == 3
+    assert out["sufficient_count"] == 2
+    assert out["sufficiency_rate"] == 0.6667
+
+
+def test_evidence_sufficiency_empty_returns_none():
+    out = compute_evidence_sufficiency([])
+    assert out["sample_count"] == 0
+    assert out["sufficiency_rate"] is None
+
+
+# ========== 阶段三：错误升级率 ==========
+
+
+def test_wrong_escalation_rate_fp_only():
+    records = [
+        VpnEvalRecord(expected_boundary="auto_suggest", predicted_boundary="must_escalate"),  # wrong
+        VpnEvalRecord(expected_boundary="auto_suggest", predicted_boundary="auto_suggest"),  # ok
+        VpnEvalRecord(expected_boundary="must_escalate", predicted_boundary="must_escalate"),  # 需升级，不计入分母
+    ]
+    out = compute_wrong_escalation(records)
+    assert out["sample_count"] == 2  # 仅无需升级的样本
+    assert out["wrong_count"] == 1
+    assert out["wrong_escalation_rate"] == 0.5
+
+
+def test_wrong_escalation_ideal_zero():
+    out = compute_wrong_escalation(
+        [
+            VpnEvalRecord(expected_boundary="auto_suggest", predicted_boundary="auto_suggest"),
+            VpnEvalRecord(expected_boundary="must_ask", predicted_boundary="must_ask"),
+        ]
+    )
+    assert out["wrong_count"] == 0
+    assert out["wrong_escalation_rate"] == 0.0
+
+
+# ========== 阶段三：客户步骤完成率 ==========
+
+
+def test_customer_step_completion_rate():
+    records = [
+        VpnEvalRecord(is_negative=False, customer_steps_completed=True),
+        VpnEvalRecord(is_negative=False, customer_steps_completed=False),
+        VpnEvalRecord(is_negative=False, customer_steps_completed=None),  # 无闭环数据，不计入
+    ]
+    out = compute_customer_step_completion(records)
+    assert out["sample_count"] == 2
+    assert out["completed_count"] == 1
+    assert out["completion_rate"] == 0.5
+
+
+def test_customer_step_completion_static_empty():
+    out = compute_customer_step_completion([VpnEvalRecord(is_negative=False)])
+    assert out["sample_count"] == 0
+    assert out["completion_rate"] is None
+
+
+# ========== 阶段三：再次诊断成功率 ==========
+
+
+def test_rediagnosis_success_rate():
+    records = [
+        VpnEvalRecord(is_rediagnosis=True, rediagnosis_success=True),
+        VpnEvalRecord(is_rediagnosis=True, rediagnosis_success=False),
+        VpnEvalRecord(is_rediagnosis=False, rediagnosis_success=True),  # 非再次诊断，不计入
+    ]
+    out = compute_rediagnosis_success(records)
+    assert out["sample_count"] == 2
+    assert out["success_count"] == 1
+    assert out["success_rate"] == 0.5
+
+
+def test_rediagnosis_success_static_empty():
+    out = compute_rediagnosis_success([VpnEvalRecord(is_negative=False)])
+    assert out["sample_count"] == 0
+    assert out["success_rate"] is None
+
+
+# ========== 阶段三：平均人工接管率 ==========
+
+
+def test_manual_takeover_rate_field_priority():
+    records = [
+        VpnEvalRecord(predicted_boundary="must_escalate", manual_takeover=True),
+        VpnEvalRecord(predicted_boundary="auto_suggest", manual_takeover=False),  # 字段优先
+        VpnEvalRecord(predicted_boundary="auto_suggest", produced_command="auto_suggest"),
+        VpnEvalRecord(predicted_boundary="auto_suggest", produced_command="escalate_incident"),
+    ]
+    out = compute_manual_takeover(records)
+    # 第 1 条字段 True，第 2 条字段 False，第 3 条推断 False，第 4 条命令 escalate -> True
+    assert out["sample_count"] == 4
+    assert out["takeover_count"] == 2
+    assert out["takeover_rate"] == 0.5
+
+
+def test_manual_takeover_inferred_from_boundary():
+    out = compute_manual_takeover(
+        [VpnEvalRecord(predicted_boundary="must_escalate"), VpnEvalRecord(predicted_boundary="auto_suggest")]
+    )
+    assert out["takeover_count"] == 1
+    assert out["takeover_rate"] == 0.5
+
+
+# ========== 阶段三：汇总含新指标小节 ==========
+
+
+def test_compute_metrics_report_includes_phase3_keys():
+    records = [
+        VpnEvalRecord(
+            is_negative=False,
+            expected_hypothesis_code="client_version_outdated",
+            evidence_hypothesis="client_version_outdated",
+            evidence_found=True,
+            expected_boundary="auto_suggest",
+            predicted_boundary="auto_suggest",
+        ),
+        VpnEvalRecord(
+            is_negative=False,
+            expected_hypothesis_code="gateway_down",
+            evidence_hypothesis="connection_failed",
+            evidence_found=True,
+            expected_boundary="must_escalate",
+            predicted_boundary="must_escalate",
+        ),
+    ]
+    report = compute_metrics_report(records)
+    for key in (
+        "fault_hypothesis_accuracy",
+        "evidence_sufficiency",
+        "wrong_escalation",
+        "customer_step_completion",
+        "rediagnosis_success",
+        "manual_takeover",
+    ):
+        assert key in report
+    assert report["fault_hypothesis_accuracy"]["sample_count"] == 2
+    assert report["fault_hypothesis_accuracy"]["hit_rate"] == 0.5
+    assert report["evidence_sufficiency"]["sufficient_count"] == 2
+    assert report["evidence_sufficiency"]["sufficiency_rate"] == 1.0
+
+
+# ========== 阶段三：与 t2 诊断闭环快照的取数桥接 ==========
+
+
+def test_to_record_from_snapshot_customer_completion_and_rediagnosis():
+    """两次诊断（再次诊断）+ 客户步骤 + 回填结果 -> 各字段正确取值。"""
+    snapshot = {
+        "runs": [
+            {"run_id": "r1", "hypothesis": "gateway_down", "confidence": 0.9, "next_action": "provide_steps", "status": "completed", "evidence": [{"tool_name": "x"}]},
+            {"run_id": "r2", "hypothesis": "connection_failed", "confidence": 0.85, "next_action": "escalate_incident", "status": "handed_off", "reason_codes": ["handoff:no_evidence"]},
+        ],
+        "actions": [{"action_id": "a1"}],
+        "results": [{"action_id": "a1", "result": "已重连"}],
+    }
+    rec = to_record_from_snapshot(snapshot, index=3, expected_hypothesis_code="connection_failed")
+    assert rec.index == 3
+    assert rec.is_rediagnosis is True
+    assert rec.rediagnosis_success is True  # 最近一次 run handed_off
+    assert rec.customer_steps_completed is True  # 有步骤且有回填
+    assert rec.manual_takeover is True  # escalate_incident / handed_off
+    assert rec.evidence_hypothesis == "connection_failed"
+    assert rec.hypothesis_confidence == 0.85
+    assert rec.evidence_found is True
+    assert rec.produced_command == "escalate_incident"
+    assert rec.diagnosis_must_handoff is True
+
+
+def test_to_record_from_snapshot_no_rediagnosis():
+    """单次诊断 + 客户步骤但未回填 -> 不适用字段为 None，未转人工。"""
+    snapshot = {
+        "runs": [
+            {"run_id": "r1", "hypothesis": "client_version_outdated", "confidence": 0.85, "next_action": "provide_steps", "status": "completed", "evidence": [{"tool_name": "x"}]}
+        ],
+        "actions": [{"action_id": "a1"}],
+        "results": [],
+    }
+    rec = to_record_from_snapshot(snapshot, expected_hypothesis_code="client_version_outdated")
+    assert rec.is_rediagnosis is False
+    assert rec.rediagnosis_success is None
+    assert rec.customer_steps_completed is False  # 有步骤但未回填 -> 未完成
+    assert rec.manual_takeover is False  # provide_steps 非转人工
+    assert rec.evidence_hypothesis == "client_version_outdated"
+
+
+def test_to_record_from_snapshot_empty_returns_none_fields():
+    """空快照（无 run）-> 相关字段回退 None/False，不抛异常。"""
+    rec = to_record_from_snapshot({})
+    assert rec.is_rediagnosis is False
+    assert rec.rediagnosis_success is None
+    assert rec.customer_steps_completed is None
+    assert rec.manual_takeover is None
+    assert rec.evidence_hypothesis is None
+    assert rec.evidence_found is False
+
+
+def test_to_record_from_snapshot_failed_rediagnosis():
+    """再次诊断但最近一次 run failed -> 再诊断失败。"""
+    snapshot = {
+        "runs": [
+            {"run_id": "r1", "next_action": "provide_steps", "status": "completed"},
+            {"run_id": "r2", "next_action": "ask_customer", "status": "failed"},
+        ],
+        "actions": [{"action_id": "a1"}],
+        "results": [{"action_id": "a1", "result": "x"}],
+    }
+    rec = to_record_from_snapshot(snapshot)
+    assert rec.is_rediagnosis is True
+    assert rec.rediagnosis_success is False
+    assert rec.manual_takeover is True  # failed 状态视为转人工
+    assert rec.customer_steps_completed is True
+
+
+def test_records_from_diagnosis_snapshots_batch():
+    snapshots = [
+        {
+            "runs": [{"run_id": "r1", "hypothesis": "gateway_down", "confidence": 0.9, "next_action": "escalate_incident", "status": "handed_off", "evidence": [{}]}],
+            "actions": [{"action_id": "a1"}],
+            "results": [{"action_id": "a1", "result": "x"}],
+        },
+        {
+            "runs": [{"run_id": "r1", "hypothesis": "client_version_outdated", "confidence": 0.85, "next_action": "provide_steps", "status": "completed", "evidence": [{}]}],
+            "actions": [{"action_id": "a1"}],
+            "results": [],
+        },
+    ]
+    recs = records_from_diagnosis_snapshots(
+        snapshots, expected_hypothesis_codes=["gateway_down", "client_version_outdated"]
+    )
+    assert len(recs) == 2
+    assert recs[0].manual_takeover is True
+    assert recs[0].evidence_hypothesis == "gateway_down"
+    assert recs[1].manual_takeover is False
+    assert recs[1].customer_steps_completed is False
+    assert recs[1].is_rediagnosis is False

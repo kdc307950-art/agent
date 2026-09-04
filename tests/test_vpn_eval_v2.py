@@ -203,9 +203,12 @@ def test_v2_static_report_protection_and_accuracy():
     assert set(sc) == set(ALL_SCENARIOS)
     for name in ALL_SCENARIOS:
         assert sc[name] >= 6
-    # 分类缺口：唯一失败项全部是「账号锁定-VPN 混淆」的 ground-truth it.account
+    # D6 修复（阶段三）：账号锁定-VPN 混淆已闭环——S6 账号锁定样本现在正确归 it.account，
+    # 不再产生 category_mismatch，故 failure_count==0。
     failures = report["failures"]
-    assert all(
+    assert failures == [], f"意外存在失败项: {failures}"
+    assert report["failure_count"] == 0
+    assert not any(
         f["scenario"] == SCENARIO_ACCOUNT_LOCK and "category_mismatch" in f["reasons"]
         for f in failures
     )
@@ -215,3 +218,10 @@ def test_v2_static_report_protection_and_accuracy():
     assert metrics["escalation_accuracy"]["precision"] == 1.0
     assert metrics["high_risk_misdirect"]["misdirect_rate"] == 0.0
     assert metrics["fault_hypothesis_hit"]["hit_rate"] == 1.0
+    # 阶段三 M3 真实口径（结构化证据链，不再回退 vpn_fault）的新指标小节存在
+    assert metrics["fault_hypothesis_accuracy"]["structural_only"] is True
+    assert metrics["evidence_sufficiency"]["sufficiency_rate"] == 1.0
+    assert metrics["wrong_escalation"]["wrong_escalation_rate"] == 0.0
+    assert metrics["manual_takeover"]["takeover_rate"] > 0.0
+    assert metrics["customer_step_completion"]["sample_count"] == 0  # static 无闭环数据
+    assert metrics["rediagnosis_success"]["sample_count"] == 0  # static 无闭环数据

@@ -64,6 +64,7 @@ from .vpn.rules import (
     build_evidence_from_case,
     evaluate_evidence,
     hypothesis_code_from_hint,
+    is_account_lockout_text,
 )
 from .vpn_eval_metrics import (
     compute_metrics_report,
@@ -165,12 +166,15 @@ async def _evaluate_case(
         # static 模式：无真实检索；负向样本一律无依据，否则视预期文档非空为有依据。
         has_evidence = False if is_negative else bool(expected)
 
+    # D6：账号锁定/禁用主因 -> 必须在边界层强制 must_escalate（it.account 人工）。
+    has_account_lockout = is_account_lockout_text(text)
     predicted_boundary = boundary_vpn(
         predicted_fault,
         fields_complete,
         has_sensitive,
         has_high_impact,
         has_evidence,
+        has_account_lockout=has_account_lockout,
     )
     boundary_ok = predicted_boundary == expected_boundary
 

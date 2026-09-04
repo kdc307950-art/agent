@@ -902,3 +902,186 @@ def records_from_case_results(
 ) -> list[VpnEvalRecord]:
     """批量规范化 case 评估结果。"""
     return [to_record(item) for item in results]
+
+
+# ---------------------------------------------------------------------------
+# 阶段三：与阶段二（t2 客户处置闭环）结构化的取数桥接
+# ---------------------------------------------------------------------------
+# 以下函数把 backend/vpn/closed_loop.VpnClosedLoopService.get_snapshot() 产出的
+# 结构化快照（已 model_dump(mode="json") 的 dict）归一化为 VpnEvalRecord，
+# 供「需要真实诊断 run / 客户动作数据才能算」的阶段三指标（customer_step_completion /
+# rediagnosis_success / manual_takeover / M3 真实口径）消费。
+#
+# 口径说明（需求方 = metrics）：
+#   - customer_step_completed : 该工单是否产出 provide_steps 且客户回填结果(结果非空)。
+#   - is_rediagnosis          : 该工单诊断运行数 >= 2（存在再次诊断）。
+#   - rediagnosis_success     : 再次诊断是否落定为 completed/handed_off（非 failed/cancelled）。
+#   - manual_takeover         : 最近一次 run 是否转人工(next_action=escalate_incident/
+#                              request_approval 或 run.status=handed_off/failed 或 must_handoff)。
+#   - evidence_hypothesis / hypothesis_confidence / evidence_found : 最近一次 run 的
+#                              hypothesis(结构化假设编码)/confidence/evidence 非空。
+#
+# 取数基于纯 dict 快照（duck-typing，不 import t2 对象类型），因此即便 t2 尚未落地
+# 也能独立单测；t2 落地后只需把 get_snapshot() 的结果传入即可对齐。以下字段若快照缺失，
+# 一律按「不适用」回退（None/False），不抛异常。
+
+
+def _snapshot_runs(snapshot: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """从快照提取 runs 列表（兼容 runs 或 latest_run 形态）。"""
+    runs = list(snapshot.get("runs") or [])
+    if not runs and snapshot.get("latest_run"):
+        runs = [snapshot["latest_run"]]
+    return [r for r in runs if isinstance(r, Mapping)]
+
+
+def _run_next_action(run: Mapping[str, Any]) -> str:
+    return str(run.get("next_action") or "")
+
+
+def _run_status(run: Mapping[str, Any]) -> str:
+    return str(run.get("status") or "")
+
+
+def _snapshot_has_customer_result(snapshot: Mapping[str, Any]) -> bool:
+    """快照中客户动作结果是否非空（存在已回填的 VpnCustomerActionResult）。"""
+    results = list(snapshot.get("results") or [])
+    return bool(results)
+
+
+def _snapshot_action_count(snapshot: Mapping[str, Any]) -> int:
+    """快照中产出的客户排查步骤数（provide_steps 的 VpnCustomerAction 数）。"""
+    return len(list(snapshot.get("actions") or []))
+
+
+def _snapshot_is_rediagnosis(snapshot: Mapping[str, Any]) -> bool:
+    """该工单是否发生过再次诊断（诊断运行数 >= 2）。"""
+    return len(_snapshot_runs(snapshot)) >= 2
+
+
+def _snapshot_rediagnosis_success(snapshot: Mapping[str, Any]) -> bool | None:
+    """再次诊断是否成功落定。
+
+    有再次诊断（>=2 次 run）时：最近一次 run 状态为 completed/handed_off 即成功，
+    failed/cancelled 即失败；不足 2 次 run 或无最近 run -> None（不适用）。
+    """
+    if not _snapshot_is_rediagnosis(snapshot):
+        return None
+    latest = _snapshot_runs(snapshot)[-1]
+    status = _run_status(latest)
+    if status in ("completed", "handed_off"):
+        return True
+    if status in ("failed", "cancelled"):
+        return False
+    return None
+
+
+def _snapshot_manual_takeover(snapshot: Mapping[str, Any]) -> bool | None:
+    """该工单最近一次诊断是否转人工接管。
+
+    run 的 next_action 为 escalate_incident/request_approval，或 run.status 为
+    handed_off/failed，或该 run 标记 must_handoff（reason_codes 或 evaluation）。
+    无 run -> None（不适用）。
+    """
+    runs = _snapshot_runs(snapshot)
+    if not runs:
+        return None
+    latest = runs[-1]
+    action = _run_next_action(latest)
+    status = _run_status(latest)
+    reason_codes = [str(c) for c in (latest.get("reason_codes") or [])]
+    if action in ESCALATION_COMMANDS or action == "assign_agent":
+        return True
+    if status in ("handed_off", "failed"):
+        return True
+    if any("handoff" in code or "escalate" in code for code in reason_codes):
+        return True
+    if latest.get("must_handoff") is True:
+        return True
+    # 未显式转人工（有 provide_steps / ask_customer 等非转人工命令）
+    return False
+
+
+def _snapshot_hypothesis(snapshot: Mapping[str, Any]) -> tuple[str | None, float | None, bool]:
+    """从最近一次 run 提取结构化假设（hypothesis / confidence / evidence_found）。
+
+    返回 (evidence_hypothesis, hypothesis_confidence, evidence_found)。
+    """
+    runs = _snapshot_runs(snapshot)
+    if not runs:
+        return None, None, False
+    latest = runs[-1]
+    hypothesis = latest.get("hypothesis")
+    if not hypothesis:
+        hypothesis = None
+    confidence = latest.get("confidence")
+    try:
+        confidence = float(confidence) if confidence is not None else None
+    except (TypeError, ValueError):
+        confidence = None
+    evidence = latest.get("evidence") or []
+    evidence_found = bool(evidence) or bool(latest.get("must_handoff")) is False and bool(
+        latest.get("reason_codes") or []
+    )
+    return hypothesis, confidence, bool(evidence_found)
+
+
+def to_record_from_snapshot(
+    snapshot: Mapping[str, Any],
+    *,
+    index: int | None = None,
+    is_negative: bool = False,
+    expected_hypothesis_code: str | None = None,
+    text: str = "",
+) -> VpnEvalRecord:
+    """把 t2 诊断闭环快照归一化为 VpnEvalRecord（阶段三取数桥接）。
+
+    只填充阶段三指标真实口径所需的诊断运行/客户动作字段；分类/字段/边界等静态字段
+    由调用方（evaluate_case / to_record）另行提供，本函数不重复计算。
+
+    口径：见本段 docstring。快照缺失字段一律回退 None/False，不抛异常。
+    """
+    runs = _snapshot_runs(snapshot)
+    action_count = _snapshot_action_count(snapshot)
+    has_result = _snapshot_has_customer_result(snapshot)
+    evidence_hypothesis, hypothesis_confidence, evidence_found = _snapshot_hypothesis(snapshot)
+
+    return VpnEvalRecord(
+        index=index,
+        is_negative=is_negative,
+        text=text,
+        expected_hypothesis_code=expected_hypothesis_code,
+        evidence_hypothesis=evidence_hypothesis,
+        hypothesis_confidence=hypothesis_confidence,
+        evidence_found=evidence_found,
+        # M5 真实口径：agent.run 轮次/工具数（快照未提供则 None，交由调用方补）。
+        agent_tool_call_count=len(runs),
+        # 客户步骤完成率：产出步骤且有客户回填结果为完成。
+        customer_steps_completed=(has_result if action_count > 0 else None),
+        # 再次诊断成功率。
+        is_rediagnosis=_snapshot_is_rediagnosis(snapshot),
+        rediagnosis_success=_snapshot_rediagnosis_success(snapshot),
+        # 平均人工接管率。
+        manual_takeover=_snapshot_manual_takeover(snapshot),
+        # M4 升级口径：由最近 run 的命令标注（若快照带 produced_command）。
+        produced_command=_run_next_action(runs[-1]) if runs else None,
+        diagnosis_must_handoff=(_snapshot_manual_takeover(snapshot) is True),
+    )
+
+
+def records_from_diagnosis_snapshots(
+    snapshots: Sequence[Mapping[str, Any]],
+    *,
+    is_negative: bool = False,
+    expected_hypothesis_codes: Sequence[str | None] | None = None,
+) -> list[VpnEvalRecord]:
+    """批量规范化 t2 诊断闭环快照列表 → VpnEvalRecord 列表（阶段三取数通道）。"""
+    codes = list(expected_hypothesis_codes or [None] * len(snapshots))
+    return [
+        to_record_from_snapshot(
+            snap,
+            index=idx,
+            is_negative=is_negative,
+            expected_hypothesis_code=(codes[idx] if idx < len(codes) else None),
+        )
+        for idx, snap in enumerate(snapshots)
+    ]
