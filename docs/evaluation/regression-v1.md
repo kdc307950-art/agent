@@ -9,8 +9,8 @@
 | `uv run ruff check backend src tests` | 通过 |
 | `uv run mypy backend src` | 98 个文件无问题 |
 | `pytest -m "not live_e2e"` | **797 passed / 1 skipped / 3 deselected**（冻结前实测，配置了本地 PostgreSQL/Redis） |
-| 真实数据库评测 `run_ticket_eval --require-db` | **未执行**（无 PostgreSQL），`docs/evaluation/v1-report.md` 保持 N/A |
-| 真实仓储生命周期 `test_ticket_lifecycle_postgres.py` | **未执行**（无 PostgreSQL，待 CI/本地 DB） |
+| 真实数据库评测 `run_ticket_eval --require-db` | 本轮未重跑完整评测指标；数据库连通性与 VPN 持久化集成已验证 |
+| 真实仓储生命周期 `test_ticket_lifecycle_postgres.py` | 本轮全量 `pytest -m "not live_e2e"` 已纳入并通过 |
 
 ## 前端
 
@@ -21,7 +21,7 @@
 | `npm test -- --run`（Vitest 单测） | 30 passed |
 | `npm run build` | 通过 |
 | `npm run test:e2e:mock`（Playwright Mock） | **22 passed** |
-| `npm run test:e2e:real` | 需 `E2E_WEB_BASE` + `E2E_API_TOKEN`，本次未配置 → **未执行**（决策点 2：简历写“Mock E2E 已覆盖”） |
+| `npm run test:e2e:real` | 需 `E2E_WEB_BASE` + `E2E_API_TOKEN`，本次未配置 → **未执行**；仅声明 Mock E2E 已覆盖 |
 
 ## 演示与渠道
 

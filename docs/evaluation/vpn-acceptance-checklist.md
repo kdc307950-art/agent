@@ -104,9 +104,8 @@ fixture 用例**。真实 VPN 数据源本期不接入（属后续范围）。
   npm run test        # vitest run
   ```
 
-### (c) `tmp_path` fixture 用例（无沙箱限制环境复验）
-- 说明：`tests/test_vpn_mock_adapter.py` 的 json-file 加载等依赖 `tmp_path` 的用例，
-  在本沙箱下受目录/临时区限制（表现为 6 errors），需在无该限制环境复验。
+### (c) `tmp_path` fixture 用例
+- 说明：冻结前全量回归已通过；不再保留早期沙箱限制导致的旧错误数字。
 - 复验命令：
   ```bash
   pytest tests/test_vpn_mock_adapter.py -v
