@@ -192,6 +192,8 @@ class VpnReissueService:
         tenant_id = getattr(run_context, "tenant_id", None) or (
             request.tenant_id if request is not None else None
         )
+        if not tenant_id:
+            raise ValueError("approve 需要租户上下文")
         result = await approve_reissue(
             tenant_id=tenant_id,
             operation_id=op_id,
@@ -251,6 +253,8 @@ class VpnReissueService:
     ) -> dict[str, Any]:
         """记录人工核对的 FMG 提交事实，并只读对账，不重新提交 install。"""
         tenant_id = getattr(run_context, "tenant_id", None)
+        if not tenant_id:
+            raise ValueError("confirm_submission 需要租户上下文")
         op = await self.store.get_operation(tenant_id=tenant_id, operation_id=operation_id)
         if op is None:
             return {"ok": False, "error_code": "not_found", "operation_id": operation_id}
@@ -459,6 +463,13 @@ class VpnReissueService:
         返回：{"idempotency_key", "reconciled", "status", "external_result"}。
         """
         tenant_id = getattr(run_context, "tenant_id", None)
+        if not tenant_id:
+            return {
+                "idempotency_key": idempotency_key,
+                "reconciled": False,
+                "status": None,
+                "error_code": "missing_tenant_context",
+            }
         op = (
             await self.store.get_by_idempotency_key(
                 tenant_id=tenant_id, idempotency_key=idempotency_key

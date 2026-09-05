@@ -30,10 +30,10 @@
 
 6. **评测集为内部基准**：知识检索 seed 52 条 + hybrid_holdout 19 条为脱敏
    IT 场景构造用例；V1 工单链路另有固定 90 条评测集
-   （`backend/knowledge/ticket_eval_cases.py`，版本 `2026-09-12-v1`：VPN 30 /
+   （`backend/knowledge/ticket_eval_cases.py`，版本 `2026-09-05-v1`：VPN 30 /
    账号 20 / 网络 20 / 字段缺失 10 / 无知识依据 5 / ACL 越权 5）；
    另设 **VPN 专项 60 条**（`backend/knowledge/vpn_eval_cases.py`，
-   版本 `2026-09-12-vpn-v1`）。
+   版本 `2026-09-05-vpn-v1`）。
    均只在演示库/确定性分类器上测得，不代表真实企业知识库分布。
 
 7. **企微沙箱真实端到端未执行**：自动化测试覆盖验签/解密/幂等/追问/Resume；

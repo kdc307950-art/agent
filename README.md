@@ -1,4 +1,8 @@
-# 多租户 IT 服务台工单系统（Helpdesk）
+# 企业 VPN 配置变更安全执行与对账系统
+
+> **冻结版本：`vpn-control-v1.0` · 2026-09-05**
+
+本项目的面试主线是企业 VPN 配置变更控制，不是通用客服 Demo：通过租户级目标校验、配置 preview、差异哈希审批、FortiManager 异步任务和人工对账，控制 VPN 配置变更的副作用边界。IT 服务台是业务入口，通用聊天和 Supervisor 仅保留为历史示例。
 
 [![CI](https://github.com/kdc307950-art/agent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kdc307950-art/agent/actions/workflows/ci.yml)
 
@@ -21,6 +25,8 @@
 - 生产链路不采用 Supervisor 多 Agent；确定性状态机负责审批、状态和副作用边界，Agent 只保留在受理/知识建议等非写入边界。
 
 近期面试演示使用：先启动 `D:\fmg-vm\fake_fmg_server.py`，再运行 `drill_fake_fmg.py`。脚本固定输出 8 步，并以非零退出码表示失败，最后明确演示证据等级。
+
+面试包装与冻结清单见 [docs/interview/vpn-control-demo.md](docs/interview/vpn-control-demo.md)。冻结后只接受 bug 修复、安全修复和依赖升级；任何业务范围、状态机或外部写入语义变化必须新开版本。
 
 **三档验证口径（请勿混淆）**：
 1. **本地演示**：`docker compose -f infra/compose.demo.yml up --build -d` → 浏览器访问 `http://127.0.0.1:8000` → 页面粘贴 `docker compose exec agent ... issue_dev_token` 输出；只验证“能跑通闭环”，不产生评测数字。
@@ -438,7 +444,7 @@ uv run pytest tests -q -m "not live_e2e"
 
 命令行的环境变量优先于 `.env`（`conftest.py` 的 `load_dotenv()` 不覆盖已存在的变量），所以不必改本地配置。
 
-CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。本次无外部依赖本地回归为 `330 passed, 64 skipped`（跳过 PostgreSQL/Redis 集成与 live_e2e）；启用集成栈后应执行同一命令验证数据库租约、ACL 与迁移语义。`test_ticket_api.py::test_full_lifecycle_http_regression_vpn` 为 **HTTP 路由回归（Fake runtime）**，真实仓储闭环以 `tests/test_ticket_lifecycle_postgres.py` 为准；V1 固定 90 条工单评测只有 CI 的 `run_ticket_eval --require-db` 真实检索结果才能进入 [docs/evaluation/v1-report.md](docs/evaluation/v1-report.md)（本地未配置数据库时指标为 N/A）。
+CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。本次冻结前本地集成栈回归为 `797 passed, 1 skipped, 3 deselected`（不含 live_e2e）；真实仓储闭环以 `tests/test_ticket_lifecycle_postgres.py` 为准。`test_ticket_api.py::test_full_lifecycle_http_regression_vpn` 为 **HTTP 路由回归（Fake runtime）**；V1 固定 90 条工单评测只有 CI 的 `run_ticket_eval --require-db` 真实检索结果才能进入 [docs/evaluation/v1-report.md](docs/evaluation/v1-report.md)。
 
 真实 DeepSeek E2E 默认不运行，以免普通 CI 产生费用。手动 workflow `Live Agent E2E` 需要受保护环境中的 `DEEPSEEK_API_KEY`、`LIVE_AGENT_TOKEN` 和 `TENANT_TOKEN_SECRET`，覆盖文本 SSE、工具调用和同线程续聊。
 

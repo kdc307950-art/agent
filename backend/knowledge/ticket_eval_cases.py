@@ -35,7 +35,7 @@ class TicketEvalCase(TypedDict):
     forbidden_document_ids: NotRequired[tuple[str, ...]]
 
 
-TICKET_EVAL_VERSION = "2026-09-12-v1"
+TICKET_EVAL_VERSION = "2026-09-05-v1"
 
 # 预期知识文档（与 backend.seed_demo 的 8 篇脱敏 IT 文档对应）
 DOC_BY_CATEGORY: dict[str, tuple[str, ...]] = {

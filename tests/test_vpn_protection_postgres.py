@@ -411,8 +411,6 @@ def test_reject_path_terminal_and_ticket_recoverable():
             from backend.vpn.api import approve_reissue as approve_ep
 
             agent_p = Principal(tenant_id=tenant, user_id="agent-1", scopes=frozenset({"ticket:agent"}))
-            body = _reissue_payload(asset_id, ticket_id)
-
             with pytest.raises(HTTPException) as exc:
                 await approve_ep(
                     operation_id=key,
@@ -678,4 +676,3 @@ def test_add_action_and_add_action_result_are_idempotent_upserts():
             await pool.close()
 
     asyncio.run(run())
-

@@ -228,7 +228,7 @@ def run_frozen_metrics(samples: Sequence[FrozenSample]) -> dict[str, Any]:
     mu_bad, mu_total, mu_ids = multi_user_misclassified(rows)
     ne_bad, ne_total, ne_ids = no_evidence_auto_reply(rows)
 
-    gates = {
+    gates: dict[str, dict[str, Any]] = {
         "classification_accuracy_gte_0.90": {
             "value": cls_acc,
             "target": CLASSIFICATION_TARGET,
@@ -276,7 +276,7 @@ def run_frozen_metrics(samples: Sequence[FrozenSample]) -> dict[str, Any]:
             "no_evidence_auto_reply": {"value": ne_bad, "total": ne_total, "ids": ne_ids},
         },
         "gates": gates,
-        "all_gates_pass": all(g["pass"] for g in gates.values()),
+        "all_gates_pass": all(bool(g["pass"]) for g in gates.values()),
         "provenance": (
             "指标基于 backend/vpn/eval/frozen_samples.json（本任务编写，真实/脱敏措辞）。"
             "当前无真实生产语料库，故数字代表确定性规则在该冻结集上的自洽性，"

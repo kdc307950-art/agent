@@ -4,7 +4,7 @@
 > VPN V1 已收敛为**单主线** `it.vpn`（VPN 受理与建议闭环），账号/权限与网络降为
 > 旁路/转人工。权威范围见 [docs/product/vpn-v1-scope.md](vpn-v1-scope.md)。
 
-> 本文为上一版（多主线）范围说明；**权威范围**见 [docs/product/vpn-v1-scope.md](vpn-v1-scope.md)（产品基线版本标识 `2026-09-12-vpn-v1`，已冻结）。
+> 本文为上一版（多主线）范围说明；**权威范围**见 [docs/product/vpn-v1-scope.md](vpn-v1-scope.md)（产品基线版本标识 `vpn-control-v1.0`，已冻结）。
 > 一句话：**面向中小企业内部 IT 服务台：员工从 Web 报障碍，系统自动完成分类、补字段、SLA、派单与带引用建议，人工确认后解决关闭；企业微信等渠道保留代码但为“非 V1 能力”。**
 
 ## 目标客户

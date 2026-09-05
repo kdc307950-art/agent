@@ -145,21 +145,21 @@ def _raise_transition_error(result: ReissueExecutionResult) -> None:
         "preflight_failed",
         "precheck_failed",
     ):
-        detail: dict[str, Any] = {"error_code": code, "reason": result.reason}
+        transition_detail: dict[str, Any] = {"error_code": code, "reason": result.reason}
         if getattr(result, "detail", None):
             fail_reasons = result.detail.get("fail_reasons")
             if fail_reasons:
-                detail["fail_reasons"] = fail_reasons
-        raise HTTPException(status_code=409, detail=detail)
+                transition_detail["fail_reasons"] = fail_reasons
+        raise HTTPException(status_code=409, detail=transition_detail)
     if code == "db_error":
         raise HTTPException(status_code=503, detail={"error_code": code, "reason": result.reason})
     if code in ("denied_scope", "high_risk_requires_human"):
-        detail: dict[str, Any] = {"error_code": code, "reason": result.reason}
+        scope_detail: dict[str, Any] = {"error_code": code, "reason": result.reason}
         if getattr(result, "detail", None):
             high_risk = result.detail.get("high_risk_reasons")
             if high_risk:
-                detail["high_risk_reasons"] = high_risk
-        raise HTTPException(status_code=403, detail=detail)
+                scope_detail["high_risk_reasons"] = high_risk
+        raise HTTPException(status_code=403, detail=scope_detail)
     if code == "unsupported_decision":
         raise HTTPException(status_code=400, detail={"error_code": code, "reason": result.reason})
     # 兜底：未识别的结构错误

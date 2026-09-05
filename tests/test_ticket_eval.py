@@ -15,7 +15,7 @@ from backend.run_ticket_eval import _run_eval, main
 
 
 def test_ticket_eval_dataset_is_frozen_with_expected_scenario_mix():
-    assert TICKET_EVAL_VERSION == "2026-09-12-v1"
+    assert TICKET_EVAL_VERSION == "2026-09-05-v1"
     assert ticket_eval_case_count() == 90
     counts = ticket_eval_scenario_counts()
     assert counts == {

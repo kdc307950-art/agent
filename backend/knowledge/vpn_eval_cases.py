@@ -50,7 +50,7 @@ class VpnEvalCase(TypedDict):
     is_negative: NotRequired[bool]
 
 
-VPN_EVAL_VERSION = "2026-09-12-vpn-v1"
+VPN_EVAL_VERSION = "2026-09-05-vpn-v1"
 
 # 8 项固定字段（scope 文档第 3 节；与 IntakePolicy 的 it.vpn 租户策略必填项一致）
 VPN_REQUIRED_FIELDS: tuple[str, ...] = (

@@ -628,6 +628,8 @@ class PostgresReissueStore:
                         ),
                     )
                     row = await cursor.fetchone()
+            if row is None:
+                raise RuntimeError("创建 VPN 操作后未返回数据库记录")
             return _row_to_operation(row)
         except psycopg.errors.UniqueViolation:
             # 幂等键冲突：同 (tenant, idempotency_key) 已有活跃操作 -> 返回既有。

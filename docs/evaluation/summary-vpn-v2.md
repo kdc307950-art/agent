@@ -24,7 +24,7 @@
 
 | 项 | 达标 | 证据 |
 |---|---|---|
-| 总数 63 / 版本冻结 `2026-09-12-vpn-v2` | ✅ | `count()==63`、`VPN_EVAL_VERSION_V2` |
+| 总数 63 / 版本冻结 `2026-09-05-vpn-v2` | ✅ | `count()==63`、`VPN_EVAL_VERSION_V2` |
 | 9 类场景各 7 条 | ✅ | `scenario_counts()` 全 7 |
 | 三边界三态分布（auto/must_ask/must_escalate） | ✅ | `boundary_counts()` 全含 |
 | v2 新增字段合法（error_code/client_version/network_type/fault_hypothesis/acls/risk_level/escalation_expected） | ✅ | `test_v2_new_metric_fields_schema_valid` |
@@ -128,7 +128,7 @@ static 模式因 bug 方向恰好正确而通过，形成「假安全」。
 ## 9. D4 闭环：真实防护层断言（integration-engineer 补）
 
 > 文件：`tests/test_vpn_protection_postgres.py`（真实 compose.test 栈 55436/56379 + `backend.migrations`；不触发真实模型）。
-> 结果：**5 passed / 0 failed**；回归 `test_tool_governance.py` + `test_vpn_reissue_api.py` + `test_vpn_reissue_service.py` = 21 passed；完整 `pytest tests -m "not live_e2e"` = **550 passed / 0 failed / 3 deselected**。
+> 历史结果：**5 passed / 0 failed**；本次冻结前完整 `pytest tests -m "not live_e2e"` = **797 passed / 1 skipped / 3 deselected**。
 
 | # | 断言 | 结果 | 说明 |
 |---|---|---|---|

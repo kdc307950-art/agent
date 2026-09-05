@@ -1456,7 +1456,7 @@ async def execute_approved_reissue(
         payload={**base_payload},
     )
     try:
-        runner_kwargs = {
+        runner_kwargs: dict[str, Any] = {
             "tenant_id": request.tenant_id,
             "user_id": request.user_id,
             "idempotency_key": key,

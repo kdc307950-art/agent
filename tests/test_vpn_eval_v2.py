@@ -42,7 +42,7 @@ from src.my_agent.helpdesk import (
 
 
 def test_v2_dataset_is_frozen_with_expected_mix():
-    assert VPN_EVAL_VERSION_V2 == "2026-09-12-vpn-v2"
+    assert VPN_EVAL_VERSION_V2 == "2026-09-05-vpn-v2"
     assert count() == 63
     sc = scenario_counts()
     assert set(sc) == set(ALL_SCENARIOS)
@@ -190,7 +190,7 @@ def test_v2_version_outdated_fault_aligned_with_intake():
 def test_v2_static_report_protection_and_accuracy():
     report = asyncio.run(_run_eval(None, "demo", "vpn-v2"))
     assert report["dataset"] == "vpn_v2"
-    assert report["version"] == "2026-09-12-vpn-v2"
+    assert report["version"] == "2026-09-05-vpn-v2"
     assert report["total"] == 63
     # 关键保护：负向/越权样本不得误导向 it.vpn 自动建议
     assert report["auto_misdirect"]["count"] == 0

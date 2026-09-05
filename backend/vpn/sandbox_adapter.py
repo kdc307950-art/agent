@@ -436,6 +436,7 @@ class VpnResilientAdapter(VpnAdapter):
         # 每调用的厂商侧 external_request_id 生成器（真实 HTTP 适配器用它做请求头/回填）。
         self._new_external_request_id = external_request_id_factory or (lambda: uuid.uuid4().hex)
         # 只读结果缓存：注入 cache 优先；否则从配置缓存 TTL 派生；None/<=0 表示禁用。
+        self._cache: ResultCache | None
         if cache is not None:
             self._cache = cache
         elif self._config.cache_ttl_seconds is not None and self._config.cache_ttl_seconds > 0:
@@ -546,9 +547,9 @@ class VpnResilientAdapter(VpnAdapter):
         if _side_effect:
             idem_key = str(kwargs.get("idempotency_key") or "")
             if idem_key:
-                cache_key = f"{method}:{idem_key}"
-                if cache_key in self._idempotency:
-                    return dict(self._idempotency[cache_key])
+                idem_cache_key = f"{method}:{idem_key}"
+                if idem_cache_key in self._idempotency:
+                    return dict(self._idempotency[idem_cache_key])
 
         # 3.5) 只读结果缓存：命中则不打厂商（副作用操作永不缓存）。
         cache_key: str | None = None

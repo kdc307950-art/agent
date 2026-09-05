@@ -13,13 +13,11 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
-from typing import Any
 
 import pytest
 
-from backend.vpn.http_adapter import HttpVpnConfig, HttpReadonlyVpnAdapter
+from backend.vpn.http_adapter import HttpReadonlyVpnAdapter, HttpVpnConfig
 from backend.vpn.mock_adapter import VpnAdapter
 from backend.vpn.sandbox_adapter import (
     CallAudit,

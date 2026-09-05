@@ -1,6 +1,6 @@
 # VPN 故障智能服务台 —— 整体验收与外部复验清单
 
-> 面向最终整体验收。汇总本项目五阶段交付、已验证项、以及**依赖外部 / Docker / CI 环境
+> 面向最终整体验收。当前冻结基线：`vpn-control-v1.0`（2026-09-05）。汇总本项目五阶段交付、已验证项、以及**依赖外部 / Docker / CI 环境
 > 才能最终复验**的项，并列明可执行命令。本清单只做记录与指引，不对代码做任何修改。
 
 ---
@@ -17,9 +17,8 @@ fixture 用例**。真实 VPN 数据源本期不接入（属后续范围）。
 
 ### 阶段一 —— 基线冻结（已完成）
 - lint/类型治理：ruff `36 → 0`、mypy `8 → 0`。
-- 版本统一：`vpn-v1` / `vpn-v2` 口径，日期标记 `2026-09-12`
-  （见 `backend/knowledge/vpn_eval_cases.py` 的 `VPN_EVAL_VERSION="2026-09-12-vpn-v1"`、
-  `backend/knowledge/vpn_eval_cases_v2.py` 的 `VPN_EVAL_VERSION_V2="2026-09-12-vpn-v2"`）。
+- 版本统一：产品基线 `vpn-control-v1.0`，评测集版本 `2026-09-05-vpn-v1` / `2026-09-05-vpn-v2`
+  （见 `backend/knowledge/vpn_eval_cases.py` 与 `backend/knowledge/vpn_eval_cases_v2.py`）。
 - `legacy-demo` 标记（区分演示路径与正式路径）。
 - git commit：`1cf40f9`（`feat(vpn): VPN 故障智能服务台基线（版本冻结，阶段一）`，已核实存在）。
 
@@ -70,7 +69,7 @@ fixture 用例**。真实 VPN 数据源本期不接入（属后续范围）。
 | 项 | 结果 | 说明 |
 | --- | --- | --- |
 | mypy 全量 | 0 错误 | 类型检查通过（`src backend`，120 文件） |
-| 非 DB pytest | 223+ passed | `2 errors` 为 `tmp_path` 环境限制（非代码问题，见 §3(c)） |
+| 全量 pytest（非 live） | 797 passed / 1 skipped / 3 deselected | 本次冻结前已实测；skip 为环境条件分支 |
 | ruff | 剩 2 × B017 | 均在 `test_vpn_diagnosis_closed_loop.py`，由 qa 处理中（非阻断）
 | 前端 typecheck（tsc -b） | 通过，exit 0 | `frontend/src` 全量 |
 | 前端 lint（oxlint） | 0 warning / 0 error | 通过 |

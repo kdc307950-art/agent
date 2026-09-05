@@ -40,3 +40,4 @@ mypy_report.txt
 .ws_tmp/
 jieba.cache
 .ptmp/
+docker-desktop-diagnostics-data.md

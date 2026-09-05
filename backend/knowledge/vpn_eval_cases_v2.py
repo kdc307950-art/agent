@@ -48,7 +48,7 @@ from .vpn_eval_cases import (
     VpnEvalCase,
 )
 
-VPN_EVAL_VERSION_V2 = "2026-09-12-vpn-v2"
+VPN_EVAL_VERSION_V2 = "2026-09-05-vpn-v2"
 
 # 9 类场景的稳定标识（scenario 取值）。
 SCENARIO_CONNECTION_FAILED = "single_user_connection_failed"

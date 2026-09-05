@@ -15,8 +15,8 @@
 
 
 from backend.vpn.rules import (
-    AccountStatus,
     CONCLUSION_FIELDS,
+    AccountStatus,
     GatewayStatus,
     VpnEvidence,
     conclusion_fault_class,
@@ -24,7 +24,6 @@ from backend.vpn.rules import (
     evaluate_evidence,
     guardrail_evaluate,
 )
-
 
 # ========== 1. 5 类故障各得互不相同的正确假设 + 下一步 ==========
 

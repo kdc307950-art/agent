@@ -34,7 +34,7 @@ from src.my_agent.helpdesk import (
 
 
 def test_vpn_eval_dataset_is_frozen_with_expected_mix():
-    assert VPN_EVAL_VERSION == "2026-09-12-vpn-v1"
+    assert VPN_EVAL_VERSION == "2026-09-05-vpn-v1"
     assert count() == 60
     fc = fault_counts()
     assert fc == {

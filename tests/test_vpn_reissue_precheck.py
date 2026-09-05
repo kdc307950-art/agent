@@ -36,7 +36,6 @@ from backend.vpn.mock_adapter import MockVpnAdapter
 from backend.vpn.reissue_service import VpnReissueService, build_reissue_request
 from src.my_agent.helpdesk import TicketAction, TicketStatus, transition_ticket
 
-
 # ===========================================================================
 # 共享桩（fake audit/assets/tickets），行为对齐既有 reissue 测试
 # ===========================================================================

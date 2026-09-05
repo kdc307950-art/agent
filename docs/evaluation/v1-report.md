@@ -1,6 +1,6 @@
 # LangGraph 内部 IT 服务台 V1 —— 验证报告（真实数据库口径）
 
-> 生成日期：由 PostgreSQL 真实评测执行命令回填 · 版本标识：`2026-09-12-v1`（已冻结；对应 IT 工单评测集版本，与 VPN 产品基线 `2026-09-12-vpn-v1` 区分）
+> 生成日期：由 PostgreSQL 真实评测执行命令回填 · 产品冻结基线：`vpn-control-v1.0`（2026-09-05）。历史 IT 工单评测集版本号不作为本次产品版本号。
 > 本报告只记录 **PostgreSQL 真实检索评测** 结果；static 模式的引用/ACL 指标一律 N/A，不进入报告。
 
 ## 当前状态
@@ -55,7 +55,7 @@ VPN 分类准确率与字段补全率**不与混合 IT 工单混算**，单独�
 uv run python -m backend.run_vpn_eval --json docs/evaluation/vpn-eval-report.json
 ```
 
-报告（`docs/evaluation/vpn-eval-report.json`，版本 `2026-09-12-vpn-v1`，60 条）独立统计：
+报告（`docs/evaluation/vpn-eval-report.json`，评测集版本 `2026-09-05-vpn-v1`，60 条）独立统计：
 `vpn_fault` 分类准确率（按类）、8 项固定字段补全率（detection_rate）、边界判定正确率、
 负向/越界样例「误导向 it.vpn 自动建议=0」、闭环可达率。口径见
 [docs/product/vpn-v1-scope.md](docs/product/vpn-v1-scope.md) 第 7 节。
@@ -84,7 +84,7 @@ uv run python -m backend.run_vpn_eval --json docs/evaluation/vpn-eval-report.jso
 
 ### 达标项（真实、非仅用例期望）
 
-- **评测集本体达标**：vpn-v2 共 63 条，9 类场景（S1–S9）各 7 条，版本冻结 `2026-09-12-vpn-v2`；
+- **评测集本体达标**：vpn-v2 共 63 条，9 类场景（S1–S9）各 7 条，版本冻结 `2026-09-05-vpn-v2`；
   schema 完整（error_code/client_version/network_type/fault_hypothesis/acls/risk_level/escalation_expected/departments/internal/resource），
   provided_fields 与 expected_boundary 自洽；`test_vpn_eval_v2.py` + `test_vpn_eval_metrics.py` 共 32 项单元测试通过。
 - **ACL 用例构造与断言正确**：S9 全部 `is_negative=True`、`must_escalate`、`escalation_expected=True`、

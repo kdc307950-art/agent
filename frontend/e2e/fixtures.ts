@@ -124,6 +124,8 @@ export function mockTransition(page: Page, ticket: Ticket, nextStatus: string) {
     async (route, request) => {
       if (request.method() !== 'POST') return route.fallback()
       const updated = { ...ticket, status: nextStatus, version: ticket.version + 1 }
+      // Keep the detail endpoint consistent with the transition response.
+      Object.assign(ticket, updated)
       return route.fulfill({
         status: 200,
         contentType: 'application/json',

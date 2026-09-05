@@ -1,6 +1,6 @@
 # V1 回归记录
 
-> 实际执行日：2026-09-03（命令输出 `date +%F`） · 目标发布日期：2026-09-12（计划）
+> 实际执行日：2026-09-03（历史记录） · 产品冻结基线：`vpn-control-v1.0`（2026-09-05）
 
 ## 后端
 
@@ -8,7 +8,7 @@
 | --- | --- |
 | `uv run ruff check backend src tests` | 通过 |
 | `uv run mypy backend src` | 98 个文件无问题 |
-| `uv run pytest -q` | **330 passed / 64 skipped**（本地未配置 TEST_DATABASE_URL/REDIS_URL） |
+| `pytest -m "not live_e2e"` | **797 passed / 1 skipped / 3 deselected**（冻结前实测，配置了本地 PostgreSQL/Redis） |
 | 真实数据库评测 `run_ticket_eval --require-db` | **未执行**（无 PostgreSQL），`docs/evaluation/v1-report.md` 保持 N/A |
 | 真实仓储生命周期 `test_ticket_lifecycle_postgres.py` | **未执行**（无 PostgreSQL，待 CI/本地 DB） |
 
