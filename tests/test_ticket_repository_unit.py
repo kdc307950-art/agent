@@ -6,8 +6,8 @@ from backend.tickets import CreateTicket, canonical_payload_hash
 from src.my_agent.helpdesk import ActorType
 
 
-def test_schema_v23_requires_workflow_routing_it_service_channel_identity_and_vpn_relations():
-    assert APP_SCHEMA_VERSION == 23
+def test_schema_v25_requires_workflow_routing_it_service_channel_identity_vpn_and_reissue_relations():
+    assert APP_SCHEMA_VERSION == 25
     assert {
         "tickets",
         "ticket_status_events",
@@ -37,6 +37,8 @@ def test_schema_v23_requires_workflow_routing_it_service_channel_identity_and_vp
         "vpn_customer_actions",
         "vpn_customer_action_results",
         "vpn_escalations",
+        # v24/v25: VPN reissue 审批式执行与 FMG 提交对账持久化
+        "vpn_reissue_operations",
     }.issubset(REQUIRED_RELATIONS)
 
 

@@ -1,0 +1,350 @@
+{
+  "_meta": {
+    "version": "2026-10-15-phase4-frozen",
+    "provenance": "AUTHORED-FROZEN-SAMPLES",
+    "note": "该冻结样本集由本任务（Phase 4）基于真实/脱敏 VPN 工单措辞编写，gold 标签为预期确定性结论。尚无真实生产语料库，故指标只代表「在该冻结样本集上的确定性规则一致性」，不代表生产级准确率。评测 harness 为 provider-agnostic，可无缝替换为真实冻结语料（只需 gold 标签来自样本文件本身）。",
+    "schema": "id/text/fault(gold)/hypothesis(gold)/ruled_out(gold)/evidence_quote(substring gold)/confidence/requires_human(gold)/provided_fields",
+    "has_evidence": "是否为知识库命中（has_evidence=true 时给自动排障步骤；false 时升级/人工）",
+    "required_version": "客户端要求版本（可空）"
+  },
+  "samples": [
+    {
+      "id": "fs-001",
+      "text": "员工使用公司VPN时提示错误码809，连不上，昨天还好好的。客户端版本3.4.2，账号正常。",
+      "fault": "connection_failed",
+      "hypothesis": "connection_failed",
+      "ruled_out": ["account_locked", "gateway_down", "client_version_outdated", "multi_user_impact"],
+      "evidence_quote": "提示错误码809",
+      "confidence": 0.85,
+      "requires_human": false,
+      "has_evidence": true,
+      "provided_fields": {
+        "account_status": "active",
+        "gateway_status": "up",
+        "client_version": "3.4.2",
+        "error_code": "809"
+      }
+    },
+    {
+      "id": "fs-002",
+      "text": "用户反馈VPN登录提示认证失败，密码多次输入错误，终端显示凭据无效。",
+      "fault": "auth_failed",
+      "hypothesis": "auth_failed",
+      "ruled_out": ["gateway_down", "client_version_outdated", "multi_user_impact"],
+      "evidence_quote": "认证失败",
+      "confidence": 0.72,
+      "requires_human": true,
+      "has_evidence": false,
+      "provided_fields": {
+        "account_status": "active",
+        "gateway_status": "up",
+        "auth_attempts": 3
+      }
+    },
+    {
+      "id": "fs-003",
+      "text": "账号被锁定导致VPN连不上，无法登录，提示账号已锁定。",
+      "fault": "auth_failed",
+      "hypothesis": "account_locked",
+      "ruled_out": ["gateway_down", "client_version_outdated", "connection_failed"],
+      "evidence_quote": "账号被锁定",
+      "confidence": 0.95,
+      "requires_human": true,
+      "has_evidence": false,
+      "provided_fields": {
+        "account_status": "locked"
+      }
+    },
+    {
+      "id": "fs-004",
+      "text": "VPN总是频繁掉线，每隔几分钟就断一次，重新连接后又能用。",
+      "fault": "frequent_disconnect",
+      "hypothesis": "frequent_disconnect",
+      "ruled_out": ["account_locked", "gateway_down", "multi_user_impact"],
+      "evidence_quote": "频繁掉线",
+      "confidence": 0.85,
+      "requires_human": false,
+      "has_evidence": true,
+      "provided_fields": {
+        "account_status": "active",
+        "gateway_status": "up"
+      }
+    },
+    {
+      "id": "fs-005",
+      "text": "VPN能连上但访问不了内网服务器，内网页面打不开，外网正常。",
+      "fault": "intranet_unreachable",
+      "hypothesis": "intranet_unreachable",
+      "ruled_out": ["account_locked", "client_version_outdated", "multi_user_impact"],
+      "evidence_quote": "访问不了内网",
+      "confidence": 0.85,
+      "requires_human": false,
+      "has_evidence": true,
+      "provided_fields": {
+        "account_status": "active",
+        "gateway_status": "up",
+        "intranet_signal": true
+      }
+    },
+    {
+      "id": "fs-006",
+      "text": "全部门同事都连不上VPN，多人同时反馈。",
+      "fault": "multi_user_impact",
+      "hypothesis": "multi_user_impact",
+      "ruled_out": ["account_locked", "client_version_outdated", "connection_failed"],
+      "evidence_quote": "全部门同事都连不上VPN",
+      "confidence": 0.9,
+      "requires_human": true,
+      "has_evidence": false,
+      "provided_fields": {
+        "multi_user_impacted": "是"
+      }
+    },
+    {
+      "id": "fs-007",
+      "text": "VPN连接提示网关不可达，网关状态down，只有我一个人受影响。",
+      "fault": "connection_failed",
+      "hypothesis": "gateway_down",
+      "ruled_out": ["account_locked", "client_version_outdated", "connection_failed"],
+      "evidence_quote": "网关不可达",
+      "confidence": 0.9,
+      "requires_human": true,
+      "has_evidence": false,
+      "provided_fields": {
+        "account_status": "active",
+        "gateway_status": "down"
+      }
+    },
+    {
+      "id": "fs-008",
+      "text": "VPN客户端版本2.9.0过旧，要求升级到3.4.2，账号和网关都正常。",
+      "fault": "connection_failed",
+      "hypothesis": "client_version_outdated",
+      "ruled_out": ["gateway_down", "account_locked", "multi_user_impact"],
+      "evidence_quote": "版本2.9.0过旧",
+      "confidence": 0.85,
+      "requires_human": false,
+      "has_evidence": false,
+      "required_version": "3.4.2",
+      "provided_fields": {
+        "account_status": "active",
+        "gateway_status": "up",
+        "client_version": "2.9.0"
+      }
+    },
+    {
+      "id": "fs-009",
+      "text": "VPN有问题，不知道怎么回事，也没有任何日志。",
+      "fault": "connection_failed",
+      "hypothesis": "no_evidence",
+      "ruled_out": ["account_locked", "multi_user_impact", "client_version_outdated", "gateway_down"],
+      "evidence_quote": "VPN有问题",
+      "confidence": 0.2,
+      "requires_human": true,
+      "has_evidence": false,
+      "provided_fields": {
+        "error_code": ""
+      }
+    },
+    {
+      "id": "fs-010",
+      "text": "VPN连接慢，网关显示degraded状态，可能是网关问题。",
+      "fault": "connection_failed",
+      "hypothesis": "gateway_down",
+      "ruled_out": ["account_locked", "client_version_outdated", "connection_failed"],
+      "evidence_quote": "网关显示degraded",
+      "confidence": 0.6,
+      "requires_human": true,
+      "has_evidence": false,
+      "provided_fields": {
+        "account_status": "active",
+        "gateway_status": "degraded"
+      }
+    },
+    {
+      "id": "fs-011",
+      "text": "公司VPN连不上，出现错误码，不知道怎么处理。",
+      "fault": "connection_failed",
+      "hypothesis": "connection_failed",
+      "ruled_out": ["account_locked", "gateway_down", "client_version_outdated", "multi_user_impact"],
+      "evidence_quote": "VPN连不上",
+      "confidence": 0.6,
+      "requires_human": true,
+      "has_evidence": false,
+      "provided_fields": {
+        "account_status": "active",
+        "gateway_status": "up",
+        "error_code": "809"
+      }
+    },
+    {
+      "id": "fs-012",
+      "text": "VPN经常掉线，很不稳定，没有更多信息。",
+      "fault": "frequent_disconnect",
+      "hypothesis": "frequent_disconnect",
+      "ruled_out": ["account_locked", "gateway_down", "multi_user_impact"],
+      "evidence_quote": "经常掉线",
+      "confidence": 0.6,
+      "requires_human": true,
+      "has_evidence": false,
+      "provided_fields": {
+        "account_status": "active",
+        "gateway_status": "up"
+      }
+    },
+    {
+      "id": "fs-013",
+      "text": "VPN连接后内网无法访问，不确定原因。",
+      "fault": "intranet_unreachable",
+      "hypothesis": "intranet_unreachable",
+      "ruled_out": ["account_locked", "client_version_outdated", "multi_user_impact"],
+      "evidence_quote": "内网无法访问",
+      "confidence": 0.65,
+      "requires_human": true,
+      "has_evidence": false,
+      "provided_fields": {
+        "account_status": "active",
+        "gateway_status": "up",
+        "intranet_signal": true
+      }
+    },
+    {
+      "id": "fs-014",
+      "text": "VPN登录提示用户名或密码错误。",
+      "fault": "auth_failed",
+      "hypothesis": "auth_failed",
+      "ruled_out": ["gateway_down", "client_version_outdated", "multi_user_impact"],
+      "evidence_quote": "用户名或密码错误",
+      "confidence": 0.72,
+      "requires_human": true,
+      "has_evidence": false,
+      "provided_fields": {
+        "account_status": "active",
+        "gateway_status": "up",
+        "auth_attempts": 1
+      }
+    },
+    {
+      "id": "fs-015",
+      "text": "账号已被禁用，无法接入VPN。",
+      "fault": "auth_failed",
+      "hypothesis": "account_locked",
+      "ruled_out": ["gateway_down", "client_version_outdated", "connection_failed"],
+      "evidence_quote": "账号已被禁用",
+      "confidence": 0.95,
+      "requires_human": true,
+      "has_evidence": false,
+      "provided_fields": {
+        "account_status": "disabled"
+      }
+    },
+    {
+      "id": "fs-016",
+      "text": "绑定设备的路由器VPN连不上，提示错误码809。",
+      "fault": "connection_failed",
+      "hypothesis": "connection_failed",
+      "ruled_out": ["account_locked", "gateway_down", "client_version_outdated", "multi_user_impact"],
+      "evidence_quote": "错误码809",
+      "confidence": 0.85,
+      "requires_human": false,
+      "has_evidence": true,
+      "provided_fields": {
+        "account_status": "active",
+        "gateway_status": "up",
+        "error_code": "809",
+        "asset_id": "asset-042"
+      }
+    },
+    {
+      "id": "fs-017",
+      "text": "公司多人反映VPN连不上，网关状态down。",
+      "fault": "multi_user_impact",
+      "hypothesis": "multi_user_impact",
+      "ruled_out": ["account_locked", "client_version_outdated", "connection_failed"],
+      "evidence_quote": "网关状态down",
+      "confidence": 0.9,
+      "requires_human": true,
+      "has_evidence": false,
+      "provided_fields": {
+        "multi_user_impacted": "是",
+        "gateway_status": "down"
+      }
+    },
+    {
+      "id": "fs-018",
+      "text": "整个团队VPN都连不上，排查发现是VPN厂商服务异常。",
+      "fault": "multi_user_impact",
+      "hypothesis": "multi_user_impact",
+      "ruled_out": ["account_locked", "client_version_outdated", "connection_failed"],
+      "evidence_quote": "VPN厂商服务异常",
+      "confidence": 0.9,
+      "requires_human": true,
+      "has_evidence": false,
+      "provided_fields": {
+        "multi_user_impacted": "是",
+        "vendor_anomaly": true
+      }
+    },
+    {
+      "id": "fs-019",
+      "text": "该区域多名用户VPN同时连不上，疑似区域性网络事件。",
+      "fault": "multi_user_impact",
+      "hypothesis": "multi_user_impact",
+      "ruled_out": ["account_locked", "client_version_outdated", "connection_failed"],
+      "evidence_quote": "区域性网络事件",
+      "confidence": 0.9,
+      "requires_human": true,
+      "has_evidence": false,
+      "provided_fields": {
+        "multi_user_impacted": "是",
+        "regional_incident": true
+      }
+    },
+    {
+      "id": "fs-020",
+      "text": "VPN能连但内网不通，可能是本地NAT问题。",
+      "fault": "intranet_unreachable",
+      "hypothesis": "intranet_unreachable",
+      "ruled_out": ["account_locked", "client_version_outdated", "multi_user_impact"],
+      "evidence_quote": "本地NAT问题",
+      "confidence": 0.85,
+      "requires_human": false,
+      "has_evidence": true,
+      "provided_fields": {
+        "account_status": "active",
+        "gateway_status": "up",
+        "local_network_nat": true
+      }
+    },
+    {
+      "id": "fs-021",
+      "text": "VPN连接提示错误码769，拨号失败。",
+      "fault": "connection_failed",
+      "hypothesis": "connection_failed",
+      "ruled_out": ["account_locked", "gateway_down", "client_version_outdated", "multi_user_impact"],
+      "evidence_quote": "错误码769",
+      "confidence": 0.85,
+      "requires_human": false,
+      "has_evidence": true,
+      "provided_fields": {
+        "account_status": "active",
+        "gateway_status": "up",
+        "error_code": "769"
+      }
+    },
+    {
+      "id": "fs-022",
+      "text": "不知道VPN为什么连不上，没有日志，账号和网关都查不到。",
+      "fault": "connection_failed",
+      "hypothesis": "no_evidence",
+      "ruled_out": ["account_locked", "multi_user_impact", "client_version_outdated", "gateway_down"],
+      "evidence_quote": "没有日志",
+      "confidence": 0.2,
+      "requires_human": true,
+      "has_evidence": false,
+      "provided_fields": {
+        "error_code": ""
+      }
+    }
+  ]
+}

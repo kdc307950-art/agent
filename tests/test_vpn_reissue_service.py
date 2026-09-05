@@ -22,6 +22,7 @@ from typing import Any
 
 from backend.run_context import RunContext
 from backend.vpn.approval import (
+    HIGH_RISK_APPROVE_SCOPE,
     ApprovalStatus,
     ReissueActionRequest,
     ReissueRegistry,
@@ -366,3 +367,108 @@ def test_full_link_audits_associate_ticket_user_approver_tool_result():
     # executed 事件关联结果
     executed_payload = next(p for (e, s, p) in audit.events if e == "vpn_reissue_executed")
     assert executed_payload["result"]["ok"] is True
+
+
+# ===========================================================================
+# 阶段五：审批前重校验（precheck）失败 + 高风险强制人工（auto-human）
+# ===========================================================================
+
+
+def _adapter_with_account(*, status="active"):
+    """显式数据的 MockVpnAdapter：账号/客户端配置版本可切换，避免污染共享默认数据。"""
+    from backend.vpn.mock_adapter import MockVpnAdapter as _Mock
+
+    return _Mock(
+        data={
+            "accounts": {"user-042": {"user_id": "user-042", "status": status, "found": True}},
+            "assets": {"asset-001": {"asset_id": "asset-001", "owner_user_id": "user-042", "status": "active", "found": True}},
+            "client_configs": {"user-042": {"user_id": "user-042", "version": "v2.4.1", "found": True}},
+            "gateways": {},
+            "incidents": {},
+            "similar_tickets": {},
+            "knowledge": [],
+        }
+    )
+
+
+def test_approve_precheck_fails_when_account_deactivated_after_start():
+    """start 后账号被停用（LIVE 数据变化）→ approve 被 precheck_failed 拒绝，零副作用。"""
+    audit = _FakeAudit()
+    tickets = _FakeTickets(initial_status=TicketStatus.IN_PROGRESS)
+    adapter = _adapter_with_account(status="active")
+    runtime = _runtime(audit=audit, tickets=tickets, adapter=adapter, assets=_FakeAssets())
+    ctx = _run_context()
+    svc = VpnReissueService(registry=ReissueRegistry())
+    req = _request()
+    asyncio.run(svc.start(request=req, runtime=runtime, run_context=ctx))
+
+    # 审批前账号失效
+    adapter._data["accounts"]["user-042"]["status"] = "suspended"
+
+    async def run():
+        return await svc.approve(
+            request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx
+        )
+
+    result = asyncio.run(run())
+    assert result.ok is False
+    assert result.error_code == "precheck_failed"
+    assert "account_not_active" in result.detail["fail_reasons"]
+    # 零副作用：状态仍 PENDING、未执行、未落 delivered/confirmed
+    assert svc.registry.get_status(req.idempotency_key) == ApprovalStatus.PENDING
+    assert result.delivered is False
+    assert "vpn_reissue_executed" not in _event_names(audit)
+    assert "vpn_reissue_precheck_failed" in _event_names(audit)
+    precheck_payload = next(p for (e, s, p) in audit.events if e == "vpn_reissue_precheck_failed")
+    assert "account_not_active" in precheck_payload["fail_reasons"]
+
+
+def test_approve_high_risk_denied_without_explicit_scope():
+    """高风险 reason_codes（multi_user_impact）且无 vpn:high_risk_approve scope → 拒绝自动审批。"""
+    audit = _FakeAudit()
+    tickets = _FakeTickets(initial_status=TicketStatus.IN_PROGRESS)
+    runtime = _runtime(audit=audit, tickets=tickets, adapter=MockVpnAdapter(), assets=_FakeAssets())
+    svc = VpnReissueService(registry=ReissueRegistry())
+    req = build_reissue_request(
+        tenant_id="tenant-a", user_id="user-042", ticket_id="t-1",
+        client_version="v2.5.0", asset_id="asset-001", reason_codes=["multi_user_impact"],
+    )
+    asyncio.run(svc.start(request=req, runtime=runtime, run_context=_run_context()))
+
+    # 审批人只有 ticket:approve（无 vpn:high_risk_approve）
+    ctx = _run_context(scopes=frozenset({"ticket:agent", "ticket:approve"}))
+    async def run():
+        return await svc.approve(
+            request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx
+        )
+
+    result = asyncio.run(run())
+    assert result.ok is False
+    assert result.error_code == "high_risk_requires_human"
+    assert "high_risk_multi_user_impact" in result.detail["high_risk_reasons"]
+    assert svc.registry.get_status(req.idempotency_key) == ApprovalStatus.PENDING
+    assert "vpn_reissue_executed" not in _event_names(audit)
+    assert "vpn_reissue_high_risk_denied" in _event_names(audit)
+
+
+def test_approve_high_risk_allowed_with_explicit_scope():
+    """高风险但有 vpn:high_risk_approve scope → 放行并执行成功（CONFIRMED）。"""
+    audit = _FakeAudit()
+    tickets = _FakeTickets(initial_status=TicketStatus.IN_PROGRESS)
+    runtime = _runtime(audit=audit, tickets=tickets, adapter=MockVpnAdapter(), assets=_FakeAssets())
+    svc = VpnReissueService(registry=ReissueRegistry())
+    req = build_reissue_request(
+        tenant_id="tenant-a", user_id="user-042", ticket_id="t-1",
+        client_version="v2.5.0", asset_id="asset-001", reason_codes=["multi_user_impact"],
+    )
+    asyncio.run(svc.start(request=req, runtime=runtime, run_context=_run_context()))
+    ctx = _run_context(scopes=frozenset({"ticket:agent", "ticket:approve", HIGH_RISK_APPROVE_SCOPE}))
+    async def run():
+        return await svc.approve(
+            request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx
+        )
+
+    result = asyncio.run(run())
+    assert result.ok is True
+    assert result.status == ApprovalStatus.CONFIRMED
+    assert svc.registry.get_status(req.idempotency_key) == ApprovalStatus.CONFIRMED

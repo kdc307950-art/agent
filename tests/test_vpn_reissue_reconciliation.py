@@ -24,9 +24,11 @@ from backend.vpn.approval import (
     ApprovalStatus,
     ReissueActionRequest,
     ReissueRegistry,
+    classify_reissue_outcome,
 )
 from backend.vpn.mock_adapter import MockVpnAdapter
 from backend.vpn.reissue_service import VpnReissueService, build_reissue_request
+from backend.vpn.reissue_store import ReissueTransitionResult
 from src.my_agent.helpdesk import TicketAction, TicketStatus, transition_ticket
 
 
@@ -73,17 +75,32 @@ class _FakeTickets:
     async def transition(self, tenant_id, command, scopes=None):
         self.transition_calls.append(command.action)
         self.cur_status = transition_ticket(self.cur_status, command, scopes=set(scopes or ()))
-        return SimpleNamespace(ticket_id=command.ticket_id, status=self.cur_status, version=self.version)
+        return SimpleNamespace(
+            ticket_id=command.ticket_id, status=self.cur_status, version=self.version
+        )
 
-    async def start_workflow_operation(self, *, tenant_id, ticket_id, operation_id, command_type, expected_version, checkpoint_thread_id):
+    async def start_workflow_operation(
+        self,
+        *,
+        tenant_id,
+        ticket_id,
+        operation_id,
+        command_type,
+        expected_version,
+        checkpoint_thread_id,
+    ):
         self.operation_started_calls.append(operation_id)
         return {"status": "started", "operation_id": operation_id}
 
-    async def mark_workflow_operation_failed(self, *, tenant_id, ticket_id, operation_id, error_code):
+    async def mark_workflow_operation_failed(
+        self, *, tenant_id, ticket_id, operation_id, error_code
+    ):
         self.operation_failed_calls.append((operation_id, error_code))
         return True
 
-    async def mark_workflow_operation_committed(self, *, tenant_id, ticket_id, operation_id, result_hash):
+    async def mark_workflow_operation_committed(
+        self, *, tenant_id, ticket_id, operation_id, result_hash
+    ):
         if self.fail_commit:
             raise RuntimeError("模拟本地 workflow_operation 落库失败")
         self.operation_committed_calls.append(operation_id)
@@ -95,6 +112,13 @@ class _TimeoutAdapter(MockVpnAdapter):
 
     async def reissue_config(self, **kwargs):
         raise TimeoutError("模拟外部执行超时")
+
+
+class _ConnectionInterruptedAdapter(MockVpnAdapter):
+    """写请求传输中断：未收到厂商明确响应，结果仍可能已下发。"""
+
+    async def reissue_config(self, **kwargs):
+        raise ConnectionError("模拟请求已发送后的连接中断")
 
 
 class _FlakyAdapter(MockVpnAdapter):
@@ -118,7 +142,9 @@ def _runtime(*, audit, tickets, adapter, assets):
     return SimpleNamespace(audit=audit, tickets=tickets, vpn_adapter=adapter, assets=assets)
 
 
-def _run_context(tenant_id="tenant-a", user_id="user-042", scopes=frozenset({"ticket:agent", "ticket:approve"})):
+def _run_context(
+    tenant_id="tenant-a", user_id="user-042", scopes=frozenset({"ticket:agent", "ticket:approve"})
+):
     return RunContext(
         run_id="run-reissue-reconcile",
         request_id="req-1",
@@ -131,7 +157,9 @@ def _run_context(tenant_id="tenant-a", user_id="user-042", scopes=frozenset({"ti
     )
 
 
-def _request(*, tenant_id="tenant-a", user_id="user-042", ticket_id="t-1", client_version="v2.5.0") -> ReissueActionRequest:
+def _request(
+    *, tenant_id="tenant-a", user_id="user-042", ticket_id="t-1", client_version="v2.5.0"
+) -> ReissueActionRequest:
     return build_reissue_request(
         tenant_id=tenant_id,
         user_id=user_id,
@@ -182,8 +210,12 @@ def test_repeated_approval_does_not_repeat_execution():
     _start(svc, req, runtime, ctx)
 
     async def run():
-        r1 = await svc.approve(request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx)
-        r2 = await svc.approve(request=req, approver_user_id="approver-2", runtime=runtime, run_context=ctx)
+        r1 = await svc.approve(
+            request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx
+        )
+        r2 = await svc.approve(
+            request=req, approver_user_id="approver-2", runtime=runtime, run_context=ctx
+        )
         return r1, r2
 
     r1, r2 = asyncio.run(run())
@@ -197,14 +229,18 @@ def test_repeated_approval_does_not_repeat_execution():
 def test_external_timeout_is_execution_unknown_not_failed():
     audit = _FakeAudit()
     tickets = _FakeTickets(initial_status=TicketStatus.AWAITING_APPROVAL)
-    runtime = _runtime(audit=audit, tickets=tickets, adapter=_TimeoutAdapter(), assets=_FakeAssets())
+    runtime = _runtime(
+        audit=audit, tickets=tickets, adapter=_TimeoutAdapter(), assets=_FakeAssets()
+    )
     ctx = _run_context()
     svc = VpnReissueService(registry=ReissueRegistry())
     req = _request()
     _start(svc, req, runtime, ctx)
 
     async def run():
-        return await svc.approve(request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx)
+        return await svc.approve(
+            request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx
+        )
 
     result = asyncio.run(run())
     # 关键：超时是「结果未知」，不是「失败」。
@@ -221,6 +257,30 @@ def test_external_timeout_is_execution_unknown_not_failed():
     assert req.idempotency_key in svc.registry.scan_reconcilable()
 
 
+def test_external_connection_interruption_is_execution_unknown_not_failed():
+    audit = _FakeAudit()
+    tickets = _FakeTickets(initial_status=TicketStatus.AWAITING_APPROVAL)
+    runtime = _runtime(
+        audit=audit,
+        tickets=tickets,
+        adapter=_ConnectionInterruptedAdapter(),
+        assets=_FakeAssets(),
+    )
+    ctx = _run_context()
+    svc = VpnReissueService(registry=ReissueRegistry())
+    req = _request()
+    _start(svc, req, runtime, ctx)
+
+    result = asyncio.run(
+        svc.approve(request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx)
+    )
+
+    assert result.status == ApprovalStatus.EXECUTION_UNKNOWN
+    assert result.error_code == "execution_unknown"
+    assert svc.registry.get_status(req.idempotency_key) == ApprovalStatus.EXECUTION_UNKNOWN
+    assert "vpn_reissue_failed" not in _event_names(audit)
+
+
 # ---- 验收 5 的组成：对账能把「结果未知」收敛为「已确认」（外部实际已交付） ----
 def test_reconcile_resolves_execution_unknown_to_confirmed():
     audit = _FakeAudit()
@@ -233,8 +293,12 @@ def test_reconcile_resolves_execution_unknown_to_confirmed():
     _start(svc, req, runtime, ctx)
 
     async def run():
-        await svc.approve(request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx)
-        return await svc.reconcile(idempotency_key=req.idempotency_key, runtime=runtime, run_context=ctx)
+        await svc.approve(
+            request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx
+        )
+        return await svc.reconcile(
+            idempotency_key=req.idempotency_key, runtime=runtime, run_context=ctx
+        )
 
     reconciler = asyncio.run(run())
     assert reconciler["reconciled"] is True
@@ -256,7 +320,9 @@ def test_local_commit_failure_marks_reconciliation_required_then_reconcile():
     _start(svc, req, runtime, ctx)
 
     async def run():
-        return await svc.approve(request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx)
+        return await svc.approve(
+            request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx
+        )
 
     result = asyncio.run(run())
     # 外部已下发成功（ok=True / confirmed），但本地落库失败 → 不误判为成功终态。
@@ -273,14 +339,18 @@ def test_local_commit_failure_marks_reconciliation_required_then_reconcile():
     tickets.fail_commit = False
 
     async def reconcile():
-        return await svc.reconcile(idempotency_key=req.idempotency_key, runtime=runtime, run_context=ctx)
+        return await svc.reconcile(
+            idempotency_key=req.idempotency_key, runtime=runtime, run_context=ctx
+        )
 
     out = asyncio.run(reconcile())
     assert out["reconciled"] is True
     assert out["status"] == ApprovalStatus.CONFIRMED.value
     assert svc.registry.get_status(req.idempotency_key) == ApprovalStatus.CONFIRMED
     assert req.idempotency_key in tickets.operation_committed_calls  # 对账补写 committed
-    assert tickets.cur_status == TicketStatus.IN_PROGRESS  # 工单状态被补写（AWAITING_APPROVAL→IN_PROGRESS）
+    assert (
+        tickets.cur_status == TicketStatus.IN_PROGRESS
+    )  # 工单状态被补写（AWAITING_APPROVAL→IN_PROGRESS）
     assert "vpn_reissue_reconciled" in _event_names(audit)
 
 
@@ -293,7 +363,9 @@ def test_state_does_not_depend_on_single_request_for_reconcile():
     svc = VpnReissueService(registry=ReissueRegistry())
     req = _request()
     _start(svc, req, runtime, ctx)
-    asyncio.run(svc.approve(request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx))
+    asyncio.run(
+        svc.approve(request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx)
+    )
 
     # 单次请求后：状态停留在 reconciliation_required（未 committed、工单未迁移）。
     assert svc.registry.get_status(req.idempotency_key) == ApprovalStatus.RECONCILIATION_REQUIRED
@@ -302,7 +374,9 @@ def test_state_does_not_depend_on_single_request_for_reconcile():
 
     # 第二次独立请求（reconcile）不依赖第一次请求即可把状态补全到定态。
     tickets.fail_commit = False
-    asyncio.run(svc.reconcile(idempotency_key=req.idempotency_key, runtime=runtime, run_context=ctx))
+    asyncio.run(
+        svc.reconcile(idempotency_key=req.idempotency_key, runtime=runtime, run_context=ctx)
+    )
     assert svc.registry.get_status(req.idempotency_key) == ApprovalStatus.CONFIRMED
     assert tickets.cur_status == TicketStatus.IN_PROGRESS
     assert req.idempotency_key in tickets.operation_committed_calls
@@ -317,9 +391,13 @@ def test_audit_traces_full_chain_through_reconcile():
     svc = VpnReissueService(registry=ReissueRegistry())
     req = _request()
     _start(svc, req, runtime, ctx)
-    asyncio.run(svc.approve(request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx))
+    asyncio.run(
+        svc.approve(request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx)
+    )
     tickets.fail_commit = False
-    asyncio.run(svc.reconcile(idempotency_key=req.idempotency_key, runtime=runtime, run_context=ctx))
+    asyncio.run(
+        svc.reconcile(idempotency_key=req.idempotency_key, runtime=runtime, run_context=ctx)
+    )
 
     names = _event_names(audit)
     for expected in (
@@ -331,7 +409,7 @@ def test_audit_traces_full_chain_through_reconcile():
     ):
         assert expected in names, f"缺审计事件 {expected}"
     # 完整链路：每个事件都关联 tenant/user/ticket/action=/idempotency_key。
-    for (event, _status, payload) in audit.events:
+    for event, _status, payload in audit.events:
         if event.startswith("vpn_reissue"):
             assert payload.get("tenant_id") == req.tenant_id
             assert payload.get("user_id") == req.user_id
@@ -354,7 +432,9 @@ def test_reconcile_all_sweeps_scan_reconcilable_to_terminal():
     _start(svc, req, runtime, ctx)
 
     # 审批后首请求超时 → execution_unknown，且被 scan_reconcilable 识别。
-    asyncio.run(svc.approve(request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx))
+    asyncio.run(
+        svc.approve(request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx)
+    )
     assert svc.registry.get_status(req.idempotency_key) == ApprovalStatus.EXECUTION_UNKNOWN
     assert req.idempotency_key in svc.registry.scan_reconcilable()
 
@@ -367,6 +447,74 @@ def test_reconcile_all_sweeps_scan_reconcilable_to_terminal():
     assert results[0]["reconciled"] is True
     assert results[0]["status"] == ApprovalStatus.CONFIRMED.value
     assert svc.registry.get_status(req.idempotency_key) == ApprovalStatus.CONFIRMED
-    assert req.idempotency_key not in svc.registry.scan_reconcilable()  # 已收敛（不依赖单次请求完成）
+    assert (
+        req.idempotency_key not in svc.registry.scan_reconcilable()
+    )  # 已收敛（不依赖单次请求完成）
     assert req.idempotency_key in tickets.operation_committed_calls  # workflow_operation 已补写
     assert "vpn_reissue_reconciled" in _event_names(audit)
+
+
+# ---- 阶段二：异常分类 taxonomy（store.set_status 结果 → 对外语义） ----
+def test_reissue_transition_taxonomy_maps_to_http_status():
+    """ReissueTransitionResult 覆盖 taxonomy：已是目标态=200 幂等；非法=409；版本冲突=409；DB=503。"""
+    assert ReissueTransitionResult.SUCCESS.http_status == 200
+    assert ReissueTransitionResult.ALREADY_TARGET_STATE.http_status == 200
+    assert ReissueTransitionResult.ILLEGAL_TRANSITION.http_status == 409
+    assert ReissueTransitionResult.VERSION_CONFLICT.http_status == 409
+    assert ReissueTransitionResult.DB_ERROR.http_status == 503
+
+
+def test_classify_reissue_outcome_covers_taxonomy():
+    """外部结果分类：交付/确认→CONFIRMED/DELIVERED；歧义误差→EXECUTION_UNKNOWN；其余→FAILED。"""
+    # 外部已确认
+    st, err = classify_reissue_outcome({"delivered": True, "confirmed": True})
+    assert st == ApprovalStatus.CONFIRMED and err is None
+    # 已下发未确认
+    st, err = classify_reissue_outcome({"delivered": True, "confirmed": False})
+    assert st == ApprovalStatus.DELIVERED and err is None
+    # 歧义（超时/未知）→ 结果未知（需对账），不误判为失败
+    for code in ("timeout", "external_result_unknown"):
+        st, err = classify_reissue_outcome(
+            {"delivered": False, "confirmed": False, "error_code": code}
+        )
+        assert st == ApprovalStatus.EXECUTION_UNKNOWN, code
+        assert err == code
+    # FortiManager 等异步控制面仍在运行：继续对账，不能提前标记为失败。
+    st, err = classify_reissue_outcome(
+        {"delivered": False, "confirmed": False, "status": "running"}
+    )
+    assert st == ApprovalStatus.EXECUTION_UNKNOWN
+    assert err == "vendor_task_pending"
+    # 外部明确失败 → FAILED + error_code
+    st, err = classify_reissue_outcome(
+        {"delivered": False, "confirmed": False, "error_code": "vendor_error"}
+    )
+    assert st == ApprovalStatus.FAILED and err == "vendor_error"
+
+
+# ---- 阶段二：本地提交失败（外部成功但 mark_workflow_operation_committed 失败）→ RECONCILIATION_REQUIRED ----
+def test_local_commit_failure_marks_store_reconciliation_required():
+    """外部已下发成功但本地 workflow_operation 落库失败 → 操作落 RECONCILIATION_REQUIRED（存储为权威）。"""
+    audit = _FakeAudit()
+    tickets = _FakeTickets(initial_status=TicketStatus.AWAITING_APPROVAL, fail_commit=True)
+    runtime = _runtime(audit=audit, tickets=tickets, adapter=MockVpnAdapter(), assets=_FakeAssets())
+    ctx = _run_context()
+    svc = VpnReissueService(registry=ReissueRegistry())
+    req = _request()
+    _start(svc, req, runtime, ctx)
+
+    result = asyncio.run(
+        svc.approve(request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx)
+    )
+    # 外部非空结果：ok=True / confirmed=True（外部已下发）。
+    assert result.ok is True and result.confirmed is True
+    # 关键：操作落在 RECONCILIATION_REQUIRED（存储为唯一权威）。
+    op = asyncio.run(
+        svc.store.get_by_idempotency_key(
+            tenant_id=req.tenant_id, idempotency_key=req.idempotency_key
+        )
+    )
+    assert op is not None and op.status == ApprovalStatus.RECONCILIATION_REQUIRED
+    assert req.idempotency_key in svc.registry.scan_reconcilable()
+    # 本地未提交。
+    assert req.idempotency_key not in tickets.operation_committed_calls

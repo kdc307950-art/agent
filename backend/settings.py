@@ -144,16 +144,35 @@ class Settings:
     worker_heartbeat_ttl_seconds: int
     readiness_check_workers: bool
     vpn_mock_data_path: str
-    # VPN 数据源模式：mock(固定Mock) / sandbox(可重复沙箱)。默认 mock 保持既有行为；
-    # 切换 sandbox 后由可重复沙箱适配器提供确定性数据（阶段四）。
+    # VPN 数据源模式：mock(固定Mock) / sandbox(可重复沙箱) / real(真实只读 HTTP)。
+    # 默认 mock 保持既有行为；切换 sandbox 后由可重复沙箱适配器提供确定性数据（阶段四）；
+    # 切换 real 后接入真实只读 HTTP 数据源（阶段五，staging/production 只读，自动写被类层面封死）。
     vpn_adapter_mode: str
     vpn_sandbox_seed: int
+    # VPN 真实只读 HTTP 数据源配置（阶段五：staging/production real 只读层）。
+    # 仅当 VPN_ADAPTER_MODE=real 时才由 build_vpn_adapter 使用；此处只在导入期读取，
+    # 不做强校验——缺少必填时在构建期由 build_http_config_from_env 抛错，不污染 dev/test 导入。
+    vpn_http_base_url: str
+    vpn_http_api_key: str
+    vpn_http_tenant_id: str
+    vpn_http_connect_timeout: float
+    vpn_http_read_timeout: float
+    vpn_http_max_retries: int
+    vpn_http_auth_header: str
+    vpn_http_tenant_header: str
+    vpn_http_request_id_header: str
+    # 控制面写入网关默认关闭；仅显式 fortimanager 才允许审批链路触发真实 install task。
+    vpn_command_gateway_mode: str
 
     @classmethod
     def from_env(cls) -> Settings:
         auto_setup = os.getenv("LANGGRAPH_AUTO_SETUP", "false").strip().lower()
         app_env = _choice_setting(
             "APP_ENV", "development", {"development", "test", "staging", "production"}
+        )
+        vpn_adapter_mode = _choice_setting("VPN_ADAPTER_MODE", "mock", {"mock", "sandbox", "real"})
+        vpn_command_gateway_mode = _choice_setting(
+            "VPN_COMMAND_GATEWAY_MODE", "disabled", {"disabled", "fortimanager"}
         )
         auth_mode = _choice_setting("AUTH_MODE", "dev", {"dev", "oidc"})
         tenant_token_secret = os.getenv("TENANT_TOKEN_SECRET", "").strip() or None
@@ -193,6 +212,12 @@ class Settings:
         metrics_auth_token = os.getenv("METRICS_AUTH_TOKEN", "").strip() or None
         if app_env == "production" and metrics_enabled and not metrics_auth_token:
             raise RuntimeError("APP_ENV=production 启用 metrics 时必须配置 METRICS_AUTH_TOKEN")
+        if app_env == "production" and vpn_adapter_mode != "real":
+            raise RuntimeError("APP_ENV=production 必须使用 VPN_ADAPTER_MODE=real")
+        if vpn_command_gateway_mode == "fortimanager":
+            for name in ("VPN_FMG_BASE_URL", "VPN_FMG_API_TOKEN", "VPN_FMG_TENANT_TARGETS_JSON"):
+                if not os.getenv(name, "").strip():
+                    raise RuntimeError(f"VPN_COMMAND_GATEWAY_MODE=fortimanager 必须配置 {name}")
         if (
             rate_limit_backend == "redis" or (auth_mode == "oidc" and revocation_mode == "redis")
         ) and not redis_url:
@@ -310,8 +335,26 @@ class Settings:
             # VPN Diagnosis Agent 的 MockVpnAdapter 数据文件路径（可选）。
             # 留空使用内置默认示例数据；非空时必须指向合法 JSON 对象文件（校验见 from_env 后）。
             vpn_mock_data_path=os.getenv("VPN_MOCK_DATA_PATH", "").strip(),
-            # VPN 数据源模式（阶段四）：mock(固定Mock) / sandbox(可重复沙箱)。
-            # 生产禁止接入真实生产网关（不提供 prod_* 模式）。
-            vpn_adapter_mode=_choice_setting("VPN_ADAPTER_MODE", "mock", {"mock", "sandbox"}),
+            # VPN 数据源模式（阶段四/五）：mock(固定Mock) / sandbox(可重复沙箱) / real(真实只读 HTTP)。
+            # 默认 mock 保持既有行为；real 仅当 VPN_ADAPTER_MODE=real 时才启用，
+            # 并在构建期由 build_http_config_from_env 校验必填环境变量。
+            vpn_adapter_mode=vpn_adapter_mode,
             vpn_sandbox_seed=_int_setting("VPN_SANDBOX_SEED", 0, 0),
+            # VPN 真实只读 HTTP 数据源（阶段五：staging/production real 只读层）。
+            vpn_http_base_url=os.getenv("VPN_HTTP_BASE_URL", "").strip(),
+            vpn_http_api_key=os.getenv("VPN_API_KEY", "").strip(),
+            vpn_http_tenant_id=os.getenv("VPN_TENANT_ID", "").strip(),
+            vpn_http_connect_timeout=_float_setting("VPN_HTTP_CONNECT_TIMEOUT", 3.0, 0.01),
+            vpn_http_read_timeout=_float_setting("VPN_HTTP_READ_TIMEOUT", 5.0, 0.01),
+            vpn_http_max_retries=_int_setting("VPN_HTTP_MAX_RETRIES", 3, 1),
+            vpn_http_auth_header=(
+                os.getenv("VPN_HTTP_AUTH_HEADER", "Authorization").strip() or "Authorization"
+            ),
+            vpn_http_tenant_header=(
+                os.getenv("VPN_HTTP_TENANT_HEADER", "X-Tenant-Id").strip() or "X-Tenant-Id"
+            ),
+            vpn_http_request_id_header=(
+                os.getenv("VPN_HTTP_REQUEST_ID_HEADER", "X-Request-Id").strip() or "X-Request-Id"
+            ),
+            vpn_command_gateway_mode=vpn_command_gateway_mode,
         )

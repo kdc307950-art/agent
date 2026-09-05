@@ -142,12 +142,22 @@ class VpnDiagnosisRepository:
                 )
         return action
 
-    async def get_action(self, action_id: str) -> VpnCustomerAction | None:
+    async def get_action(
+        self, tenant_id: str, ticket_id: str, action_id: str
+    ) -> VpnCustomerAction | None:
+        """按 (tenant_id, ticket_id, action_id) 精确查询单条客户动作。
+
+        仅凭 action_id 查询会跨越租户/工单读到他人动作，故强制三元组过滤；
+        跨租户（或工单不匹配）时返回 None，与内存版 DiagnosisRegistry 语义一致。
+        """
         async with self.pool.connection() as connection:
             async with connection.cursor(row_factory=dict_row) as cursor:
                 await cursor.execute(
-                    "SELECT * FROM vpn_customer_actions WHERE action_id = %s",
-                    (action_id,),
+                    """
+                    SELECT * FROM vpn_customer_actions
+                    WHERE tenant_id = %s AND ticket_id = %s AND action_id = %s
+                    """,
+                    (tenant_id, ticket_id, action_id),
                 )
                 row = await cursor.fetchone()
         return None if row is None else _row_to_action(row)
@@ -167,13 +177,26 @@ class VpnDiagnosisRepository:
         return [_row_to_action(row) for row in rows]
 
     async def update_action_status(
-        self, action_id: str, status: CustomerActionStatus
+        self,
+        tenant_id: str,
+        ticket_id: str,
+        action_id: str,
+        status: CustomerActionStatus,
     ) -> bool:
+        """把某一租户/工单下的客户动作状态推进到 status。
+
+        仅按 action_id 更新会跨租户误改他人动作，故用三元组限定；
+        rowcount 为 0（该租户/工单下不存在该动作）视为失败，返回 False。
+        """
         async with self.pool.connection() as connection:
             async with connection.cursor() as cursor:
                 await cursor.execute(
-                    "UPDATE vpn_customer_actions SET status = %s WHERE action_id = %s",
-                    (status.value, action_id),
+                    """
+                    UPDATE vpn_customer_actions
+                    SET status = %s
+                    WHERE tenant_id = %s AND ticket_id = %s AND action_id = %s
+                    """,
+                    (status.value, tenant_id, ticket_id, action_id),
                 )
                 return cursor.rowcount == 1
 

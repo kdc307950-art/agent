@@ -38,10 +38,16 @@ from backend.audit import AuditRepository
 from backend.run_context import RunContext
 from backend.tickets import CreateTicket, TicketRepository
 from backend.tool_governance import DEFAULT_TOOL_POLICIES, ToolGovernance
-from backend.vpn.api import ReissueStartPayload
+from backend.vpn.api import ApprovalDecision, ReissueStartPayload
 from backend.vpn.approval import ApprovalStatus, ReissueRegistry, build_reissue_request_from_payload
+from backend.vpn.diagnosis import (
+    CustomerActionStatus,
+    VpnCustomerAction,
+    VpnCustomerActionResult,
+)
 from backend.vpn.mock_adapter import MockVpnAdapter
 from backend.vpn.reissue_service import VpnReissueService
+from backend.vpn.repository import VpnDiagnosisRepository
 from src.my_agent.helpdesk import ActorType, TicketAction, TicketCommand, TicketStatus
 
 DATABASE_URL = os.getenv("TEST_DATABASE_URL", os.getenv("DATABASE_URL", "")).strip()
@@ -408,7 +414,12 @@ def test_reject_path_terminal_and_ticket_recoverable():
             body = _reissue_payload(asset_id, ticket_id)
 
             with pytest.raises(HTTPException) as exc:
-                await approve_ep(idempotency_key=key, request=_fake_request(runtime), payload=body, principal=agent_p)
+                await approve_ep(
+                    operation_id=key,
+                    request=_fake_request(runtime),
+                    payload=ApprovalDecision(operation_id=key, decision="approve"),
+                    principal=agent_p,
+                )
             assert exc.value.status_code == 403
 
             # 跨租户查询（key 内嵌租户与主体不一致）-> 403
@@ -416,7 +427,7 @@ def test_reject_path_terminal_and_ticket_recoverable():
 
             other = Principal(tenant_id="tenant-other", user_id="x", scopes=frozenset({"ticket:agent"}))
             with pytest.raises(HTTPException) as exc2:
-                await get_ep(idempotency_key=key, request=_fake_request(runtime), principal=other)
+                await get_ep(operation_id=key, request=_fake_request(runtime), principal=other)
             assert exc2.value.status_code == 403
 
             # 审批拒绝 -> REJECTED
@@ -529,4 +540,142 @@ def test_approve_path_power_idempotent_and_ticket_recoverable():
 
     approved, after = asyncio.run(run())
     assert after.status == TicketStatus.IN_PROGRESS
+
+
+# ===========================================================================
+# 4. VpnDiagnosisRepository 租户化 + 幂等（阶段二 P0#3）
+# ===========================================================================
+
+
+async def _create_ticket(tickets: TicketRepository, tenant_id: str, ticket_id: str) -> None:
+    await tickets.create(
+        tenant_id,
+        CreateTicket(
+            ticket_id=ticket_id,
+            requester_id=REISSUE_USER,
+            channel="web",
+            title="VPN 无法连接",
+            description="vpn_diagnosis",
+            actor_type=ActorType.CUSTOMER,
+            actor_id=REISSUE_USER,
+        ),
+    )
+
+
+def _action(*, tenant_id: str, ticket_id: str, action_id: str, status: CustomerActionStatus) -> VpnCustomerAction:
+    return VpnCustomerAction(
+        action_id=action_id,
+        ticket_id=ticket_id,
+        tenant_id=tenant_id,
+        title="检查版本",
+        instruction="打开客户端查看版本号",
+        expected_result="版本号正确",
+        risk_level="low",
+        requires_agent=False,
+        status=status,
+    )
+
+
+def test_get_action_is_tenant_and_ticket_scoped():
+    """跨租户 / 跨工单 get_action 返回 None，同租户+同工单命中。"""
+
+    async def run():
+        pool, _audit, tickets, _assets = await _open_runtime()
+        try:
+            repo = VpnDiagnosisRepository(pool)
+            tenant_a = f"tenant-{uuid4().hex}"
+            tenant_b = f"tenant-{uuid4().hex}"
+            ticket = f"ticket-{uuid4().hex[:10]}"
+            action_id = f"act-{uuid4().hex[:12]}"
+            await _create_ticket(tickets, tenant_a, ticket)
+
+            await repo.add_action(_action(tenant_id=tenant_a, ticket_id=ticket, action_id=action_id, status=CustomerActionStatus.ISSUED))
+
+            # 同租户 + 同工单 -> 命中
+            found = await repo.get_action(tenant_a, ticket, action_id)
+            assert found is not None
+            assert found.action_id == action_id
+            assert found.tenant_id == tenant_a
+            assert found.ticket_id == ticket
+
+            # 跨租户（同工单）-> None：不得读到他人动作
+            assert await repo.get_action(tenant_b, ticket, action_id) is None
+
+            # 跨工单（同租户）-> None
+            assert await repo.get_action(tenant_a, "ticket-other", action_id) is None
+        finally:
+            await pool.close()
+
+    asyncio.run(run())
+
+
+def test_update_action_status_is_tenant_scoped_and_reports_miss():
+    """同租户更新 rowcount=1；跨租户/跨工单 rowcount=0 返回 False 且不改他人。"""
+
+    async def run():
+        pool, _audit, tickets, _assets = await _open_runtime()
+        try:
+            repo = VpnDiagnosisRepository(pool)
+            tenant_a = f"tenant-{uuid4().hex}"
+            tenant_b = f"tenant-{uuid4().hex}"
+            ticket = f"ticket-{uuid4().hex[:10]}"
+            action_id = f"act-{uuid4().hex[:12]}"
+            await _create_ticket(tickets, tenant_a, ticket)
+            await repo.add_action(_action(tenant_id=tenant_a, ticket_id=ticket, action_id=action_id, status=CustomerActionStatus.ISSUED))
+
+            # 同租户 + 同工单 -> 命中
+            assert await repo.update_action_status(tenant_a, ticket, action_id, CustomerActionStatus.EXECUTED) is True
+            updated = await repo.get_action(tenant_a, ticket, action_id)
+            assert updated is not None and updated.status == CustomerActionStatus.EXECUTED
+
+            # 跨租户 -> rowcount=0 -> False，且不影响租户 a 的原动作
+            assert await repo.update_action_status(tenant_b, ticket, action_id, CustomerActionStatus.CONFIRMED) is False
+            assert (await repo.get_action(tenant_a, ticket, action_id)).status == CustomerActionStatus.EXECUTED
+
+            # 跨工单 -> rowcount=0 -> False
+            assert await repo.update_action_status(tenant_a, "ticket-other", action_id, CustomerActionStatus.CONFIRMED) is False
+        finally:
+            await pool.close()
+
+    asyncio.run(run())
+
+
+def test_add_action_and_add_action_result_are_idempotent_upserts():
+    """重复提交同一 action_id / result_id 不重复插入（ON CONFLICT 保留单行）。"""
+
+    async def run():
+        pool, _audit, tickets, _assets = await _open_runtime()
+        try:
+            repo = VpnDiagnosisRepository(pool)
+            tenant = f"tenant-{uuid4().hex}"
+            ticket = f"ticket-{uuid4().hex[:10]}"
+            action_id = f"act-{uuid4().hex[:12]}"
+            result_id = f"res-{uuid4().hex[:12]}"
+            await _create_ticket(tickets, tenant, ticket)
+
+            # 重复 add_action：同 action_id，第二次改状态，仍应只有一行
+            await repo.add_action(_action(tenant_id=tenant, ticket_id=ticket, action_id=action_id, status=CustomerActionStatus.ISSUED))
+            await repo.add_action(_action(tenant_id=tenant, ticket_id=ticket, action_id=action_id, status=CustomerActionStatus.EXECUTED))
+            actions = await repo.list_actions(tenant, ticket)
+            assert len(actions) == 1, "同 action_id 重复 upsert 不得产生新行"
+            assert actions[0].status == CustomerActionStatus.EXECUTED
+
+            # 重复 add_action_result：同 result_id 提交多次，仍应只有一行
+            result = VpnCustomerActionResult(
+                result_id=result_id,
+                action_id=action_id,
+                ticket_id=ticket,
+                tenant_id=tenant,
+                result="已重启，版本 3.4.2",
+                submitted_by="customer-1",
+            )
+            await repo.add_action_result(result)
+            await repo.add_action_result(result)
+            results = await repo.list_action_results(tenant, ticket)
+            assert len(results) == 1, "同 result_id 重复 upsert 不得产生新行"
+            assert results[0].result == "已重启，版本 3.4.2"
+        finally:
+            await pool.close()
+
+    asyncio.run(run())
 

@@ -260,6 +260,7 @@ def test_production_requires_jti_and_metrics_auth(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://test/test")
     monkeypatch.setenv("RATE_LIMIT_BACKEND", "redis")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://app.example")
+    monkeypatch.setenv("VPN_ADAPTER_MODE", "real")
     monkeypatch.setenv("OIDC_REQUIRE_JTI", "false")
     monkeypatch.delenv("METRICS_AUTH_TOKEN", raising=False)
 

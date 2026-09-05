@@ -8,6 +8,20 @@
 
 **V1 产品边界（一句话）**：面向中小企业内部 IT 服务台，**V1 演示主线只有 `it.vpn`**——员工从 Web 报 VPN 故障，系统自动分类（`it.vpn` + `vpn_fault`）、按 8 项固定字段补齐、加载 SLA、派单并给出带引用的建议，人工确认后解决关闭；账号/权限、网络作为**旁路或转人工**保留能力，不再与 `it.vpn` 并列为主演示。企业微信等渠道保留代码但**非 V1 能力**。完整范围见 [docs/product/vpn-v1-scope.md](docs/product/vpn-v1-scope.md)：目标客户、VPN 受理与建议闭环（主产品 it.vpn）、主链路（Web 闭环）、非目标功能与人工介入规则；验证指标与未验证边界见 [docs/evaluation/v1-report.md](docs/evaluation/v1-report.md)。
 
+### Fortinet VPN 控制面垂直演示扩展
+
+在 `it.vpn` 受理与建议闭环之外，仓库当前包含一条面向约 50 人中小企业的 Fortinet 控制面演示链路，定位严格收窄为：**租户级配置漂移检测/preview → 人工审批 → FMG 异步 task → 对账**。它不是单员工 VPN 重签，也不是全自动生产修复系统。
+
+- 写入动作使用 `redeploy_tenant_vpn_config` 语义；旧 `reissue_config` 仅保留兼容，不作为新的业务入口。
+- install 前必须完成 preview；审批绑定 `diff_hash`，预览结果变化后必须重新审批。
+- FMG task id、提交状态、目标快照、diff 快照与轮询信息落在现有 `vpn_reissue_operations`，数据库迁移版本为 `v25`，不新增平行真相表。
+- install 已发出但 task id 未确认时进入 `submission_unknown`，禁止自动重试；通过 `POST /vpn/reissue/{operation_id}/confirm-submission` 记录人工核对结果，`submitted` 只读查询 task，`not_submitted` 收敛为失败。
+- 已验证：Fake FMG 真 HTTPS/HTTP 往返、成功/超时保留 task id/业务拒绝分支、接口权限与跨租户隔离测试。
+- 未验证：真实 FortiManager staging、真实 FortiGate、真实生产写入、trial 许可的固定设备或 ADOM 数量。Fake FMG 证明的是客户端协议与处置逻辑，不证明厂商端实际下发结果。
+- 生产链路不采用 Supervisor 多 Agent；确定性状态机负责审批、状态和副作用边界，Agent 只保留在受理/知识建议等非写入边界。
+
+近期面试演示使用：先启动 `D:\fmg-vm\fake_fmg_server.py`，再运行 `drill_fake_fmg.py`。脚本固定输出 8 步，并以非零退出码表示失败，最后明确演示证据等级。
+
 **三档验证口径（请勿混淆）**：
 1. **本地演示**：`docker compose -f infra/compose.demo.yml up --build -d` → 浏览器访问 `http://127.0.0.1:8000` → 页面粘贴 `docker compose exec agent ... issue_dev_token` 输出；只验证“能跑通闭环”，不产生评测数字。
 2. **CI 集成验证**：GitHub Actions 启动 PostgreSQL/Redis → 迁移 → 种子 → `run_ticket_eval --require-db`（90 条真实检索评测）→ 真实仓储生命周期测试（`test_ticket_lifecycle_postgres.py`）。只有这一档的数字能进 `docs/evaluation/v1-report.md`。

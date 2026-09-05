@@ -54,7 +54,10 @@ from .tickets import (
 )
 from .tool_governance import ToolGovernance
 from .vpn.closed_loop import VpnClosedLoopService
+from .vpn.fortimanager_gateway import build_fortimanager_gateway_from_env
+from .vpn.outbox import PostgresReissueOutbox
 from .vpn.reissue_service import VpnReissueService
+from .vpn.reissue_store import PostgresReissueStore
 from .vpn.repository import VpnDiagnosisRepository
 from .vpn.service import VpnDiagnosisService
 from .workflow_loader import load_workflow_spec
@@ -89,6 +92,8 @@ class AgentRuntime:
     vpn_diagnosis_repo: VpnDiagnosisRepository | None = None
     # 只读 VPN 适配器（Mock/真实，供工具经 runtime.vpn_adapter 访问）。
     vpn_adapter: object | None = None
+    # 独立的 VPN 控制面写入网关；默认 None，绝不由只读适配器隐式解锁。
+    vpn_command_gateway: object | None = None
     # 重新下发 VPN 配置的审批式执行编排服务（依赖 audit/tickets/vpn_adapter，运行时取）。
     vpn_reissue: VpnReissueService | None = None
     graph_mode: str = "single"
@@ -246,6 +251,7 @@ async def runtime_context(
         vpn_diagnosis_service: VpnDiagnosisService | None = None
         vpn_closed_loop_service: VpnClosedLoopService | None = None
         vpn_diagnosis_repo: VpnDiagnosisRepository | None = None
+        vpn_command_gateway: object | None = None
         if settings.deepseek_api_key:
             from langchain_openai import ChatOpenAI
             from pydantic import SecretStr
@@ -282,15 +288,16 @@ async def runtime_context(
                 diagnosis_service=vpn_diagnosis_service,
                 repository=vpn_diagnosis_repo,
             )
+            if settings.vpn_command_gateway_mode == "fortimanager":
+                vpn_command_gateway = build_fortimanager_gateway_from_env()
+                stack.push_async_callback(vpn_command_gateway.aclose)
         # runtime_provider：图节点（vpn_diagnose）需要在执行期访问运行中的
         # AgentRuntime（拿到 vpn_diagnosis 服务与 audit）。由于 intake_graph 在
         # AgentRuntime 构造时构建，用可变 holder 在构造完成后回填，避免环形硬引用。
         runtime_holder: dict[str, Any] = {}
 
-
         def _runtime_provider() -> Any:
             return runtime_holder.get("self")
-
 
         runtime = AgentRuntime(
             graph=graph,
@@ -322,7 +329,17 @@ async def runtime_context(
             vpn_closed_loop=vpn_closed_loop_service,
             vpn_diagnosis_repo=vpn_diagnosis_repo,
             vpn_adapter=vpn_adapter,
-            vpn_reissue=VpnReissueService() if vpn_diagnosis_service else None,
+            vpn_command_gateway=vpn_command_gateway,
+            # 生产仅在显式装配独立写入网关时启用审批式 reissue。
+            vpn_reissue=(
+                VpnReissueService(
+                    store=PostgresReissueStore(audit.pool),
+                    outbox=PostgresReissueOutbox(audit.pool),
+                )
+                if vpn_diagnosis_service
+                and (settings.app_env != "production" or vpn_command_gateway is not None)
+                else None
+            ),
             graph_mode=settings.agent_graph_mode,
         )
         runtime_holder["self"] = runtime
@@ -330,31 +347,33 @@ async def runtime_context(
 
 
 async def reconcile_pending_reissues(runtime: AgentRuntime) -> list[dict[str, Any]]:
-    """补偿对账 worker 入口：扫描 vpn_reissue 注册表中 execution_unknown / reconciliation_required
-    的幂等键，逐键向外部系统重查真实结果并收敛到定态（补写 workflow_operation + 工单 + 审计）。
-
-    供未来后台 worker / 定时任务调用；生产环境可在 ReissueRegistry 之上叠加 workflow_operation
-    持久化后，改由数据库扫描触发。此处提供内存版扫描，保证「状态不依赖单次请求完成」可验证。
-    """
+    """领取数据库中的待对账操作，并按操作所属租户执行补偿对账。"""
     svc = runtime.vpn_reissue
     if svc is None:
         return []
+    worker_id = f"vpn-reconcile-{uuid.uuid4().hex[:12]}"
+    operations = await svc.store.claim_reconcilable(
+        worker_id=worker_id,
+        lease_seconds=60,
+        limit=1000,
+    )
     results: list[dict[str, Any]] = []
-    for key in svc.registry.scan_reconcilable():
-        req_dict = svc.registry.get_request(key)
-        if not req_dict:
-            continue
+    for operation in operations:
         ctx = RunContext(
             run_id=f"vpn-reconcile-{uuid.uuid4().hex[:12]}",
             request_id=uuid.uuid4().hex[:12],
-            tenant_id=str(req_dict.get("tenant_id") or ""),
+            tenant_id=operation.tenant_id,
             user_id="reconciliation-worker",
-            thread_id=f"vpn:{req_dict.get('tenant_id')}:{req_dict.get('ticket_id') or '-'}",
+            thread_id=f"vpn:{operation.tenant_id}:{operation.ticket_id}",
             scopes=frozenset({"ticket:agent", "ticket:system"}),
             deadline=time.time() + 60,
             allowed_tools=None,
         )
         results.append(
-            await svc.reconcile(idempotency_key=key, runtime=runtime, run_context=ctx)
+            await svc.reconcile(
+                idempotency_key=operation.idempotency_key,
+                runtime=runtime,
+                run_context=ctx,
+            )
         )
     return results

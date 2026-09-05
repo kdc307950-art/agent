@@ -5,7 +5,9 @@
       而是对「账号 / 网关 / 客户端版本 / 错误码 / 多用户影响 / 证据充分性」逐条归一化为信号，
       再按 **确定性规则表** 产出结构化诊断结论。
     - 结论固定为结构化：``hypothesis / confidence / evidence[] / ruled_out[] /
-      next_action / reason_codes[] / must_handoff``（对齐 docs/evaluation/vpn-eval-metrics.md §3 M3 真实口径）。
+      next_action / reason_codes[] / must_handoff``（对齐 docs/evaluation/vpn-eval-metrics.md §3 M3 真实口径）；
+      阶段四新增 ``requires_human``，与目标结论 schema
+      （hypothesis/evidence/confidence/ruled_out/next_action/requires_human）对齐。
     - 与 backend/vpn/models.py 的 ``evaluate_handoff`` 互补：models 只做「是否必须转人工」的
       四类判定；rules 把「根因假设 + 证据链 + 排除项 + 处置命令」一并固化为可评测结构。
 
@@ -13,17 +15,27 @@
 
     R0 身份缺失(identity_ok=False)              -> no_evidence 人工
     R1 多用户同时失败(multi_user_impact)         -> 事件升级（不走单用户建议）
-    R2 账号锁定(account_status=locked)           -> 必须人工(it.account)
+    R2 账号锁定(account_status=locked/disabled)  -> 必须人工(it.account)
     R3 账号正常 + 网关 normal/up + 客户端版本异常 -> 配置/客户端版本问题（root cause=client_version_outdated）
     R4 账号正常 + 网关 down/degraded             -> 网关侧问题（root cause=gateway_down）
+    F1 故障意图分诊（fault=auth_failed / intranet_unreachable / frequent_disconnect）-> 各得互不相同的根因假设
     R5 其余账号/网关正常 + 版本正常，仅有错误码信号 -> 连接类失败（error_code 仅作假设信号，不直接等于根因）
     R6 无任何可信证据(account/gateway 未知、无知识命中) -> 不给出根因结论，仅转人工（no_evidence）
+
+阶段四新增函数：
+    - ``diagnose_vpn_tree(evidence) -> DiagnosisConclusion``：结构化诊断树（单用户
+      account/config/nat/gateway-ok vs 多用户 gateway/region/vendor），纯函数、可单测。
+    - ``guardrail_evaluate(evidence) -> DiagnosisConclusion``：确定性护栏（置信度门槛 /
+      高风险升级 / 无证据不得自动回复 / 自动下一步只在满足条件时给），产出目标结论 JSON。
+    - ``conclusion_fault_class(hypothesis) -> str``：把树叶子假设归并到 5 类 VPN 故障。
 
 设计要点：
     - 纯函数、确定性、无 IO：输入 ``VpnEvidence``（归一化信号快照），输出 ``EvidenceDiagnosis``。
     - 错误码只作为假设信号（reason_codes 标注 error_code_signal=...），**不能直接等于根因**；
       根因由账号/网关/客户端版本的可信状态推出。修复 D6 关联（账号/VPN/网关主问题与关联问题分离）。
-    - 单测用 ``tests/test_vpn_evidence_rules.py`` 直接覆盖每条规则与版本比较、信号归一化。
+    - 故障意图分诊（F1）不是「裸关键词标签」：next_action / 置信度由账号/网关/知识/多次尝试等信号综合给出。
+    - 单测用 ``tests/test_vpn_evidence_rules.py`` 与 ``tests/test_vpn_diagnosis_depth.py``
+      直接覆盖每条规则、诊断树分支与护栏。
 """
 
 from __future__ import annotations
@@ -71,12 +83,33 @@ HYPOTHESIS_MULTI_USER_IMPACT = "multi_user_impact"
 HYPOTHESIS_CLIENT_VERSION_OUTDATED = "client_version_outdated"
 HYPOTHESIS_GATEWAY_DOWN = "gateway_down"
 HYPOTHESIS_CONNECTION_FAILED = "connection_failed"
+HYPOTHESIS_AUTH_FAILED = "auth_failed"
+HYPOTHESIS_FREQUENT_DISCONNECT = "frequent_disconnect"
+HYPOTHESIS_INTRANET_UNREACHABLE = "intranet_unreachable"
 HYPOTHESIS_NO_EVIDENCE = "no_evidence"  # 无可信证据：不给出根因结论
+
+# 结构化诊断树（diagnose_vpn_tree / guardrail 分支）新增的叶子假设。
+HYPOTHESIS_LOCAL_NETWORK_NAT = "local_network_nat"  # 单用户：本地网络 / NAT 风险
+HYPOTHESIS_REGIONAL_INCIDENT = "regional_incident"  # 多用户：区域性事件
+HYPOTHESIS_VENDOR_ANOMALY = "vendor_anomaly"        # 多用户：VPN 厂商侧异常
 
 # 处置命令（复用 DiagnosisCommandType 允许命令；escalate_incident 为事件升级/转人工）。
 NEXT_ACTION_ESCALATE = DiagnosisCommandType.ESCALATE_INCIDENT.value
 NEXT_ACTION_PROVIDE_STEPS = DiagnosisCommandType.PROVIDE_STEPS.value
 NEXT_ACTION_ASK_CUSTOMER = DiagnosisCommandType.ASK_CUSTOMER.value
+
+# 置信度门槛：低于此值不得自动给下一步，必须转人工（对齐 models.DEFAULT_HANDOFF_CONFIDENCE=0.80）。
+GUARDRAIL_CONFIDENCE_THRESHOLD = 0.80
+
+# 组成目标「结论 JSON」的 6 个关键字段（hypothesis/evidence/confidence/ruled_out/next_action/requires_human）。
+CONCLUSION_FIELDS: tuple[str, ...] = (
+    "hypothesis",
+    "evidence",
+    "confidence",
+    "ruled_out",
+    "next_action",
+    "requires_human",
+)
 
 # 版本号正则（支持 "v2.4.1" / "3.4.2" / "2.9.0" 等）。
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)", re.IGNORECASE)
@@ -192,6 +225,20 @@ class VpnEvidence(BaseModel):
     knowledge_hit: bool = False
     has_asset: bool = False
 
+    # --- 阶段四（Phase 4）新增信号（全部有默认值，保持 extra="forbid"） ---
+    # auth_attempts      : 认证失败尝试次数（区分「一次密码错」与「疑似账号锁定」）
+    # intranet_signal    : 内网不可达信号（VPN 能连但内网不通的佐证）
+    # local_network_nat  : 本地网络 / NAT 风险信号（单用户网络侧分支）
+    # regional_incident  : 区域性事件信号（多用户且无网关异常）
+    # vendor_anomaly     : VPN 厂商侧异常信号（多用户且无网关/区域信号）
+    # evidence_quote     : 用户请求中的支撑文本引用（保证证据链可回溯、可引证）
+    auth_attempts: int = 0
+    intranet_signal: bool = False
+    local_network_nat: bool = False
+    regional_incident: bool = False
+    vendor_anomaly: bool = False
+    evidence_quote: str = ""
+
 
 # ---------------------------------------------------------------------------
 # 输出模型：结构化证据链诊断结论
@@ -208,6 +255,9 @@ class EvidenceDiagnosis(BaseModel):
     - next_action : 处置命令（escalate_incident / provide_steps / ask_customer）
     - reason_codes: 决策依据编码（审计/指标用；含错误码信号标注）
     - must_handoff: 是否必须转人工（multi_user / account_locked / no_evidence 均 True）
+    - requires_human: 是否必须转人工（阶段四目标 JSON 字段；与 must_handoff 语义一致，
+      但作为「结论 JSON」的标准字段对齐目标 schema）。默认与 must_handoff 保持一致，
+      由 guardrail_evaluate 进一步按置信度/高风险/无证据收紧。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -219,9 +269,10 @@ class EvidenceDiagnosis(BaseModel):
     next_action: str
     reason_codes: list[str] = Field(default_factory=list, max_length=32)
     must_handoff: bool = False
+    requires_human: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        """返回 JSON 兼容 dict（供评测归一化 / 报告消费）。"""
+        """返回 JSON 兼容 dict（含 requires_human，对齐目标结论 schema）。"""
         return {
             "hypothesis": self.hypothesis,
             "confidence": self.confidence,
@@ -230,6 +281,7 @@ class EvidenceDiagnosis(BaseModel):
             "next_action": self.next_action,
             "reason_codes": list(self.reason_codes),
             "must_handoff": self.must_handoff,
+            "requires_human": self.requires_human,
         }
 
 
@@ -258,7 +310,16 @@ def evaluate_evidence(evidence: VpnEvidence) -> EvidenceDiagnosis:
 
     返回 EvidenceDiagnosis；优先级 R0-R6 见模块 docstring。无任何分支会同时命中，
     保证每个合法输入都得到唯一结构化结论（兜底 R5/R6）。
+
+    外层包一层证据引用合并：当 ``evidence.evidence_quote`` 非空时把用户请求的支撑
+    文本引用并入 evidence 列表，保证证据链可回溯、可引证（证据引用完整率）。
     """
+    diagnosis = _evaluate_evidence_core(evidence)
+    return _with_citation(diagnosis, evidence)
+
+
+def _evaluate_evidence_core(evidence: VpnEvidence) -> EvidenceDiagnosis:
+    """证据链诊断核心（不含证据引用合并；仅供 evaluate_evidence 调用）。"""
     # R0 身份缺失：无法确认用户/资产/账号归属 -> 必须人工
     if not evidence.identity_ok:
         return EvidenceDiagnosis(
@@ -274,6 +335,7 @@ def evaluate_evidence(evidence: VpnEvidence) -> EvidenceDiagnosis:
             next_action=NEXT_ACTION_ESCALATE,
             reason_codes=["identity_missing", "handoff:identity"],
             must_handoff=True,
+            requires_human=True,
         )
 
     # R1 多用户同时失败：事件升级，不走单用户建议
@@ -290,6 +352,7 @@ def evaluate_evidence(evidence: VpnEvidence) -> EvidenceDiagnosis:
             next_action=NEXT_ACTION_ESCALATE,
             reason_codes=["multi_user_impact", "handoff:multi_user"],
             must_handoff=True,
+            requires_human=True,
         )
 
     # R2 账号锁定/禁用：必须人工(it.account)，不能给 VPN 自动建议
@@ -307,6 +370,7 @@ def evaluate_evidence(evidence: VpnEvidence) -> EvidenceDiagnosis:
             next_action=NEXT_ACTION_ESCALATE,
             reason_codes=["account_locked", "handoff:account_locked"],
             must_handoff=True,
+            requires_human=True,
         )
 
     # R3 账号正常 + 网关 up + 客户端版本过期 -> 配置/客户端版本问题
@@ -327,6 +391,7 @@ def evaluate_evidence(evidence: VpnEvidence) -> EvidenceDiagnosis:
             next_action=NEXT_ACTION_PROVIDE_STEPS,
             reason_codes=["client_version_outdated", "config_issue"],
             must_handoff=False,
+            requires_human=False,
         )
 
     # R4 网关 down/degraded：网关侧问题
@@ -343,7 +408,15 @@ def evaluate_evidence(evidence: VpnEvidence) -> EvidenceDiagnosis:
             next_action=NEXT_ACTION_ESCALATE,
             reason_codes=["gateway_down", "handoff:gateway"],
             must_handoff=True,
+            requires_human=True,
         )
+
+    # FAULT-INTENT：认证失败 / 内网不可达 / 频繁掉线的差异化根因假设（不是裸关键词标签）。
+    # 顺序在 R2（账号锁定）之后、R6/R5 之前：账号锁定已被 R2 捕获；此处补齐 fault 意图
+    # 独有的根因假设，next_action/置信度由账号/网关/知识/多次尝试等信号综合给出。
+    fault_diag = _fault_intent_diagnosis(evidence)
+    if fault_diag is not None:
+        return fault_diag
 
     # R6 无任何可信证据：不给根因结论，仅转人工
     if not _has_credible_evidence(evidence):
@@ -360,6 +433,7 @@ def evaluate_evidence(evidence: VpnEvidence) -> EvidenceDiagnosis:
             next_action=NEXT_ACTION_ESCALATE,
             reason_codes=["no_evidence", "handoff:no_evidence"],
             must_handoff=True,
+            requires_human=True,
         )
 
     # R5 兜底：账号/网关正常，无版本过期，可能有错误码信号 -> 连接类失败
@@ -388,7 +462,117 @@ def evaluate_evidence(evidence: VpnEvidence) -> EvidenceDiagnosis:
         ),
         reason_codes=reason_codes,
         must_handoff=not evidence.knowledge_hit,
+        requires_human=not evidence.knowledge_hit,
     )
+
+
+def _with_citation(diagnosis: EvidenceDiagnosis, evidence: VpnEvidence) -> EvidenceDiagnosis:
+    """把 evidence_quote 并入 evidence 列表（去重，纯函数）。"""
+    cite = _citation_items(evidence)
+    if cite and all(item not in diagnosis.evidence for item in cite):
+        return diagnosis.model_copy(update={"evidence": list(diagnosis.evidence) + cite})
+    return diagnosis
+
+
+def _citation_items(evidence: VpnEvidence) -> list[str]:
+    """用户请求中的支撑文本引用（保证证据链可回溯、可引证）。"""
+    if evidence.evidence_quote:
+        return [f"文本引用：{evidence.evidence_quote}"]
+    return []
+
+
+def _fault_intent_diagnosis(evidence: VpnEvidence) -> EvidenceDiagnosis | None:
+    """按故障意图（fault）给出差异化根因假设（纯函数）。
+
+    仅在「账号锁定 R2 / 网关侧 R4 / 版本过期 R3」等更强规则未命中的情况下分诊，
+    处理三类 fault 意图：
+        - auth_failed          : 账号/认证歧义（含多次失败导致账号锁定嫌疑）——高层次人工；
+        - intranet_unreachable : 网关/内网路由（本地 NAT / 内网信号）——排障步骤或升级；
+        - frequent_disconnect  : 连接/路由稳定性——排障步骤或升级。
+    其余 fault（connection_failed / multi_user_impact）返回 None，交给 R1/R6/R5 兜底。
+    next_action / 置信度由账号/网关/知识/多次尝试等信号综合给出，不是「裸关键词标签」。
+    """
+    fault = evidence.fault
+    signal_known = (
+        evidence.account_status in (AccountStatus.ACTIVE, AccountStatus.EXPIRED)
+        or evidence.gateway_status == GatewayStatus.UP
+    )
+
+    # ---- auth_failed：账号/认证歧义（账号锁定已由 R2 捕获）----
+    if fault == HYPOTHESIS_AUTH_FAILED:
+        conf = 0.85 if (signal_known and evidence.auth_attempts == 0) else 0.72
+        notes = [
+            "受理层 fault=auth_failed（账号/认证歧义）",
+            "账号或凭据问题，需人工确认是否账号锁定/密码失效/证书过期",
+        ]
+        if evidence.auth_attempts:
+            notes.append(f"认证失败尝试次数={evidence.auth_attempts}（存在账号锁定风险）")
+        return EvidenceDiagnosis(
+            hypothesis=HYPOTHESIS_AUTH_FAILED,
+            confidence=conf,
+            evidence=notes,
+            ruled_out=[
+                HYPOTHESIS_GATEWAY_DOWN,
+                HYPOTHESIS_CLIENT_VERSION_OUTDATED,
+                HYPOTHESIS_MULTI_USER_IMPACT,
+            ],
+            next_action=NEXT_ACTION_ESCALATE,
+            reason_codes=["auth_failed", "auth_ambiguity", "handoff:auth"],
+            must_handoff=True,
+            requires_human=True,
+        )
+
+    # ---- intranet_unreachable / intranet 信号：网关/内网路由 ----
+    if (
+        fault == HYPOTHESIS_INTRANET_UNREACHABLE
+        or evidence.intranet_signal
+        or evidence.local_network_nat
+    ):
+        conf = 0.85 if (signal_known and evidence.knowledge_hit) else 0.65
+        return EvidenceDiagnosis(
+            hypothesis=HYPOTHESIS_INTRANET_UNREACHABLE,
+            confidence=conf,
+            evidence=[
+                "VPN 能连但内网不可达（网关/内网路由）",
+                "内网/本地网络信号：NAT 或内网路由异常",
+            ],
+            ruled_out=[
+                HYPOTHESIS_ACCOUNT_LOCKED,
+                HYPOTHESIS_CLIENT_VERSION_OUTDATED,
+                HYPOTHESIS_MULTI_USER_IMPACT,
+            ],
+            next_action=(
+                NEXT_ACTION_PROVIDE_STEPS if evidence.knowledge_hit else NEXT_ACTION_ESCALATE
+            ),
+            reason_codes=["intranet_unreachable", "gateway_intranet"],
+            must_handoff=not evidence.knowledge_hit,
+            requires_human=not evidence.knowledge_hit,
+        )
+
+    # ---- frequent_disconnect：连接/路由稳定性 ----
+    if fault == HYPOTHESIS_FREQUENT_DISCONNECT:
+        conf = 0.85 if (signal_known and evidence.knowledge_hit) else 0.6
+        return EvidenceDiagnosis(
+            hypothesis=HYPOTHESIS_FREQUENT_DISCONNECT,
+            confidence=conf,
+            evidence=[
+                "频繁掉线（连接/路由稳定性）",
+                "客户端网络波动或隧道稳定性异常",
+            ],
+            ruled_out=[
+                HYPOTHESIS_ACCOUNT_LOCKED,
+                HYPOTHESIS_GATEWAY_DOWN,
+                HYPOTHESIS_MULTI_USER_IMPACT,
+            ],
+            next_action=(
+                NEXT_ACTION_PROVIDE_STEPS if evidence.knowledge_hit else NEXT_ACTION_ESCALATE
+            ),
+            reason_codes=["frequent_disconnect", "connection_routing"],
+            must_handoff=not evidence.knowledge_hit,
+            requires_human=not evidence.knowledge_hit,
+        )
+
+    return None
 
 
 def hypothesis_code_from_hint(hint: str) -> str:
@@ -406,6 +590,12 @@ def hypothesis_code_from_hint(hint: str) -> str:
         HYPOTHESIS_CLIENT_VERSION_OUTDATED,
         HYPOTHESIS_GATEWAY_DOWN,
         HYPOTHESIS_CONNECTION_FAILED,
+        HYPOTHESIS_AUTH_FAILED,
+        HYPOTHESIS_FREQUENT_DISCONNECT,
+        HYPOTHESIS_INTRANET_UNREACHABLE,
+        HYPOTHESIS_LOCAL_NETWORK_NAT,
+        HYPOTHESIS_REGIONAL_INCIDENT,
+        HYPOTHESIS_VENDOR_ANOMALY,
         HYPOTHESIS_NO_EVIDENCE,
     }:
         return normalized
@@ -415,6 +605,12 @@ def hypothesis_code_from_hint(hint: str) -> str:
         (HYPOTHESIS_MULTI_USER_IMPACT, ("多用户", "多人", "全公司", "整个部门", "集体", "大规模")),
         (HYPOTHESIS_CLIENT_VERSION_OUTDATED, ("版本", "客户端", "升级")),
         (HYPOTHESIS_GATEWAY_DOWN, ("网关", "gateway")),
+        (HYPOTHESIS_AUTH_FAILED, ("认证失败", "登录失败", "密码错误", "认证")),
+        (HYPOTHESIS_FREQUENT_DISCONNECT, ("频繁掉线", "频繁断线", "经常掉线", "掉了", "掉线", "断线")),
+        (HYPOTHESIS_INTRANET_UNREACHABLE, ("内网", "intranet", "内网不可达")),
+        (HYPOTHESIS_LOCAL_NETWORK_NAT, ("NAT", "网络地址转换", "本地网络", "局域网")),
+        (HYPOTHESIS_REGIONAL_INCIDENT, ("区域", "地区", "片区")),
+        (HYPOTHESIS_VENDOR_ANOMALY, ("厂商", "供应商", "vendor")),
         (HYPOTHESIS_NO_EVIDENCE, ("无证据", "没有依据", "无法确认", "转人工", "人工")),
     )
     for code, keywords in rules:
@@ -463,7 +659,29 @@ def build_evidence_from_case(case: Mapping[str, Any], *, identity_ok: bool = Tru
         identity_ok=identity_ok,
         knowledge_hit=bool(case.get("expected_document_ids") or case.get("has_evidence")),
         has_asset=bool(provided.get("asset_id") or case.get("asset_id")),
+        # 阶段四新增信号（无则回退默认值，绝不抛异常）。
+        auth_attempts=_safe_int(provided.get("auth_attempts") or case.get("auth_attempts")),
+        intranet_signal=_safe_bool(provided.get("intranet_signal") or case.get("intranet_signal")),
+        local_network_nat=_safe_bool(provided.get("local_network_nat") or case.get("local_network_nat")),
+        regional_incident=_safe_bool(provided.get("regional_incident") or case.get("regional_incident")),
+        vendor_anomaly=_safe_bool(provided.get("vendor_anomaly") or case.get("vendor_anomaly")),
+        evidence_quote=str(provided.get("evidence_quote") or case.get("evidence_quote") or ""),
     )
+
+
+def _safe_int(value: Any) -> int:
+    """把值安全转成非负 int；非法/None 回退 0。"""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_bool(value: Any) -> bool:
+    """把值安全转成 bool；True/1/yes/是 为真。"""
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in ("1", "true", "yes", "y", "是", "on")
 
 
 # 账号锁定/禁用主因信号词（与 intake._ACCOUNT_LOCKOUT_PRIMARY_TERMS 口径对齐，并补充多处关键词）。
@@ -581,3 +799,248 @@ def evaluate_evidence_handoff(
         min_confidence=min_confidence,
     )
     return diagnosis, handoff
+
+
+# ---------------------------------------------------------------------------
+# 阶段四（Phase 4）：结构化诊断树 + 目标结论 JSON + 确定性护栏
+# ---------------------------------------------------------------------------
+
+
+class DiagnosisConclusion(BaseModel):
+    """阶段四「结论 JSON」模型：对齐目标 schema。
+
+    字段固定为 ``hypothesis / evidence / confidence / ruled_out / next_action /
+    requires_human``（extra="forbid"，拒绝自由字段）。这是 evaluate_evidence 的
+    「目标口径」输出，供 diagnose_vpn_tree / guardrail_evaluate 返回，以及
+    frozen-sample 评测（backend/vpn/eval_metrics.py）消费。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    hypothesis: str
+    evidence: list[str] = Field(default_factory=list, max_length=64)
+    confidence: float = Field(ge=0.0, le=1.0)
+    ruled_out: list[str] = Field(default_factory=list, max_length=64)
+    next_action: str
+    requires_human: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        """返回 JSON 兼容 dict（对齐目标结论 schema 的 6 字段）。"""
+        return {
+            "hypothesis": self.hypothesis,
+            "evidence": list(self.evidence),
+            "confidence": self.confidence,
+            "ruled_out": list(self.ruled_out),
+            "next_action": self.next_action,
+            "requires_human": self.requires_human,
+        }
+
+
+def diagnose_vpn_tree(evidence: VpnEvidence) -> DiagnosisConclusion:
+    """结构化诊断树（纯函数）：把 fault + 归一化证据映射到目标结论。
+
+    对齐目标示例树（809 server）：
+        单用户（single-user）: 账号状态异常 / 客户端配置版本异常 / 本地网络-NAT 风险 / 网关无异常
+        多用户（multi-user） : 网关异常 / 区域性事件 / 厂商侧异常
+
+    分支顺序即优先级（命中即返回，不叠加）：
+        1. 身份缺失                          -> no_evidence（人工）
+        2. 多用户 + 网关 down/degraded         -> gateway_down（网关异常）
+        3. 多用户 + 区域信号                    -> regional_incident（区域性事件）
+        4. 多用户（其余）                      -> vendor_anomaly（厂商侧异常）
+        5. 单用户 + 账号锁定/禁用              -> account_locked（账号状态异常）
+        6. 单用户 + 客户端版本过期             -> client_version_outdated（配置版本异常）
+        7. 单用户 + 网关 down/degraded         -> gateway_down（网关异常）
+        8. 单用户 + 内网/NAT 信号              -> local_network_nat（本地网络-NAT 风险）
+        9. 单用户 + 无可信证据                 -> no_evidence（人工）
+        10. 单用户（兜底，网关无异常）         -> connection_failed（809 通用连接失败）
+
+    每个叶子分支都给出置信度 + 排除项 + 处置命令 + 是否必须人工；证据链并入
+    evidence_quote 引用，保证可回溯。
+    """
+    cite = _citation_items(evidence)
+
+    def _mk(
+        hyp: str,
+        conf: float,
+        ev: list[str],
+        ruled: list[str],
+        action: str,
+        requires_human: bool,
+    ) -> DiagnosisConclusion:
+        return DiagnosisConclusion(
+            hypothesis=hyp,
+            confidence=conf,
+            evidence=list(ev) + cite,
+            ruled_out=list(ruled),
+            next_action=action,
+            requires_human=requires_human,
+        )
+
+    # 1. 身份缺失：无法确认用户/资产/账号归属 -> 必须人工
+    if not evidence.identity_ok:
+        return _mk(
+            HYPOTHESIS_NO_EVIDENCE,
+            0.2,
+            ["身份/归属缺失，无法确认用户与资产"],
+            [HYPOTHESIS_ACCOUNT_LOCKED, HYPOTHESIS_MULTI_USER_IMPACT, HYPOTHESIS_CLIENT_VERSION_OUTDATED, HYPOTHESIS_GATEWAY_DOWN],
+            NEXT_ACTION_ESCALATE,
+            True,
+        )
+
+    multi_user = evidence.multi_user_impact or evidence.fault == HYPOTHESIS_MULTI_USER_IMPACT
+    if multi_user:
+        # 2. 多用户 + 网关异常
+        if evidence.gateway_status in (GatewayStatus.DOWN, GatewayStatus.DEGRADED):
+            conf = 0.9 if evidence.gateway_status == GatewayStatus.DOWN else 0.6
+            return _mk(
+                HYPOTHESIS_GATEWAY_DOWN,
+                conf,
+                [f"多用户受影响 + 网关状态={evidence.gateway_status.value}"],
+                [HYPOTHESIS_ACCOUNT_LOCKED, HYPOTHESIS_CLIENT_VERSION_OUTDATED],
+                NEXT_ACTION_ESCALATE,
+                True,
+            )
+        # 3. 多用户 + 区域性事件
+        if evidence.regional_incident:
+            return _mk(
+                HYPOTHESIS_REGIONAL_INCIDENT,
+                0.85,
+                ["多用户同时失败且无网关异常，疑似区域性事件"],
+                [HYPOTHESIS_ACCOUNT_LOCKED, HYPOTHESIS_CLIENT_VERSION_OUTDATED, HYPOTHESIS_GATEWAY_DOWN],
+                NEXT_ACTION_ESCALATE,
+                True,
+            )
+        # 4. 多用户 + 厂商侧异常（兜底）
+        return _mk(
+            HYPOTHESIS_VENDOR_ANOMALY,
+            0.8,
+            ["多用户同时失败，无网关/区域信号，疑似 VPN 厂商侧异常"],
+            [HYPOTHESIS_ACCOUNT_LOCKED, HYPOTHESIS_CLIENT_VERSION_OUTDATED, HYPOTHESIS_GATEWAY_DOWN],
+            NEXT_ACTION_ESCALATE,
+            True,
+        )
+
+    # ---- 单用户分支 ----
+    # 5. 账号状态异常
+    if evidence.account_status in (AccountStatus.LOCKED, AccountStatus.DISABLED):
+        return _mk(
+            HYPOTHESIS_ACCOUNT_LOCKED,
+            0.95,
+            [f"账号状态={evidence.account_status.value}（锁定/禁用，需人工处理）"],
+            [HYPOTHESIS_GATEWAY_DOWN, HYPOTHESIS_CLIENT_VERSION_OUTDATED, HYPOTHESIS_MULTI_USER_IMPACT],
+            NEXT_ACTION_ESCALATE,
+            True,
+        )
+    # 6. 客户端配置/版本异常
+    if _client_version_outdated(evidence) and _all_account_gateway_normal(evidence):
+        return _mk(
+            HYPOTHESIS_CLIENT_VERSION_OUTDATED,
+            0.85,
+            [
+                f"账号状态={evidence.account_status.value}",
+                f"网关状态={evidence.gateway_status.value}",
+                f"客户端版本={evidence.client_version or '未知'} < 要求 {evidence.required_version or '未知'}",
+            ],
+            [HYPOTHESIS_GATEWAY_DOWN, HYPOTHESIS_ACCOUNT_LOCKED, HYPOTHESIS_MULTI_USER_IMPACT],
+            NEXT_ACTION_PROVIDE_STEPS,
+            False,
+        )
+    # 7. 单用户 + 网关异常
+    if evidence.gateway_status in (GatewayStatus.DOWN, GatewayStatus.DEGRADED):
+        conf = 0.9 if evidence.gateway_status == GatewayStatus.DOWN else 0.6
+        return _mk(
+            HYPOTHESIS_GATEWAY_DOWN,
+            conf,
+            [f"网关状态={evidence.gateway_status.value}"],
+            [HYPOTHESIS_ACCOUNT_LOCKED, HYPOTHESIS_CLIENT_VERSION_OUTDATED, HYPOTHESIS_CONNECTION_FAILED],
+            NEXT_ACTION_ESCALATE,
+            True,
+        )
+    # 8. 单用户 + 本地网络/NAT 风险（内网不可达）
+    if evidence.intranet_signal or evidence.local_network_nat or evidence.fault == HYPOTHESIS_INTRANET_UNREACHABLE:
+        return _mk(
+            HYPOTHESIS_LOCAL_NETWORK_NAT,
+            0.8,
+            ["本地网络/NAT 风险（内网不可达），需排查本地路由"],
+            [HYPOTHESIS_ACCOUNT_LOCKED, HYPOTHESIS_GATEWAY_DOWN, HYPOTHESIS_CLIENT_VERSION_OUTDATED],
+            NEXT_ACTION_PROVIDE_STEPS if evidence.knowledge_hit else NEXT_ACTION_ESCALATE,
+            not evidence.knowledge_hit,
+        )
+    # 9. 单用户 + 无可信证据
+    if not _has_credible_evidence(evidence):
+        return _mk(
+            HYPOTHESIS_NO_EVIDENCE,
+            0.2,
+            ["账号/网关状态未知且无知识命中，无可信证据支撑根因"],
+            [HYPOTHESIS_ACCOUNT_LOCKED, HYPOTHESIS_MULTI_USER_IMPACT, HYPOTHESIS_CLIENT_VERSION_OUTDATED, HYPOTHESIS_GATEWAY_DOWN],
+            NEXT_ACTION_ESCALATE,
+            True,
+        )
+    # 10. 单用户兜底：网关无异常（809 通用连接失败）
+    return _mk(
+        HYPOTHESIS_CONNECTION_FAILED,
+        0.85 if evidence.knowledge_hit else 0.6,
+        [f"网关状态={evidence.gateway_status.value}（无异常）", "809/通用连接失败，网关无异常"],
+        [HYPOTHESIS_ACCOUNT_LOCKED, HYPOTHESIS_GATEWAY_DOWN, HYPOTHESIS_CLIENT_VERSION_OUTDATED, HYPOTHESIS_MULTI_USER_IMPACT],
+        NEXT_ACTION_PROVIDE_STEPS if evidence.knowledge_hit else NEXT_ACTION_ESCALATE,
+        not evidence.knowledge_hit,
+    )
+
+
+def guardrail_evaluate(evidence: VpnEvidence) -> DiagnosisConclusion:
+    """确定性护栏判定（纯函数）：先算结论，再按护栏收紧。
+
+    护栏规则（Agent 只做「选查询顺序/提假设/整理证据/生成下一步」；本函数即
+    「权限校验/工具白名单/置信度门槛/高风险升级/状态迁移/审批门禁/执行结果」的
+    确定性部分在规则层的落地）：
+        (i)   置信度门槛：confidence < GUARDRAIL_CONFIDENCE_THRESHOLD(0.80) -> requires_human=True；
+        (ii)  高风险升级：multi_user_impact / auth_failed（无可靠路径）/ no_evidence -> requires_human=True；
+        (iii) 无证据不得自动回复：evidence 为空 -> requires_human=True。
+    当最终 requires_human=True 时，next_action 强制为 escalate_incident（转人工），
+    绝不自动给出 provide_steps/ask_customer 等「自动处置」。
+    工具白名单/scope 属于治理层（tool_governance / models.FORBIDDEN_COMMANDS），本层只复述不越权。
+    """
+    dia = evaluate_evidence(evidence)
+    requires_human = bool(dia.requires_human or dia.must_handoff)
+
+    # (i) 置信度门槛
+    if dia.confidence < GUARDRAIL_CONFIDENCE_THRESHOLD:
+        requires_human = True
+    # (ii) 高风险升级
+    if evidence.fault in (HYPOTHESIS_MULTI_USER_IMPACT, HYPOTHESIS_AUTH_FAILED):
+        requires_human = True
+    if dia.hypothesis in (HYPOTHESIS_NO_EVIDENCE, HYPOTHESIS_REGIONAL_INCIDENT, HYPOTHESIS_VENDOR_ANOMALY):
+        requires_human = True
+    # (iii) 无证据 -> 不得自动回复
+    if not dia.evidence:
+        requires_human = True
+
+    next_action = dia.next_action if not requires_human else NEXT_ACTION_ESCALATE
+    return DiagnosisConclusion(
+        hypothesis=dia.hypothesis,
+        evidence=list(dia.evidence),
+        confidence=dia.confidence,
+        ruled_out=list(dia.ruled_out),
+        next_action=next_action,
+        requires_human=requires_human,
+    )
+
+
+def conclusion_fault_class(hypothesis: str) -> str:
+    """把结论假设映射到 5 类 VPN 故障（粗粒度分类）。
+
+    供 frozen-sample 评测的「VPN 分类准确率」使用：树叶子假设（account_locked /
+    gateway_down / client_version_outdated / local_network_nat / regional_incident /
+    vendor_anomaly）归并到其所属的 5 类故障；no_evidence 不映射（返回 no_evidence，
+    由评测单独处理/排除）。
+    """
+    mapping: dict[str, str] = {
+        HYPOTHESIS_ACCOUNT_LOCKED: HYPOTHESIS_AUTH_FAILED,
+        HYPOTHESIS_GATEWAY_DOWN: HYPOTHESIS_CONNECTION_FAILED,
+        HYPOTHESIS_CLIENT_VERSION_OUTDATED: HYPOTHESIS_CONNECTION_FAILED,
+        HYPOTHESIS_LOCAL_NETWORK_NAT: HYPOTHESIS_INTRANET_UNREACHABLE,
+        HYPOTHESIS_REGIONAL_INCIDENT: HYPOTHESIS_MULTI_USER_IMPACT,
+        HYPOTHESIS_VENDOR_ANOMALY: HYPOTHESIS_MULTI_USER_IMPACT,
+    }
+    return mapping.get(hypothesis, hypothesis)

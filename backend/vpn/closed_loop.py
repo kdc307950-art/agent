@@ -73,6 +73,13 @@ class VpnCustomerActionError(ValueError):
     """客户动作结果提交不符合预期（动作不存在 / 不属于当前工单 / 重复提交）。"""
 
 
+class VpnPersistenceError(RuntimeError):
+    """VPN 闭环关键数据持久化到 PostgreSQL 失败（落库异常向上冒泡，避免被静默吞掉）。
+
+    仅在 self.repository 存在（生产、有库）时抛出；repository 为 None（单测/内存版）保持原逻辑不抛。
+    """
+
+
 class VpnClosedLoopService:
     """VPN 客户处置闭环编排服务（诊断落库 + 状态机联动 + 客户动作闭环）。
 
@@ -177,7 +184,11 @@ class VpnClosedLoopService:
         run_context: Any,
     ) -> dict[str, Any]:
         """再次诊断（新 run）：前置诊断运行置 COMPLETED/超期，再开新一轮。"""
-        prev = self.registry.get_latest_run(ticket_id)
+        # PostgreSQL 单一事实来源：repository 存在时读库，否则回退内存登记表（单测）。
+        if self.repository is not None:
+            prev = await self.repository.get_latest_run(tenant_id, ticket_id)
+        else:
+            prev = self.registry.get_latest_run(ticket_id)
         if prev is not None and prev.status == DiagnosisRunStatus.DIAGNOSING:
             prev.status = DiagnosisRunStatus.COMPLETED
             prev.updated_at = datetime.now(UTC)
@@ -199,7 +210,17 @@ class VpnClosedLoopService:
 
         返回 {"action_result": ..., "re_diagnosis": ...}。
         """
-        action = self.registry.get_action(action_id)
+        # PostgreSQL 单一事实来源：repository 存在时从库读取并校验（跨租户/跨工单返回 None），
+        # 否则回退内存登记表（单测/无库）。读取/落库失败向 API 冒泡，不静默吞掉。
+        if self.repository is not None:
+            try:
+                action = await self.repository.get_action(tenant_id, ticket_id, action_id)
+            except Exception as exc:  # noqa: BLE001
+                raise VpnPersistenceError(
+                    f"VPN 排查步骤读取失败 action={action_id}: {type(exc).__name__}"
+                ) from exc
+        else:
+            action = self.registry.get_action(action_id)
         if action is None or action.ticket_id != ticket_id or action.tenant_id != tenant_id:
             raise VpnCustomerActionError("该排查步骤不存在或不属于当前工单")
         if action.status == CustomerActionStatus.EXECUTED:
@@ -219,7 +240,7 @@ class VpnClosedLoopService:
         self.registry.add_action_result(created)
         await self._persist_action_result(created)
         # 动作状态推进为 EXECUTED（内存 + PostgreSQL）。
-        await self._persist_action_status(action_id, CustomerActionStatus.EXECUTED)
+        await self._persist_action_status(tenant_id, ticket_id, action_id, CustomerActionStatus.EXECUTED)
 
         await self._audit(
             runtime,
@@ -636,8 +657,10 @@ class VpnClosedLoopService:
             return
         try:
             await self.repository.save_run(run)
-        except Exception as exc:  # noqa: BLE001  落库失败不阻断主流程
-            logger.warning("VPN 诊断运行落库失败 run=%s: %s", run.run_id, type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001  落库失败向上冒泡，禁止静默吞掉
+            raise VpnPersistenceError(
+                f"VPN 诊断运行落库失败 run={run.run_id}: {type(exc).__name__}"
+            ) from exc
 
     async def _persist_action(self, action: VpnCustomerAction) -> None:
         if self.repository is None or not hasattr(self.repository, "add_action"):
@@ -645,15 +668,21 @@ class VpnClosedLoopService:
         try:
             await self.repository.add_action(action)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("VPN 排查步骤落库失败 action=%s: %s", action.action_id, type(exc).__name__)
+            raise VpnPersistenceError(
+                f"VPN 排查步骤落库失败 action={action.action_id}: {type(exc).__name__}"
+            ) from exc
 
-    async def _persist_action_status(self, action_id: str, status: CustomerActionStatus) -> None:
+    async def _persist_action_status(
+        self, tenant_id: str, ticket_id: str, action_id: str, status: CustomerActionStatus
+    ) -> None:
         if self.repository is None or not hasattr(self.repository, "update_action_status"):
             return
         try:
-            await self.repository.update_action_status(action_id, status)
+            await self.repository.update_action_status(tenant_id, ticket_id, action_id, status)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("VPN 排查步骤状态落库失败 action=%s: %s", action_id, type(exc).__name__)
+            raise VpnPersistenceError(
+                f"VPN 排查步骤状态落库失败 action={action_id}: {type(exc).__name__}"
+            ) from exc
 
     async def _persist_action_result(self, result: VpnCustomerActionResult) -> None:
         if self.repository is None or not hasattr(self.repository, "add_action_result"):
@@ -661,7 +690,9 @@ class VpnClosedLoopService:
         try:
             await self.repository.add_action_result(result)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("VPN 客户结果落库失败 result=%s: %s", result.result_id, type(exc).__name__)
+            raise VpnPersistenceError(
+                f"VPN 客户结果落库失败 result={result.result_id}: {type(exc).__name__}"
+            ) from exc
 
     async def _persist_escalation(self, escalation: VpnEscalation) -> None:
         if self.repository is None or not hasattr(self.repository, "add_escalation"):
@@ -669,7 +700,9 @@ class VpnClosedLoopService:
         try:
             await self.repository.add_escalation(escalation)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("VPN 升级记录落库失败 esc=%s: %s", escalation.escalation_id, type(exc).__name__)
+            raise VpnPersistenceError(
+                f"VPN 升级记录落库失败 esc={escalation.escalation_id}: {type(exc).__name__}"
+            ) from exc
 
     # ---- 内部：工单时间线（append_status_event，诊断/派步骤/客户结果/升级进入时间线） ----
 

@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from psycopg import AsyncConnection
 
 APP_SCHEMA_NAME = "langgraph_agent"
-APP_SCHEMA_VERSION = 23
+APP_SCHEMA_VERSION = 25
 MIGRATION_LOCK_KEY = 891274631
 
 # These are the tables created by the pinned LangGraph PostgreSQL adapters and
@@ -57,6 +57,8 @@ REQUIRED_RELATIONS: tuple[str, ...] = (
     "vpn_customer_actions",
     "vpn_customer_action_results",
     "vpn_escalations",
+    # v24: VPN reissue 审批式执行的持久化存储（ReissueStore 的 Postgres 后端）。
+    "vpn_reissue_operations",
 )
 
 
@@ -1296,6 +1298,116 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
                 ON vpn_escalations (tenant_id, ticket_id, created_at DESC)
                 """)
             current = 23
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 24:
+            # v24: VPN reissue 审批式执行持久化（ReissueStore 的 Postgres 后端）。
+            # 该表是 ReissueRegistry / ReissueStore 的持久化映射；status 的 CHECK 约束
+            # 与 ApprovalStatus 生命周期一致（含阶段五「可恢复」三态）。
+            # worker_id / lease_expires_at 供 claim_reconcilable 用 FOR UPDATE SKIP LOCKED
+            # + 租约做多 worker 竞争领取（同一行不会重复被领取）。
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS vpn_reissue_operations (
+                    tenant_id TEXT NOT NULL,
+                    ticket_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    request_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    status TEXT NOT NULL,
+                    approver_user_id TEXT,
+                    external_request_id TEXT,
+                    vendor_system TEXT,
+                    vendor_task_id BIGINT CHECK (vendor_task_id IS NULL OR vendor_task_id > 0),
+                    submission_state TEXT CHECK (submission_state IS NULL OR submission_state IN ('submitted', 'not_submitted')),
+                    target_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    diff_snapshot JSONB,
+                    diff_hash TEXT,
+                    desired_state_hash TEXT,
+                    last_polled_at TIMESTAMPTZ,
+                    poll_attempts INTEGER NOT NULL DEFAULT 0 CHECK (poll_attempts >= 0),
+                    external_result JSONB,
+                    result_hash TEXT,
+                    error_code TEXT,
+                    retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+                    expected_version INTEGER NOT NULL DEFAULT 0 CHECK (expected_version >= 0),
+                    worker_id TEXT,
+                    lease_expires_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (tenant_id, operation_id),
+                    CONSTRAINT vpn_reissue_operations_status_check CHECK (
+                        status IN (
+                            'pending',
+                            'approved',
+                            'executing',
+                            'delivered',
+                            'confirmed',
+                            'execution_unknown',
+                            'reconciliation_required',
+                            'failed',
+                            'rejected',
+                            'cancelled'
+                        )
+                    )
+                )
+                """)
+            # 索引：按 (tenant_id, status) 扫描对账候选；按 (tenant_id, idempotency_key) 幂等锚点。
+            await cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_vpn_reissue_operations_tenant_status
+                ON vpn_reissue_operations (tenant_id, status)
+                """)
+            await cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_vpn_reissue_operations_tenant_idempotency
+                ON vpn_reissue_operations (tenant_id, idempotency_key)
+                """)
+            # 部分唯一索引 (tenant_id, idempotency_key)：同租户同幂等键仅一个「活跃」操作；
+            # 失败/拒绝/取消视为终态，允许同键重试产生新行（C4：失败不当成功幂等）。
+            await cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_vpn_reissue_operations_tenant_idempotency
+                ON vpn_reissue_operations (tenant_id, idempotency_key)
+                WHERE status NOT IN ('failed', 'rejected', 'cancelled')
+                """)
+            current = 24
+            await cursor.execute(
+                "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
+                (current, APP_SCHEMA_NAME),
+            )
+
+        if current < 25:
+            # v25: VPN 控制面提交与 preview 快照。worker_id 已承担 lease owner 语义，
+            # 因此不重复增加 lease_owner；这些字段只保存事实快照和人工对账证据。
+            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS vendor_system TEXT")
+            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS vendor_task_id BIGINT")
+            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS submission_state TEXT")
+            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS target_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb")
+            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS diff_snapshot JSONB")
+            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS diff_hash TEXT")
+            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS desired_state_hash TEXT")
+            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS last_polled_at TIMESTAMPTZ")
+            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS poll_attempts INTEGER NOT NULL DEFAULT 0")
+            await cursor.execute("ALTER TABLE vpn_reissue_operations DROP CONSTRAINT IF EXISTS vpn_reissue_operations_submission_state_check")
+            await cursor.execute("ALTER TABLE vpn_reissue_operations DROP CONSTRAINT IF EXISTS vpn_reissue_operations_vendor_task_id_check")
+            await cursor.execute("ALTER TABLE vpn_reissue_operations DROP CONSTRAINT IF EXISTS vpn_reissue_operations_poll_attempts_check")
+            await cursor.execute("""
+                ALTER TABLE vpn_reissue_operations
+                ADD CONSTRAINT vpn_reissue_operations_submission_state_check CHECK (
+                    submission_state IS NULL OR submission_state IN ('submitted', 'not_submitted')
+                )
+                """)
+            await cursor.execute("""
+                ALTER TABLE vpn_reissue_operations
+                ADD CONSTRAINT vpn_reissue_operations_vendor_task_id_check CHECK (
+                    vendor_task_id IS NULL OR vendor_task_id > 0
+                )
+                """)
+            await cursor.execute("""
+                ALTER TABLE vpn_reissue_operations
+                ADD CONSTRAINT vpn_reissue_operations_poll_attempts_check CHECK (poll_attempts >= 0)
+                """)
+            current = 25
             await cursor.execute(
                 "UPDATE agent_schema_version SET version = %s, applied_at = now() WHERE schema_name = %s",
                 (current, APP_SCHEMA_NAME),

@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from .http_adapter import HttpReadonlyVpnAdapter, HttpVpnConfig, build_http_config_from_env
 from .mock_adapter import MockVpnAdapter, VpnAdapter
 
 logger = logging.getLogger("langgraph.vpn")
@@ -336,6 +337,47 @@ class CallAudit:
 
 
 @dataclass
+class ResultCache:
+    """TTL 结果缓存：按 (method + normalized args) 缓存只读查询结果，避免窗口内重复打厂商。
+
+    - get(key)：命中的话返回**深拷贝**（调用方可安全地改返回值而不污染缓存）；
+      TTL 过期即失效并删除。
+    - put(key, value)：存储副本；ttl_seconds <= 0 时不缓存（禁用）。
+    - clear()：清空（供测试 / 复位）。
+    - ttl_seconds 可在构造时传入，也可在 build_vpn_adapter 包装时覆盖。
+    """
+
+    ttl_seconds: float = 5.0
+    _store: dict[str, tuple[float, dict[str, Any]]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.ttl_seconds < 0:
+            raise ValueError("ResultCache.ttl_seconds 必须 >= 0")
+
+    def get(self, key: str) -> dict[str, Any] | None:
+        item = self._store.get(key)
+        if item is None:
+            return None
+        expires_at, value = item
+        if time.monotonic() > expires_at:
+            self._store.pop(key, None)
+            return None
+        return dict(value)
+
+    def put(self, key: str, value: dict[str, Any]) -> None:
+        if self.ttl_seconds <= 0:
+            return
+        self._store[key] = (time.monotonic() + self.ttl_seconds, dict(value))
+
+    def clear(self) -> None:
+        self._store.clear()
+
+    @property
+    def size(self) -> int:
+        return len(self._store)
+
+
+@dataclass
 class ResilienceConfig:
     """韧性包装的统一配置。"""
 
@@ -343,6 +385,8 @@ class ResilienceConfig:
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
     error_mapper: Callable[[Exception], dict[str, Any]] = default_error_mapper
+    # 只读结果缓存 TTL（秒）。None 或 <= 0 表示禁用缓存；默认禁用以保持既有 mock/sandbox 行为。
+    cache_ttl_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if self.timeout_seconds <= 0:
@@ -377,6 +421,8 @@ class VpnResilientAdapter(VpnAdapter):
         resilience: ResilienceConfig | None = None,
         audit: CallAudit | None = None,
         request_id_factory: Callable[[], str] | None = None,
+        external_request_id_factory: Callable[[], str] | None = None,
+        cache: ResultCache | None = None,
     ) -> None:
         self._inner = inner
         self._tenant_id = tenant_id
@@ -387,6 +433,15 @@ class VpnResilientAdapter(VpnAdapter):
         # 幂等键登记（按 (method, key) 去重，防重复副作用）
         self._idempotency: dict[str, dict[str, Any]] = {}
         self._new_request_id = request_id_factory or (lambda: uuid.uuid4().hex)
+        # 每调用的厂商侧 external_request_id 生成器（真实 HTTP 适配器用它做请求头/回填）。
+        self._new_external_request_id = external_request_id_factory or (lambda: uuid.uuid4().hex)
+        # 只读结果缓存：注入 cache 优先；否则从配置缓存 TTL 派生；None/<=0 表示禁用。
+        if cache is not None:
+            self._cache = cache
+        elif self._config.cache_ttl_seconds is not None and self._config.cache_ttl_seconds > 0:
+            self._cache = ResultCache(ttl_seconds=self._config.cache_ttl_seconds)
+        else:
+            self._cache = None
         # 供工厂/外部注入的横向属性（纯类型声明，与 _inner 同源；data_source_tier 由工厂按模式赋值）
         self.inner_adapter: VpnAdapter = inner
         self.data_source_tier: VpnDataSourceTier | None = None
@@ -456,6 +511,8 @@ class VpnResilientAdapter(VpnAdapter):
         tenant_id = self._tenant_id or ""
         user_id = kwargs.get("user_id")
         asset_id = kwargs.get("asset_id")
+        # 每调用生成一个厂商侧 external_request_id（真实 HTTP 适配器用它做请求头 + 审计回填）。
+        external_request_id = None if _side_effect else self._new_external_request_id()
 
         # 1) tenant_id 隔离 + 归属校验
         ok, reason = self._access.authorize(
@@ -493,6 +550,19 @@ class VpnResilientAdapter(VpnAdapter):
                 if cache_key in self._idempotency:
                     return dict(self._idempotency[cache_key])
 
+        # 3.5) 只读结果缓存：命中则不打厂商（副作用操作永不缓存）。
+        cache_key: str | None = None
+        if not _side_effect and self._cache is not None:
+            cache_key = self._cache_key(method, tenant_id, kwargs)
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                cached = self._inject_meta(cached, request_id, tenant_id, external_request_id)
+                self._record_audit(
+                    method, request_id, "cache_hit", cached, elapsed=0.0,
+                    tenant_id=tenant_id, external_request_id=external_request_id,
+                )
+                return cached
+
         # 4) 调 inner（带 timeout + retry）
         retry_policy = self._config.retry_policy
         attempts = retry_policy.max_attempts
@@ -501,20 +571,31 @@ class VpnResilientAdapter(VpnAdapter):
         for attempt in range(1, attempts + 1):
             try:
                 result = await asyncio.wait_for(
-                    self._dispatch(method, **kwargs),
+                    self._dispatch(method, external_request_id, **kwargs),
                     timeout=self._config.timeout_seconds,
                 )
                 self._breaker.record_success()
                 elapsed = time.monotonic() - start
-                self._record_audit(method, request_id, "ok", result, elapsed=elapsed, tenant_id=tenant_id)
+                if not isinstance(result, dict):
+                    result = {"found": False, "content": str(result)}
+                result = self._inject_meta(result, request_id, tenant_id, external_request_id)
+                self._record_audit(
+                    method, request_id, "ok", result, elapsed=elapsed,
+                    tenant_id=tenant_id, external_request_id=external_request_id,
+                )
                 if _side_effect and kwargs.get("idempotency_key"):
                     self._idempotency[f"{method}:{kwargs['idempotency_key']}"] = dict(result)
-                return result if isinstance(result, dict) else {"found": False, "content": str(result)}
+                elif not _side_effect and self._cache is not None and cache_key is not None:
+                    self._cache.put(cache_key, result)
+                return result
             except Exception as exc:  # noqa: BLE001  外部/内部异常统一映射（含 TimeoutError/ConnectionError）
                 mapped = self._config.error_mapper(exc)
                 self._breaker.record_failure()
                 elapsed = time.monotonic() - start
-                self._record_audit(method, request_id, "error", mapped, elapsed=elapsed, tenant_id=tenant_id)
+                self._record_audit(
+                    method, request_id, "error", mapped, elapsed=elapsed,
+                    tenant_id=tenant_id, external_request_id=external_request_id,
+                )
                 last_error = mapped
                 retryable = bool(mapped.get("retryable")) and bool(
                     mapped.get("error_code") in retry_policy.retryable_error_codes
@@ -525,17 +606,23 @@ class VpnResilientAdapter(VpnAdapter):
                 break
 
         result = last_error or {"found": False, "error_code": "unexpected", "reason": "未知错误"}
-        result.setdefault("request_id", request_id)
-        result.setdefault("tenant_id", tenant_id)
+        result = self._inject_meta(result, request_id, tenant_id, external_request_id)
         return result
 
-    def _dispatch(self, method: str, **kwargs: Any) -> Awaitable[Any]:
-        """把方法名分派到 inner。inner 若确实实现则直调；否则返回缺省 found:false。"""
+    def _dispatch(self, method: str, external_request_id: str | None = None, **kwargs: Any) -> Awaitable[Any]:
+        """把方法名分派到 inner。inner 若确实实现则直调；否则返回缺省 found:false。
+
+        仅当 inner 明确支持（带 _accepts_external_request_id=True）时，才把 external_request_id
+        作为关键字透传（mock/sandbox 等旧实现不受影响）。
+        """
         fn = getattr(self._inner, method, None)
         if fn is None:
             async def _missing() -> dict[str, Any]:
                 return {"found": False, "content": f"数据源未实现 {method}"}
             return _missing()
+        if external_request_id is not None and getattr(self._inner, "_accepts_external_request_id", False):
+            kwargs = dict(kwargs)
+            kwargs["external_request_id"] = external_request_id
         return fn(**kwargs)
 
     def _record_audit(
@@ -547,11 +634,14 @@ class VpnResilientAdapter(VpnAdapter):
         *,
         elapsed: float,
         tenant_id: str,
+        external_request_id: str | None = None,
     ) -> None:
         self._audit_log.record(
             {
                 "method": method,
                 "request_id": request_id,
+                "trace_id": request_id,
+                "external_request_id": external_request_id,
                 "outcome": outcome,
                 "tenant_id": tenant_id,
                 "status": payload.get("found", False),
@@ -560,6 +650,30 @@ class VpnResilientAdapter(VpnAdapter):
                 "args": desensitize(payload),
             }
         )
+
+    def _cache_key(self, method: str, tenant_id: str, kwargs: dict[str, Any]) -> str:
+        """只读结果缓存的规范化键：method + tenant_id + 规范化 args（避免跨租户缓存污染）。"""
+        normalized = json.dumps(kwargs, sort_keys=True, ensure_ascii=False, default=str)
+        return f"{method}:{tenant_id}:{normalized}"
+
+    def _inject_meta(
+        self,
+        result: dict[str, Any],
+        request_id: str,
+        tenant_id: str,
+        external_request_id: str | None,
+    ) -> dict[str, Any]:
+        """把 trace_id / request_id / tenant_id / external_request_id 回填进结果（供审计与调用方）。
+
+        对 request_id / trace_id / tenant_id 采用覆盖写，保证缓存命中时也记录「本次调用」的
+        trace_id（而不是首次产生该结果的旧 trace）。external_request_id 用覆盖写，与透传值保持一致。
+        """
+        result["request_id"] = request_id
+        result["trace_id"] = request_id
+        result["tenant_id"] = tenant_id
+        if external_request_id:
+            result["external_request_id"] = external_request_id
+        return result
 
     # ---- 只读工具需要的内部数据（经 __getattr__ 委托给 inner，保持兼容） ----
 
@@ -806,33 +920,58 @@ def build_vpn_adapter(
     data_path: str | None = None,
     tenant_id: str | None = None,
     resilience: ResilienceConfig | None = None,
+    http_config: HttpVpnConfig | None = None,
+    access_policy: AccessPolicy | None = None,
+    audit: CallAudit | None = None,
+    external_request_id_factory: Callable[[], str] | None = None,
+    cache: ResultCache | None = None,
 ) -> VpnResilientAdapter:
-    """按数据源级别构造「韧性包装的 VPN 适配器」。
+    """按数据源级别构造「韧性包装的 VPN 适配器」（环境分层）。
 
-    目前支持：
-        - mode="mock"    → 固定 Mock（内置/文件快照），tier=FIXED_MOCK
-        - mode="sandbox" → 可重复沙箱（seed 确定性），tier=REPRODUCIBLE_SANDBOX
-    （test_env / prod_readonly / prod_approved_write 为后续阶段保留，本期不接。）
+    支持（对齐阶段四/五环境分层）：
+        - mode="mock"    → 固定 Mock（内置/文件快照），tier=FIXED_MOCK（本地）
+        - mode="sandbox" → 可重复沙箱（seed 确定性），tier=REPRODUCIBLE_SANDBOX（测试）
+        - mode="real"    → 真实只读 HTTP（staging/production），tier=PROD_READONLY
+          （必填注入 http_config；未注入则从 VPN_HTTP_* 环境变量构建；缺失必填时抛 ValueError，
+            保证「真实只读」在配置齐全时才可使用。）
+
+    红线：real 模式的「写」通路已被 HttpReadonlyVpnAdapter 本身封死——它不实现任何写方法，
+    reissue_config 沿用基类 NotImplementedError，restart_gateway / modify_* / unlock_account /
+    grant_* 等在类上完全缺失。因此生产第一阶段只读，自动写/破坏性动作不可能发生。
     """
     mode = mode.lower()
-    if mode not in {VpnDataSourceTier.FIXED_MOCK.value, VpnDataSourceTier.REPRODUCIBLE_SANDBOX.value}:
+    supported = {
+        VpnDataSourceTier.FIXED_MOCK.value,
+        VpnDataSourceTier.REPRODUCIBLE_SANDBOX.value,
+        "real",
+    }
+    if mode not in supported:
         raise ValueError(
-            f"不支持的 VPN 数据源模式: {mode}（当前仅支持 mock / sandbox）"
+            f"不支持的 VPN 数据源模式: {mode}（当前仅支持 mock / sandbox / real）"
         )
 
     if mode == VpnDataSourceTier.FIXED_MOCK.value:
-        inner: VpnAdapter = MockVpnAdapter(
-            data_path=data_path if data_path else None
-        )
-    else:
+        inner: VpnAdapter = MockVpnAdapter(data_path=data_path if data_path else None)
+        tier = VpnDataSourceTier.FIXED_MOCK
+    elif mode == VpnDataSourceTier.REPRODUCIBLE_SANDBOX.value:
         inner = SandboxVpnAdapter(seed=seed, data_path=data_path)
+        tier = VpnDataSourceTier.REPRODUCIBLE_SANDBOX
+    else:  # "real"
+        if http_config is None:
+            http_config = build_http_config_from_env()
+        inner = HttpReadonlyVpnAdapter(http_config)
+        tier = VpnDataSourceTier.PROD_READONLY
 
     resilient = VpnResilientAdapter(
         inner,
         tenant_id=tenant_id,
+        access_policy=access_policy or ALLOW_ALL_ACCESS,
         resilience=resilience,
+        audit=audit,
+        external_request_id_factory=external_request_id_factory,
+        cache=cache,
     )
     # 让包装暴露数据源级别，便于外层（runtime/tools）识别
-    resilient.data_source_tier = VpnDataSourceTier(mode)
+    resilient.data_source_tier = tier
     resilient.inner_adapter = inner
     return resilient

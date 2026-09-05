@@ -192,7 +192,11 @@ def test_r5_without_knowledge_escalates():
 
 
 def test_evidence_diagnosis_to_dict_shape():
-    """结构化结论字段固定：hypothesis/confidence/evidence/ruled_out/next_action/reason_codes/must_handoff。"""
+    """结构化结论字段固定：hypothesis/confidence/evidence/ruled_out/next_action/reason_codes/must_handoff/requires_human。
+
+    阶段四：目标结论 schema 的 6 字段（hypothesis/evidence/confidence/ruled_out/
+    next_action/requires_human）必须全部存在；reason_codes/must_handoff 为兼容保留。
+    """
     d = evaluate_evidence(VpnEvidence(account_status=AccountStatus.LOCKED))
     as_dict = d.to_dict()
     assert set(as_dict) == {
@@ -203,11 +207,17 @@ def test_evidence_diagnosis_to_dict_shape():
         "next_action",
         "reason_codes",
         "must_handoff",
+        "requires_human",
     }
+    # 目标结论 schema 的 6 个关键字段必须齐全（阶段四对齐目标 JSON）。
+    from backend.vpn.rules import CONCLUSION_FIELDS
+
+    assert all(field in as_dict for field in CONCLUSION_FIELDS)
     assert isinstance(as_dict["evidence"], list)
     assert isinstance(as_dict["ruled_out"], list)
     assert isinstance(as_dict["reason_codes"], list)
     assert isinstance(as_dict["confidence"], float)
+    assert isinstance(as_dict["requires_human"], bool)
 
 
 # ========== evaluate_evidence_handoff 复用 models 四类兜底 ==========

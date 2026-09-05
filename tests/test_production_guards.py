@@ -18,6 +18,7 @@ def _base_production(monkeypatch):
     monkeypatch.setenv("METRICS_AUTH_TOKEN", "metrics-secret")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "model-key")
     monkeypatch.setenv("DATABASE_URL", "postgresql://test/test")
+    monkeypatch.setenv("VPN_ADAPTER_MODE", "real")
 
 
 @pytest.mark.parametrize(
@@ -26,6 +27,7 @@ def _base_production(monkeypatch):
         ("RATE_LIMIT_BACKEND", "memory", "RATE_LIMIT_BACKEND"),
         ("REDIS_FAIL_MODE", "open", "REDIS_FAIL_MODE"),
         ("LANGGRAPH_AUTO_SETUP", "true", "AUTO_SETUP"),
+        ("VPN_ADAPTER_MODE", "mock", "VPN_ADAPTER_MODE"),
     ],
 )
 def test_production_rejects_unsafe_runtime_modes(monkeypatch, name, value, message):
@@ -74,3 +76,18 @@ def test_production_budget_requires_nonzero_model_price(monkeypatch):
     monkeypatch.setenv("MODEL_OUTPUT_COST_PER_1K_USD", "0")
     with pytest.raises(RuntimeError, match="模型输入或输出价格"):
         Settings.from_env()
+
+
+def test_fortimanager_gateway_requires_complete_explicit_configuration(monkeypatch):
+    _base_production(monkeypatch)
+    monkeypatch.setenv("VPN_COMMAND_GATEWAY_MODE", "fortimanager")
+    monkeypatch.delenv("VPN_FMG_BASE_URL", raising=False)
+    with pytest.raises(RuntimeError, match="VPN_FMG_BASE_URL"):
+        Settings.from_env()
+
+    _base_production(monkeypatch)
+    monkeypatch.setenv("VPN_COMMAND_GATEWAY_MODE", "fortimanager")
+    monkeypatch.setenv("VPN_FMG_BASE_URL", "https://fmg.example.com")
+    monkeypatch.setenv("VPN_FMG_API_TOKEN", "test-token")
+    monkeypatch.setenv("VPN_FMG_TENANT_TARGETS_JSON", '{"tenant-a": {}}')
+    assert Settings.from_env().vpn_command_gateway_mode == "fortimanager"

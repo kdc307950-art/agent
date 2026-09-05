@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from backend.run_context import RunContext
 from backend.security import Principal, rate_limit_dependency
 
-from .closed_loop import VpnCustomerActionError, VpnDiagnosisNotFound
+from .closed_loop import VpnCustomerActionError, VpnDiagnosisNotFound, VpnPersistenceError
 
 router = APIRouter(prefix="/tickets", tags=["vpn-diagnosis"])
 
@@ -91,6 +91,9 @@ async def _ticket_or_404(runtime, tenant_id: str, ticket_id: str, *, requester_i
 
 
 def _map_error(exc: Exception) -> HTTPException:
+    # 数据库/持久化异常 -> 503（客户端主链路落库失败，禁止静默成功）。
+    if isinstance(exc, VpnPersistenceError):
+        return HTTPException(status_code=503, detail="VPN 数据持久化失败")
     if isinstance(exc, VpnDiagnosisNotFound):
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, VpnCustomerActionError):

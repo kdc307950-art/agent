@@ -123,3 +123,31 @@ Web 建单 → 受理图分类 it.vpn + vpn_fault → 8 项必填字段追问（
 >
 > 未承诺：不做真实 VPN 自动排障/修复；不做账号/网络主演示；真实企微沙箱端到端、
 > 生产知识库泛化、真实模型引用与 P95/成本、长期运行能力**尚未证明**。
+
+## 9. Fortinet 控制面演示扩展边界
+
+本节描述仓库新增的 Fortinet 垂直演示扩展，不改变本文件前文定义的 V1 主产品：V1 仍然是 `it.vpn` 的受理、字段补全、建议与人工闭环。
+
+### 已实现的控制面闭环
+
+面向约 50 人的中小企业，控制面动作收窄为**租户级配置漂移检测与策略重推**：
+
+```text
+目标校验 → preview → 保存 diff_hash → 人工审批 → FMG install task
+  → 异步轮询 → confirmed / execution_unknown → 人工确认与只读对账
+```
+
+- 新业务语义为 `redeploy_tenant_vpn_config`；不宣称单员工重签。
+- 现有 `vpn_reissue_operations` 扩展至 schema `v25`，记录 vendor task、提交状态、目标/差异快照和轮询信息。
+- `confirm-submission` 只接受人工确认事实：`submitted` 必须带正整数 task id，随后只读对账；`not_submitted` 不允许带 task id，并收敛为失败。
+- `submission_unknown` 代表副作用可能已经发生但本地未取得 task id，禁止自动重试。
+- 唯一约束、租户锁和旧 task 只读续查共同约束重复提交；`worker_id + lease_expires_at` 已承担租约语义。
+
+### 证据等级与未验证边界
+
+- 已验证：本地 Fake FMG 的真实 HTTPS/HTTP 往返、健康检查、只读 status、成功 task、超时保留 task id、业务拒绝映射、人工确认接口和跨租户拒绝测试。
+- 未验证：真实 FMG staging 的 ADOM/Model Device/Policy Package 状态，真实 FortiGate 设备下发，生产长期运行、回滚和厂商侧最终效果。
+- trial 许可的设备数与 ADOM 数量必须以激活后 `License Information` widget 的实际显示为准，不写固定“3 设备/3 ADOM”。
+- Fake FMG 仅是协议与失败处置演练，不等同真实生产接入证明。
+
+面试演示入口是仓库根目录 `drill_fake_fmg.py`，固定 8 步并在失败时返回非零退出码；生产写入默认关闭，真实 staging 到位后仍需按审批、preview、对账和 canary 清单逐步放量。

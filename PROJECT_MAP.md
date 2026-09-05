@@ -69,6 +69,15 @@ backend/                     生产化 API 层
 │   ├── ingestion.py / api.py / tokenizer.py / models.py / identity.py / llm.py
 │   └── eval_cases.py / eval_holdout_cases.py（脱敏评测集）
 ├── assets/                  资产域（api / models / repository）
+├── vpn/                     ★ VPN 客户处置闭环 + 只读诊断 + 审批式配置重下发
+│   ├── agent.py / service.py / models.py / tools.py    只读诊断 Agent、上下文组装+诊断门禁、枚举与 DiagnosisCommand、只读 @tool
+│   ├── diagnosis.py / executor.py / rules.py           处置闭环领域对象/状态机、命令校验执行（FORBIDDEN_COMMANDS 零副作用）、证据链确定性规则
+│   ├── mock_adapter.py / sandbox_adapter.py            只读 Mock VPN 适配器（dict/JSON 可配置）；只读沙箱韧性适配器 + 数据源切换
+│   ├── repository.py                                    PostgreSQL 持久化仓储（租户隔离 + 幂等 upsert）
+│   ├── closed_loop.py                                 处置闭环编排（状态机联动 + repository 存在时落库镜像）
+│   ├── api.py / api_v2.py                             诊断 REST 接口
+│   ├── approval.py / reissue_service.py              审批式配置重下发（approve/reject 幂等、可恢复 + 补偿对账）
+│   └── runtime_view.py                                运行时视图
 └── copilot/                 ★ Resolution Copilot（解决阶段只读 Agent）
     ├── agent.py              有界工具循环（最大轮次/工具数/超时硬限制）
     ├── service.py            上下文组装 → 生成 → 答案门禁
@@ -98,7 +107,8 @@ infra/                      Docker Compose（demo/dev/test）、k8s、gateway、
 7. `backend/channel_processor.py` → `inbound_worker.py` → `outbox_worker.py` —— 渠道闭环。
 8. `backend/knowledge/` —— Agentic RAG。
 9. `backend/copilot/` —— Resolution Copilot（解决阶段 Agent）。
-10. `frontend/src/views/` —— 工作台各页面。
+10. `backend/vpn/` —— VPN 客户处置闭环 + 只读诊断 + 审批式配置重下发（阶段二~五迭代）。
+11. `frontend/src/views/` —— 工作台各页面。
 
 ## 运行命令
 
