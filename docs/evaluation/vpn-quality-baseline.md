@@ -1,60 +1,38 @@
-# VPN 质量基线快照（只读，用于 t5 完成后整体验收）
+# VPN 质量基线快照
 
-> 生成时间：2026-09-05（release-engineer，只读复验，未 git 提交）。
-> 说明：本快照为**当前工作区某一时刻**的三绿/质量基线；因团队成员仍在并行修改
-> backend/vpn（integration-engineer 的 t5、qa-engineer 的 B017 收尾等），计数可能随时间变化。
-> 此文件仅用于验收参考，不作为冻结基准的最终唯一口径。
+> 更新时间：2026-09-05。当前产品冻结基线：`vpn-control-v1.0`；维护清理版本：
+> `vpn-control-v1.0.1`。本文只记录当前已验证结果，不把模拟环境或静态检查包装成真实厂商生产证据。
 
-## 1. 静态质量计数
+## 1. 已验证结果
 
-| 检查 | 命令 | 结果 | 说明 |
-| --- | --- | --- | --- |
-| mypy | `mypy --no-incremental src backend` | **0 errors**（120 source files） | 完全绿 |
-| ruff | `ruff check src backend tests` | **4 errors** | 详见下方位置清单 |
-| pytest | `pytest --co -q` | **658 collected**，0 收集错误 | >600，符合预期 |
+| 检查 | 结果 | 口径 |
+| --- | --- | --- |
+| Ruff | 通过 | `backend src tests` 无错误 |
+| Mypy | 通过 | 126 个源文件，0 errors |
+| 后端 pytest | 797 passed / 1 skipped / 3 deselected | `not live_e2e` 全量回归 |
+| 前端 TypeScript | 通过 | `tsc -b` |
+| 前端 Oxlint | 通过 | 0 warning / 0 error |
+| 前端 Vitest | 38 passed | 单元测试 |
+| Playwright Mock E2E | 22 passed | 固定 Mock 环境 |
+| Fake FMG 演练 | ALL PASS | 8 步，含成功、拒绝、停滞和人工确认 |
 
-### ruff 剩余 4 处（均在 qa-engineer 进行中的测试文件，未涉及 t1 冻结范围）
+## 2. 当前产品边界
 
-- `tests/test_vpn_diagnosis_closed_loop.py:14` I001 —— 导入排序（可自动修复）
-- `tests/test_vpn_diagnosis_closed_loop.py:204` B017 —— 盲断言（qa-engineer 任务）
-- `tests/test_vpn_diagnosis_closed_loop.py:220` B017 —— 盲断言（qa-engineer 任务）
-- `tests/test_vpn_evidence_rules.py:16` I001 —— 导入排序（可自动修复）
+- 已验证：确定性状态机、审批、preview/diff hash 门禁、异步 task 轮询、失败分类、人工确认、
+  补偿对账、跨租户隔离和 Fake FMG 协议往返。
+- 未验证：真实 FortiManager staging、真实 FortiGate 最终下发、生产长期运行、生产回滚、
+  真实企业微信/钉钉闭环、真实模型线上指标和成本。
+- 生产写入边界：不恢复 Supervisor 多 Agent 作为写入链路；生产动作仍由确定性流程、审批、
+  幂等约束和人工对账控制。
 
-> 备注：此前 captain 快照中的 `backend/vpn/approval.py:338 UP037`（`"ReissueActionRequest"` 引号）
-> 与 `backend/vpn/reissue_service.py:47 F401`（`classify_reissue_outcome` 未用）均已清零
-> （approval.py 已被 prior safe --fix 去引号，reissue_service.py 由 integration-engineer 在 t5 顺手清理）。
+## 3. Git 基线
 
-## 2. mypy 说明
+- `cd2b9a1`：冻结 `vpn-control-v1.0`。
+- `afed74d`：工作区清理与审计记录维护，标记 `vpn-control-v1.0.1`。
+- 当前文档修正完成后，将追加一个文档维护提交；代码冻结基线不变。
 
-- 全量 `mypy src backend` = **0 errors**（含 backend/vpn 全部模块：approval / reissue_service /
-  closed_loop / sandbox_adapter / repository / diagnosis 等）。
-- 若 t5 / qa 后续改动引入新的 mypy 错误，需即时上报 captain 定位归属。
+## 4. 维护规则
 
-## 3. Git 状态
-
-- `git status --short` 当前共 **99 处更改**（大量 M 修改 + ? 未跟踪），包含：
-  - VPN 相关（backend/vpn、run_vpn_*、vpn_eval_*、tests/test_vpn_*、frontend/src/api/vpn.* 等）；
-  - 既有 helpdesk 基线（copilot / tickets / frontend / docs 等）；
-  - 队友阶段内新增文件（closed_loop / sandbox_adapter / repository / evidence_rules 等）。
-- **未提交**：按 captain 约定，git 分组提交待 t5 完成后统一进行。
-
-### 已提交 commit（近 8 条，HEAD = `1cf40f9`）
-
-| hash | message |
-| --- | --- |
-| 1cf40f9 | feat(vpn): VPN 故障智能服务台基线（版本冻结，阶段一）← HEAD |
-| c6f391c | chore(v1): freeze demo scope, fixtures, gates and regression evidence |
-| 2bcc943 | fix(demo/security/eval): credibility and demo hardening for V1 |
-| d35e645 | feat(helpdesk): complete V1 internal IT service desk milestone |
-| c2b5afa | fix(agent): harden workers, security, and data consistency |
-| 3584241 | docs: README 新增工具调用与治理章节 |
-| c59b10d | docs: 补充核心模块中文注释并同步项目文档 |
-| 5e74355 | Merge remote-tracking branch 'origin/main' |
-
-## 4. 结论 / 建议
-
-- 三绿基线下线：mypy 0、pytest 658 收集无错、**ruff 仅剩 4 处且全在 qa 测试文件**
-  （2 处 I001 可 safe `--fix`，2 处 B017 属 qa-engineer）。
-- 无超过 10 处的 ruff/mypy 严重回退。
-- 建议：qa 收尾 2 处 B017 并 safe `--fix` 2 处 I001 即可 `ruff` 归 0；t5 完成后由 captain
-  统一做 git 分组提交。
+- V1 维护期只接受 Bug 修复、安全修复、依赖升级和证据/文档同步。
+- 业务范围、状态机语义、外部写入协议或生产放量策略变更，应进入新版本评审。
+- 面试或简历只使用“已验证”栏目中的事实；真实厂商链路必须在完成 staging 证据后单独声明。
