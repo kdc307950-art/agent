@@ -8,7 +8,7 @@
 ## 0. 一句话结论
 
 主体交付已经落盘，并已完成本地后端、前端、Mock E2E、静态检查和 Fake FMG
-八步演练；**真实 FortiManager staging、真实 FortiGate 最终下发、生产长期运行与回滚仍未验证**。
+八步演练；Fake FMG、演示证书与 Windows 一键演示脚本均已纳入仓库。**真实 FortiManager staging、真实 FortiGate 最终下发、生产长期运行与回滚仍未验证**。
 真实 VPN 数据源本期不接入（属后续范围）。
 
 ---
@@ -76,6 +76,7 @@
 | 前端 Vitest | 38 passed | 单元测试全量通过 |
 | Playwright Mock E2E | 22 passed | 固定 Mock 环境回归通过 |
 | Fake FMG 八步演练 | ALL PASS | 覆盖成功、REJECT、STALL、人工确认等分支 |
+| 工单升级重推入口 | 本地 API 测试通过 | 仅 `it.vpn` + `in_progress` + `ticket:agent` 可创建审批；跨租户返回 `404`，不触发 install |
 
 ---
 
@@ -133,6 +134,11 @@
 - 说明：本期**不接入**真实 VPN 后台，使用 `MockVpnAdapter`（只读 mock），
   与 `docs/product/vpn-v1-scope.md` 第 6 节「不做真实 VPN 自动诊断」一致。
 - 复验项：无（明确不在本期范围，作为后续边界说明）。
+
+### (i) 本地 Fake FMG 与 Windows 演示
+- 入口：在仓库根目录执行 `./scripts/demo.ps1`。它会启动 Compose、等待服务就绪、生成开发令牌并运行 Fake FMG 八步演练；`./scripts/drill-fmg.ps1` 仅运行演练，`./scripts/demo.ps1 -Down` 停止环境。
+- 范围：`tools/fake-fmg/` 内的服务和固定自签名证书只用于协议级本地复现。它们不构成真实 FMG、staging、FortiGate 或生产写入证据，私钥不能用于任何真实环境。
+- 环境条件：首次构建必须能访问 Docker 镜像和 npm 依赖仓库；已完成构建的机器可使用 `-SkipBuild` 复用本地镜像。
 
 ---
 

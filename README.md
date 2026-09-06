@@ -20,11 +20,12 @@
 - install 前必须完成 preview；审批绑定 `diff_hash`，预览结果变化后必须重新审批。
 - FMG task id、提交状态、目标快照、diff 快照与轮询信息落在现有 `vpn_reissue_operations`，数据库迁移版本为 `v25`，不新增平行真相表。
 - install 已发出但 task id 未确认时进入 `submission_unknown`，禁止自动重试；通过 `POST /vpn/reissue/{operation_id}/confirm-submission` 记录人工核对结果，`submitted` 只读查询 task，`not_submitted` 收敛为失败。
-- 已验证：Fake FMG 真 HTTPS/HTTP 往返、成功/超时保留 task id/业务拒绝分支、接口权限与跨租户隔离测试。
+- 已验证：仓库内 Fake FMG 真 HTTPS/HTTP 往返、成功/超时保留 task id/业务拒绝分支、接口权限与跨租户隔离测试。
 - 未验证：真实 FortiManager staging、真实 FortiGate、真实生产写入、trial 许可的固定设备或 ADOM 数量。Fake FMG 证明的是客户端协议与处置逻辑，不证明厂商端实际下发结果。
 - 生产链路不采用 Supervisor 多 Agent；确定性状态机负责审批、状态和副作用边界，Agent 只保留在受理/知识建议等非写入边界。
+- 工单的受控升级入口为 `POST /tickets/{ticket_id}/vpn/redeploy-request`：仅 `it.vpn`、`in_progress` 工单且具备 `ticket:agent` 权限时可创建租户级重推审批。调用方不能指定目标、用户、资产或幂等键；请求仍必须经过 preview、`diff_hash` 审批和对账，不能直接 install。
 
-近期验收演示使用：先启动 `D:\fmg-vm\fake_fmg_server.py`，再运行 `drill_fake_fmg.py`。脚本固定输出 8 步，并以非零退出码表示失败，最后明确演示证据等级。
+Windows 演示只需执行 `./scripts/demo.ps1`：脚本构建并启动 Compose、等待 `/readyz`、生成三类开发令牌，并默认运行八步 Fake FMG 演练。Fake FMG 和仅供演示的自签名证书均在 `tools/fake-fmg/`，不再依赖 `D:\fmg-vm`。仅运行演练可执行 `./scripts/drill-fmg.ps1`；停止环境执行 `./scripts/demo.ps1 -Down`。
 
 版本冻结与验收清单见 [docs/product/vpn-v1-scope.md](docs/product/vpn-v1-scope.md)。冻结后只接受 bug 修复、安全修复和依赖升级；任何业务范围、状态机或外部写入语义变化必须新开版本。
 
@@ -37,13 +38,13 @@
 
 ## 5 分钟跑起来
 
-需要 Docker。**不需要**本机装 Python、Postgres 或 Redis。
+需要 Docker Desktop 和首次构建时可访问镜像/依赖仓库的网络。**不需要**本机装 Python、Postgres 或 Redis；镜像构建完成后可用 `-SkipBuild` 复用本地镜像。
 
-```bash
-docker compose -f infra/compose.demo.yml up --build
+```powershell
+./scripts/demo.ps1
 ```
 
-起 6 个容器（postgres / redis / migrate / seed / agent / web），只暴露 `127.0.0.1:8000`（web/Nginx）。就绪后：
+脚本启动 7 个容器（fake-fmg / postgres / redis / migrate / seed / agent / web），只暴露 `127.0.0.1:8000`（web/Nginx）。若只需工作台、不运行控制面演练，可执行 `./scripts/demo.ps1 -SkipDrill`。就绪后：
 
 ```bash
 docker compose -f infra/compose.demo.yml ps

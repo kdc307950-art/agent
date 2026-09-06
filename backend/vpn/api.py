@@ -179,6 +179,49 @@ def _build_request(payload: ReissueStartPayload, principal: Principal):
     return req
 
 
+async def start_tenant_redeploy_from_ticket(
+    *,
+    request: Request,
+    principal: Principal,
+    ticket_id: str,
+    expected_version: int,
+    reason_codes: list[str],
+) -> dict[str, Any]:
+    """Create a tenant redeploy approval from an already-authorized VPN ticket.
+
+    The caller owns ticket visibility/category/state checks. This helper owns the
+    control-plane contract: no per-user fields, deterministic tenant+ticket
+    idempotency, preflight preview, approval registration, and audit context.
+    """
+    runtime = _runtime(request)
+    raw = {
+        "action": "redeploy_tenant_vpn_config",
+        "ticket_id": ticket_id,
+        "client_version": "tenant-current",
+        "reason_codes": reason_codes,
+    }
+    try:
+        redeploy_request = build_reissue_request_from_payload(
+            raw,
+            tenant_id=principal.tenant_id,
+            expected_version=expected_version,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    context = _run_context(principal, ticket_id=redeploy_request.ticket_id)
+    outcome = await runtime.vpn_reissue.start(
+        request=redeploy_request,
+        runtime=runtime,
+        run_context=context,
+    )
+    if outcome.get("status") == ApprovalStatus.FAILED.value:
+        raise HTTPException(
+            status_code=409,
+            detail={"status": outcome["status"], "fail_reasons": outcome.get("fail_reasons")},
+        )
+    return outcome
+
+
 @router.post("", status_code=201)
 async def start_reissue(
     request: Request,

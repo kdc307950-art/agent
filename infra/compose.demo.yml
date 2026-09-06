@@ -15,6 +15,19 @@ name: langgraph-demo
 #   4. 开发令牌不写入镜像：前端从 sessionStorage 读取用户在页面粘贴的短期令牌。
 
 services:
+  # 仓库内 Fake FMG：仅协议级本地演练，绝不连接真实 FMG 或设备。
+  fake-fmg:
+    build:
+      context: ../tools/fake-fmg
+      dockerfile: Dockerfile
+    environment:
+      FAKE_FMG_TOKEN: fake-token-123
+    healthcheck:
+      test: ["CMD", "python", "-c", "import ssl,urllib.request,sys; c=ssl._create_unverified_context(); sys.exit(0 if urllib.request.urlopen('https://127.0.0.1:8443/health', context=c, timeout=3).status==200 else 1)"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
   postgres:
     image: postgres:17-alpine
     environment:
@@ -82,6 +95,13 @@ services:
       LANGGRAPH_AUTO_SETUP: "false"
       TENANT_TOKEN_SECRET: demo_only_not_a_secret
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-demo-placeholder-key}
+      VPN_COMMAND_GATEWAY_MODE: fortimanager
+      VPN_FMG_BASE_URL: https://fake-fmg:8443
+      VPN_FMG_API_TOKEN: fake-token-123
+      VPN_FMG_VERIFY_TLS: "false"
+      VPN_FMG_POLL_INTERVAL_SECONDS: "0.05"
+      VPN_FMG_MAX_WAIT_SECONDS: "5"
+      VPN_FMG_TENANT_TARGETS_JSON: '{"demo":{"adom":"ADOM_DEMO","device":"FGT-FAKE-001","vdom":"root","package":"PKG_FAKE","install_kind":"package"}}'
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3).status==200 else 1)"]
       interval: 5s
@@ -97,6 +117,8 @@ services:
         condition: service_completed_successfully
       seed:
         condition: service_completed_successfully
+      fake-fmg:
+        condition: service_healthy
 
   # 前端：Nginx 托管静态文件，/api/* 去掉 /api 前缀后代理给 agent。
   # 外部只暴露 127.0.0.1:8000（web），agent 不再对宿主机开端口。

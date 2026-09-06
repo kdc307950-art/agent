@@ -9,6 +9,7 @@ the project root, where ``backend.vpn`` can be imported:
 from __future__ import annotations
 
 import asyncio
+import os
 
 import httpx
 
@@ -18,8 +19,8 @@ from backend.vpn.fortimanager_gateway import (
     FortiManagerTarget,
 )
 
-BASE = "https://127.0.0.1:8443"
-TOKEN = "fake-token-123"
+BASE = os.getenv("FAKE_FMG_BASE_URL", "https://127.0.0.1:8443").rstrip("/")
+TOKEN = os.getenv("FAKE_FMG_TOKEN", "fake-token-123")
 
 
 def make_gw(targets: dict, *, max_wait: float = 1.0) -> FortiManagerCommandGateway:
@@ -47,13 +48,14 @@ async def main() -> None:
         print(f"  [FAIL] Fake FMG unavailable: {exc}")
         raise SystemExit(2) from exc
 
-    print("[STEP 2] status probe: read-only connectivity and version")
+    print("[STEP 2] status and mapping probes: read-only connectivity and tenant targets")
     g0 = make_gw({"tenant-a": FortiManagerTarget(adom="A", device="FGT-FAKE-001",
                                                  vdom="root", install_kind="device")})
     try:
-        res, reqid = await g0._rpc(method="get", url="/sys/status")
-        print(f"  code={res['status']['code']}, data={res['data']}, request_id={reqid}")
-        ok = ok and res["status"]["code"] == 0
+        status = await g0.get_system_status()
+        mapping = await g0.validate_tenant_target(tenant_id="tenant-a")
+        print(f"  status={status}, target_ok={mapping['ok']}")
+        ok = ok and mapping["ok"]
     finally:
         await g0.aclose()
 
@@ -61,7 +63,12 @@ async def main() -> None:
     g1 = make_gw({"tenant-a": FortiManagerTarget(adom="ADOM_OK", device="FGT-FAKE-001",
                                                  vdom="root", package="PKG_FAKE", install_kind="package")})
     try:
-        r1 = await g1.reissue_config(tenant_id="tenant-a", user_id="u", idempotency_key="drill-confirm-1")
+        preview = await g1.preview_tenant_config(tenant_id="tenant-a")
+        r1 = await g1.redeploy_tenant_vpn_config(
+            tenant_id="tenant-a",
+            idempotency_key="drill-confirm-1",
+            approved_diff_hash=preview["diff_hash"],
+        )
         print("  confirmed:", r1.get("confirmed"), "| vendor_task_id:", r1.get("vendor_task_id"),
               "| state:", r1.get("status"))
         ok = ok and (r1.get("confirmed") is True and r1.get("vendor_task_id") is not None)
@@ -72,7 +79,12 @@ async def main() -> None:
     g2 = make_gw({"tenant-b": FortiManagerTarget(adom="STALL", device="FGT-FAKE-001",
                                                  vdom="root", package="PKG_FAKE")}, max_wait=0.05)
     try:
-        r2 = await g2.reissue_config(tenant_id="tenant-b", user_id="u", idempotency_key="drill-timeout-1")
+        preview = await g2.preview_tenant_config(tenant_id="tenant-b")
+        r2 = await g2.redeploy_tenant_vpn_config(
+            tenant_id="tenant-b",
+            idempotency_key="drill-timeout-1",
+            approved_diff_hash=preview.get("diff_hash"),
+        )
         print(
             "  error:",
             r2.get("error_code"),
@@ -92,7 +104,12 @@ async def main() -> None:
     g3 = make_gw({"tenant-c": FortiManagerTarget(adom="REJECT", device="FGT-FAKE-001",
                                                  vdom="root", package="PKG_FAKE")})
     try:
-        r3 = await g3.reissue_config(tenant_id="tenant-c", user_id="u", idempotency_key="drill-reject-1")
+        preview = await g3.preview_tenant_config(tenant_id="tenant-c")
+        r3 = await g3.redeploy_tenant_vpn_config(
+            tenant_id="tenant-c",
+            idempotency_key="drill-reject-1",
+            approved_diff_hash=preview["diff_hash"],
+        )
         print("  error:", r3.get("error_code"), "| reason_present:", bool(r3.get("reason")))
         ok = ok and (r3.get("error_code") == "fortimanager_rejected")
     finally:

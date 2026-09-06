@@ -1,7 +1,7 @@
 # 10 分钟演示脚本：中小企业 IT 服务台闭环
 
-> 适用环境：`infra/compose.demo.yml` 一键启动（migrate → seed → agent → web 自动按依赖顺序执行）；浏览器访问 http://127.0.0.1:8000。
-> 前置：`DEEPSEEK_API_KEY` 已配置（自动分类 / 知识建议依赖模型；不配置时流程可走到派单，知识建议为空并转人工）。
+> 适用环境：Windows 下先执行 `./scripts/demo.ps1`。它会启动 `infra/compose.demo.yml`（fake-fmg → migrate → seed → agent → web 自动按依赖顺序执行）、等待就绪、生成三类开发令牌并运行控制面八步演练；浏览器访问 http://127.0.0.1:8000。
+> 前置：Docker Desktop 已启动，首次构建可访问镜像与 npm 依赖仓库；`DEEPSEEK_API_KEY` 已配置（自动分类 / 知识建议依赖模型；不配置时流程可走到派单，知识建议为空并转人工）。镜像已经构建过时可改用 `./scripts/demo.ps1 -SkipBuild`。
 > 产品边界（目标客户 / VPN 受理与建议闭环（主产品 it.vpn）/ 主链路 / 非目标 / 人工介入规则）见 [docs/product/vpn-v1-scope.md](docs/product/vpn-v1-scope.md)。
 
 ## 演示账号
@@ -17,13 +17,10 @@
 ## 准备（约 2 分钟）
 
 ```powershell
-docker compose -f infra/compose.demo.yml up --build -d
-docker compose -f infra/compose.demo.yml ps
-docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo customer-1 --role helpdesk-customer
-# migrate → seed → agent → web 由 compose 依赖顺序自动完成；seed 幂等，可重复执行
+./scripts/demo.ps1
 ```
 
-预期输出：`✅ 演示种子完成（租户 demo）`，包含 SLA ×4、IT 策略 ×2、团队/成员/排班/路由、知识文档 ×8、资产 ×5。
+预期输出包括 `演示环境已就绪`、员工/坐席/审批令牌以及 Fake FMG 演练的 `ALL PASS`。脚本会等待 `/readyz`，超时会直接失败并提示查看 Compose 日志。若只演示服务台闭环，可使用 `./scripts/demo.ps1 -SkipDrill`；仅重跑控制面演练可使用 `./scripts/drill-fmg.ps1`。
 
 ## 演示流程（约 8 分钟）
 
@@ -46,6 +43,12 @@ docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_
 | 15 | 关闭工单 | 客服切回 agent-1，点「关闭工单」 | 工单 `closed`，闭环完成 |
 | 16 | 收尾检查 | `GET /tickets` 过滤、资产台账查看 laptop-001 的历史工单 | 资产页可看到该资产关联工单；全部操作已写入审计 |
 
+## 控制面关联入口（可选，约 1 分钟）
+
+客服将 VPN 工单推进为 `in_progress` 后，可调用 `POST /tickets/{ticket_id}/vpn/redeploy-request`，请求体仅允许可选的 `reason_codes`。该接口不接收目标设备、用户、资产或调用方幂等键；服务端从工单和租户上下文推导这些值，先生成 preview 和待审批记录，不会直接执行 install。审批、`diff_hash` 校验、异步 task 轮询和人工对账仍使用现有 `/vpn/reissue/*` 链路。
+
+该入口只适用于本租户的 `it.vpn`、`in_progress` 工单，且需要 `ticket:agent`；跨租户工单返回 `404`，其他类别或状态返回 `409`。这条演示证明服务台与控制面之间的受控衔接，不证明真实 FMG 或 FortiGate 已下发。
+
 > 账号/权限、网络问题在 V1 演示中降为**旁路或转人工**，不作为演示主线（见 [docs/product/vpn-v1-scope.md](docs/product/vpn-v1-scope.md)）。
 
 ## 验收检查点
@@ -60,5 +63,5 @@ docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_
 ## 清理
 
 ```powershell
-docker compose -f infra/compose.demo.yml down -v
+./scripts/demo.ps1 -Down
 ```

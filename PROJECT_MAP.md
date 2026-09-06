@@ -1,7 +1,7 @@
 # LangGraph Agent 项目地图（PROJECT_MAP）
 
 > 用途：新人上手 / 隔段时间回顾，看这一个文件就能建立全局认识。
-> 更新时间：2026-09-05。维护基线：`vpn-control-v1.0`。主叙事为企业 VPN 配置变更安全执行与对账；产品定位以根目录 `README.md` 为准。
+> 更新时间：2026-09-07。维护基线：`vpn-control-v1.0`。主叙事为企业 VPN 配置变更安全执行与对账；产品定位以根目录 `README.md` 为准。
 
 ## 项目定位
 
@@ -39,7 +39,7 @@ src/my_agent/                ★ Agent 核心包
 
 backend/                     生产化 API 层
 ├── app.py                   ★ FastAPI 网关 + SSE；挂载 tickets/admin/copilot/knowledge/assets 路由
-├── ticket_api.py            工单 API（建单/受理/流转/回访/overview/pending-interrupt）
+├── ticket_api.py            工单 API（建单/受理/流转/回访/overview/pending-interrupt/受控重推审批入口）
 ├── settings.py              环境变量集中读取 + 校验（生产强约束）
 ├── security.py              鉴权（dev token / OIDC）、限流、CORS
 ├── runtime.py               ★ 运行时装配：Postgres checkpointer/store + Redis + 治理 + 各仓储
@@ -76,7 +76,7 @@ backend/                     生产化 API 层
 │   ├── repository.py                                    PostgreSQL 持久化仓储（租户隔离 + 幂等 upsert）
 │   ├── closed_loop.py                                 处置闭环编排（状态机联动 + repository 存在时落库镜像）
 │   ├── api.py / api_v2.py                             诊断 REST 接口
-│   ├── approval.py / reissue_service.py              审批式配置重下发（approve/reject 幂等、可恢复 + 补偿对账）
+│   ├── approval.py / reissue_service.py              审批式配置重下发（preview/diff_hash、approve/reject 幂等、可恢复 + 补偿对账）
 │   └── runtime_view.py                                运行时视图
 └── copilot/                 ★ Resolution Copilot（解决阶段只读 Agent）
     ├── agent.py              有界工具循环（最大轮次/工具数/超时硬限制）
@@ -94,6 +94,9 @@ legacy-demo/                早期通用聊天/天气/计算 Demo（统一标记
 workflows/                  legacy JSON 工作流定义（如 legacy-demo.json）
 tests/                      测试（单元 + 集成 + e2e）
 infra/                      Docker Compose（demo/dev/test）、k8s、gateway、可观测性栈
+tools/fake-fmg/             仓库内 HTTPS Fake FMG 与公开演示证书（仅协议级本地夹具）
+scripts/demo.ps1            Windows 一键启动、就绪检查、开发令牌和 Fake FMG 演练
+scripts/drill-fmg.ps1       仅运行 Fake FMG 八步演练
 ```
 
 ## 建议熟悉顺序
@@ -113,6 +116,9 @@ infra/                      Docker Compose（demo/dev/test）、k8s、gateway、
 ## 运行命令
 
 ```bash
+# Windows 面试演示：构建、启动、健康检查、开发令牌与 Fake FMG 演练
+./scripts/demo.ps1
+
 # 依赖栈（Postgres/Redis/OTel）并初始化 schema
 docker compose -f infra/compose.dev.yml up -d
 uv run python -m backend.migrations
@@ -158,3 +164,6 @@ uv run python legacy-demo/main_workflow.py legacy-demo/workflows/legacy-demo.jso
 - **Agent / Worker / 确定性流程边界**：生产不是多智能体编排——两个独立专用 Agent
   （受理图 + Resolution Copilot）、大量异步 Worker、受理/派单为确定性流程。详细边界表见
   `README.md`「Agent / Worker / 确定性流程」边界。
+- **工单到控制面入口**：`POST /tickets/{ticket_id}/vpn/redeploy-request` 只接受已进入
+  `in_progress` 的 `it.vpn` 工单；服务端派生租户目标与幂等键，随后仍走 preview、审批和对账，
+  不提供直接 install 入口。

@@ -1,6 +1,6 @@
 # VPN 控制面演示说明
 
-> 冻结基线：`vpn-control-v1.0` · 2026-09-05
+> 冻结基线：`vpn-control-v1.0` · 文档更新：2026-09-07
 
 ## 一句话介绍
 
@@ -9,13 +9,14 @@
 ## 8 分钟演示
 
 1. 展示架构：Web/API → 状态与审批服务 → PostgreSQL → Reconciliation Worker → FMG Gateway。
-2. 启动 `D:\fmg-vm\fake_fmg_server.py`，运行仓库根目录 `drill_fake_fmg.py`。
+2. 在仓库根目录执行 `./scripts/demo.ps1`；它会构建并启动本地 Compose 环境、等待 `/readyz`、生成开发令牌，并默认运行八步 Fake FMG 演练。
 3. 说明 `/sys/status` 是只读探针，install 前必须先 preview。
 4. 展示成功任务：install 返回 task id，worker 轮询至 completed。
 5. 展示超时任务：保留 task id，状态进入未知/待对账，不自动重发。
 6. 展示业务拒绝：FMG 错误映射为可审计失败。
 7. 展示 `confirm-submission`：人工确认 `submitted` 时只读查询旧 task，`not_submitted` 收敛为失败。
-8. 展示跨租户请求返回 `403`，最后说明 Fake FMG 只证明客户端协议和失败处置，真实 FMG、FortiGate 和生产写入仍未验证。
+8. 展示工单升级入口 `POST /tickets/{ticket_id}/vpn/redeploy-request`：仅处理中的 `it.vpn` 工单可创建审批，仍先 preview、再审批、最后对账；跨租户工单对调用方隐藏为 `404`。
+9. 最后说明 Fake FMG 只证明客户端协议和失败处置，真实 FMG、FortiGate 和生产写入仍未验证。
 
 ## 设计重点
 
@@ -35,7 +36,9 @@ FMG 没有本地请求级幂等键，因此不能宣称绝对 exactly-once。系
 
 ## 证据入口
 
-- 演练脚本：`drill_fake_fmg.py`
+- 一键启动与演练：`scripts/demo.ps1`
+- 仅运行演练：`scripts/drill-fmg.ps1`（容器内执行 `drill_fake_fmg.py`）
+- 本地夹具与演示证书：`tools/fake-fmg/`。其中私钥是固定公开的演示材料，只能用于该离线演练。
 - 产品边界：`docs/product/vpn-v1-scope.md`
-- 协议事实：桌面文件 `Fortinet-FortiManager控制面写入协议.md`
+- 协议事实：外部实施资料《Fortinet-FortiManager控制面写入协议》（未纳入仓库）；真实接入前仍须以目标版本的厂商文档和 staging 实测为准。
 - 状态与测试：`docs/evaluation/vpn-acceptance-checklist.md`

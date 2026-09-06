@@ -48,6 +48,7 @@ COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --chown=app:app backend/ ./backend/
 COPY --chown=app:app src/ ./src/
 COPY --chown=app:app legacy-demo/ ./legacy-demo/
+COPY --chown=app:app drill_fake_fmg.py ./
 COPY --chown=app:app pyproject.toml ./
 
 USER app

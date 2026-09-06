@@ -138,6 +138,9 @@ Web 建单 → 受理图分类 it.vpn + vpn_fault → 8 项必填字段追问（
 ```
 
 - 新业务语义为 `redeploy_tenant_vpn_config`；不宣称单员工重签。
+- 工单升级入口为 `POST /tickets/{ticket_id}/vpn/redeploy-request`：只允许具有 `ticket:agent`
+  权限的处理人，从本租户 `it.vpn` 且 `in_progress` 的工单创建审批。目标、用户、资产和
+  幂等键均不接受调用方覆盖，入口不能绕过 preview、审批或对账。
 - 现有 `vpn_reissue_operations` 扩展至 schema `v25`，记录 vendor task、提交状态、目标/差异快照和轮询信息。
 - `confirm-submission` 只接受人工确认事实：`submitted` 必须带正整数 task id，随后只读对账；`not_submitted` 不允许带 task id，并收敛为失败。
 - `submission_unknown` 代表副作用可能已经发生但本地未取得 task id，禁止自动重试。
@@ -150,4 +153,4 @@ Web 建单 → 受理图分类 it.vpn + vpn_fault → 8 项必填字段追问（
 - trial 许可的设备数与 ADOM 数量必须以激活后 `License Information` widget 的实际显示为准，不写固定“3 设备/3 ADOM”。
 - Fake FMG 仅是协议与失败处置演练，不等同真实生产接入证明。
 
-验收演示入口是仓库根目录 `drill_fake_fmg.py`，固定 8 步并在失败时返回非零退出码；生产写入默认关闭，真实 staging 到位后仍需按审批、preview、对账和 canary 清单逐步放量。
+验收演示入口是 `scripts/demo.ps1`：它负责 Compose 启动、健康检查、开发令牌生成和八步演练；仅运行演练可用 `scripts/drill-fmg.ps1`。Fake FMG 与固定自签名演示证书位于 `tools/fake-fmg/`，不依赖机器外的 `D:\fmg-vm`。生产写入默认关闭，真实 staging 到位后仍需按审批、preview、对账和 canary 清单逐步放量。

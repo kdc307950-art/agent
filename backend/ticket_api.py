@@ -67,6 +67,7 @@ from .tickets import (
     TicketVersionConflict,
     UpsertItPolicy,
 )
+from .vpn.api import start_tenant_redeploy_from_ticket
 
 # 三个路由分组：工单主路由 / 渠道集成 / 管理端 IT 策略
 router = APIRouter(prefix="/tickets", tags=["tickets"])
@@ -82,6 +83,14 @@ class BindAssetRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     asset_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+
+
+class VpnRedeployFromTicketRequest(BaseModel):
+    """坐席基于已诊断的 VPN 工单发起租户级配置重推审批。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason_codes: list[str] = Field(default_factory=list, max_length=32)
 
 
 class CreateTicketRequest(BaseModel):
@@ -416,6 +425,38 @@ async def get_ticket(
     if "ticket:agent" not in principal.scopes and ticket.requester_id != principal.user_id:
         raise HTTPException(status_code=404, detail="工单不存在")
     return ticket
+
+
+@router.post("/{ticket_id}/vpn/redeploy-request", status_code=status.HTTP_201_CREATED)
+async def request_vpn_tenant_redeploy(
+    ticket_id: str,
+    payload: VpnRedeployFromTicketRequest,
+    request: Request,
+    principal: Principal = Depends(rate_limit_dependency),
+):
+    """将处理中的 ``it.vpn`` 工单接入审批式租户配置重推。
+
+    此入口只创建 preview + 审批申请，绝不直接提交 FMG install。幂等键固定为
+    ``redeploy:{tenant_id}:{ticket_id}``，调用方不能注入或复用其他工单的键。
+    """
+    _require_scope(principal, "ticket:agent")
+    runtime = _runtime(request)
+    if getattr(runtime, "vpn_reissue", None) is None:
+        raise HTTPException(status_code=503, detail="VPN 重新下发服务尚未初始化")
+    ticket = await runtime.tickets.get(principal.tenant_id, ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    if ticket.category != "it.vpn":
+        raise HTTPException(status_code=409, detail="仅 it.vpn 工单可发起 VPN 配置重推")
+    if ticket.status != TicketStatus.IN_PROGRESS:
+        raise HTTPException(status_code=409, detail="仅处理中工单可发起 VPN 配置重推")
+    return await start_tenant_redeploy_from_ticket(
+        request=request,
+        principal=principal,
+        ticket_id=ticket_id,
+        expected_version=ticket.version,
+        reason_codes=payload.reason_codes,
+    )
 
 
 @router.get("/{ticket_id}/overview")
