@@ -106,7 +106,7 @@ async def main() -> None:
     if ok:
         print("  ALL PASS: Fake FMG real HTTP drill verified; real FMG and production writes remain unverified.")
     else:
-        print("  HAS FAILURE: drill failed; do not use it as interview evidence.")
+        print("  HAS FAILURE: drill failed; do not use it as project evidence.")
         raise SystemExit(1)
 
 

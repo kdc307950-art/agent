@@ -1,4 +1,4 @@
-# VPN 控制面面试演示说明
+# VPN 控制面演示说明
 
 > 冻结基线：`vpn-control-v1.0` · 2026-09-05
 
@@ -17,7 +17,7 @@
 7. 展示 `confirm-submission`：人工确认 `submitted` 时只读查询旧 task，`not_submitted` 收敛为失败。
 8. 展示跨租户请求返回 `403`，最后说明 Fake FMG 只证明客户端协议和失败处置，真实 FMG、FortiGate 和生产写入仍未验证。
 
-## 面试重点
+## 设计重点
 
 ### 为什么不用 Supervisor 多 Agent 做生产写入
 

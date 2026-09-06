@@ -1,4 +1,4 @@
-# 面试演示脚本（10 分钟固定版）
+# 项目演示脚本（10 分钟固定版）
 
 > 定位：面向中小企业 IT 服务台的 VPN 受理与建议闭环系统骨架，重点展示
 > **确定性工作流、异步可靠处理、知识检索、安全隔离、故障恢复设计**。
@@ -32,7 +32,7 @@
    身份缺失闭锁）、`run_copilot_worker.py` 独立进程入口。
 5. **企微自动化验收**：`tests/test_wecom_resume_postgres.py` / `test_channel_adapters.py`
    （验签/解密/幂等/Resume 的自动化用例，非真实沙箱）。
-6. **关键 commit SHA**：`git log --oneline -8`（身份快照 / 检索接线 / worker 租约与死信 / 前端徽标 / 面试材料五个提交）。
+6. **关键 commit SHA**：`git log --oneline -8`（身份快照 / 检索接线 / worker 租约与死信 / 前端徽标 / 项目材料五个提交）。
 7. **/metrics 与 /readyz 示例**：worker 心跳 ok、outbox 门禁、`worker_loop_errors_total`、
    `copilot_runs_total` / `copilot_tool_calls_total`。
 

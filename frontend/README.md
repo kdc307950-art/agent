@@ -60,7 +60,7 @@ npm run test:e2e     # Playwright E2E（chromium + mobile-chromium）
 - 知识库/资产/策略页面为列表级能力（搜索/筛选/分页），文档 embedding 状态、
   工单关联关系等增强属后续迭代。
 
-## 面试演示步骤（10 分钟内）
+## 本地演示步骤（10 分钟内）
 
 1. `npm run dev` + 后端（PostgreSQL/Redis + `uvicorn backend.app:app`）。
 2. 打开 `/tickets`：演示列表搜索、打开工单、状态流转（接单 → 处理 → 解决）。

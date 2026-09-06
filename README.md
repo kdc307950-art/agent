@@ -2,7 +2,7 @@
 
 > **冻结版本：`vpn-control-v1.0` · 2026-09-05**
 
-本项目的面试主线是企业 VPN 配置变更控制，不是通用客服 Demo：通过租户级目标校验、配置 preview、差异哈希审批、FortiManager 异步任务和人工对账，控制 VPN 配置变更的副作用边界。IT 服务台是业务入口，通用聊天和 Supervisor 仅保留为历史示例。
+本项目的核心主线是企业 VPN 配置变更控制，不是通用客服 Demo：通过租户级目标校验、配置 preview、差异哈希审批、FortiManager 异步任务和人工对账，控制 VPN 配置变更的副作用边界。IT 服务台是业务入口，通用聊天和 Supervisor 仅保留为历史示例。
 
 [![CI](https://github.com/kdc307950-art/agent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kdc307950-art/agent/actions/workflows/ci.yml)
 
@@ -24,9 +24,9 @@
 - 未验证：真实 FortiManager staging、真实 FortiGate、真实生产写入、trial 许可的固定设备或 ADOM 数量。Fake FMG 证明的是客户端协议与处置逻辑，不证明厂商端实际下发结果。
 - 生产链路不采用 Supervisor 多 Agent；确定性状态机负责审批、状态和副作用边界，Agent 只保留在受理/知识建议等非写入边界。
 
-近期面试演示使用：先启动 `D:\fmg-vm\fake_fmg_server.py`，再运行 `drill_fake_fmg.py`。脚本固定输出 8 步，并以非零退出码表示失败，最后明确演示证据等级。
+近期验收演示使用：先启动 `D:\fmg-vm\fake_fmg_server.py`，再运行 `drill_fake_fmg.py`。脚本固定输出 8 步，并以非零退出码表示失败，最后明确演示证据等级。
 
-面试包装与冻结清单见 [docs/interview/vpn-control-demo.md](docs/interview/vpn-control-demo.md)。冻结后只接受 bug 修复、安全修复和依赖升级；任何业务范围、状态机或外部写入语义变化必须新开版本。
+版本冻结与验收清单见 [docs/product/vpn-v1-scope.md](docs/product/vpn-v1-scope.md)。冻结后只接受 bug 修复、安全修复和依赖升级；任何业务范围、状态机或外部写入语义变化必须新开版本。
 
 **三档验证口径（请勿混淆）**：
 1. **本地演示**：`docker compose -f infra/compose.demo.yml up --build -d` → 浏览器访问 `http://127.0.0.1:8000` → 页面粘贴 `docker compose exec agent ... issue_dev_token` 输出；只验证“能跑通闭环”，不产生评测数字。

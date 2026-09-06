@@ -17,7 +17,7 @@
   递增版本号并记录理由（治理要求，见「失败处理」）。
 - 生产默认继续使用 **lexical-only**（`KNOWLEDGE_EMBEDDING_ENDPOINT` 未配置）。
 - 工作区存在 3 个未提交的措辞一致性修正（"独立门禁"→"冻结门禁集"，
-  涉及 `backend/run_knowledge_eval.py` / `docs/interview/demo-script.md` /
+  涉及 `backend/run_knowledge_eval.py` / `docs/project-guide/demo-script.md` /
   `artifacts/final-regression-20260829.txt`）——**保留，不提交**（决策记录：
   用户 2026-08-30 指令）。
 
@@ -230,9 +230,9 @@ git diff --check
 
 **如果真实 hybrid 评测通过：**
 
-- `docs/interview/known-limitations.md` 第 17 条：补充实际运行日期、workflow run
+- `docs/project-guide/known-limitations.md` 第 17 条：补充实际运行日期、workflow run
   与真实指标
-- `docs/interview/knowledge-evaluation.md`：补充真实 hybrid 数字（与 lexical-only
+- `docs/project-guide/knowledge-evaluation.md`：补充真实 hybrid 数字（与 lexical-only
   分开记录）
 - `artifacts/final-regression-20260829.txt`：增加 JSON 报告位置
 - **保留**"演示集结果不代表生产效果"的限制

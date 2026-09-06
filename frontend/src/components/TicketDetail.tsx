@@ -57,7 +57,7 @@ const actionByStatus: Partial<Record<TicketStatus, TransitionAction>> = {
   resolved: { action: 'close', actor_type: 'agent', label: '关闭工单' },
 }
 
-// 人工接管/门禁原因码 → 人类可读文案（V1 只让非技术面试官看懂）
+// 人工接管/门禁原因码 → 人类可读文案（V1 面向非技术使用者）
 const handoffReasonLabels: Record<string, string> = {
   out_of_scope_manual_review: '非 IT 范围，转人工队列',
   unknown_category: '无法识别分类',
