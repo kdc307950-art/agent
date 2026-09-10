@@ -105,32 +105,23 @@ def test_classify_vpn_fault(text, expected):
 def test_boundary_vpn_decisions():
     # 字段齐 + 无风险 + 有依据 -> auto_suggest
     assert (
-        boundary_vpn(VPN_FAULT_CONNECTION_FAILED, True, False, False, True)
-        == BOUNDARY_AUTO_SUGGEST
+        boundary_vpn(VPN_FAULT_CONNECTION_FAILED, True, False, False, True) == BOUNDARY_AUTO_SUGGEST
     )
     # auth_failed 高风险必须人工升级
-    assert (
-        boundary_vpn(VPN_FAULT_AUTH_FAILED, True, False, False, True)
-        == BOUNDARY_MUST_ESCALATE
-    )
+    assert boundary_vpn(VPN_FAULT_AUTH_FAILED, True, False, False, True) == BOUNDARY_MUST_ESCALATE
     # multi_user_impact 群体故障必须人工升级
     assert (
         boundary_vpn(VPN_FAULT_MULTI_USER_IMPACT, True, False, False, True)
         == BOUNDARY_MUST_ESCALATE
     )
     # 字段不全 -> 先追问
-    assert (
-        boundary_vpn(VPN_FAULT_CONNECTION_FAILED, False, False, False, True)
-        == BOUNDARY_MUST_ASK
-    )
+    assert boundary_vpn(VPN_FAULT_CONNECTION_FAILED, False, False, False, True) == BOUNDARY_MUST_ASK
     # 命中敏感词/高影响词 -> 升级
     assert (
-        boundary_vpn(VPN_FAULT_CONNECTION_FAILED, True, True, False, True)
-        == BOUNDARY_MUST_ESCALATE
+        boundary_vpn(VPN_FAULT_CONNECTION_FAILED, True, True, False, True) == BOUNDARY_MUST_ESCALATE
     )
     assert (
-        boundary_vpn(VPN_FAULT_CONNECTION_FAILED, True, False, True, True)
-        == BOUNDARY_MUST_ESCALATE
+        boundary_vpn(VPN_FAULT_CONNECTION_FAILED, True, False, True, True) == BOUNDARY_MUST_ESCALATE
     )
     # 无知识依据 -> 升级（无证据不自动建议）
     assert (
@@ -138,7 +129,4 @@ def test_boundary_vpn_decisions():
         == BOUNDARY_MUST_ESCALATE
     )
     # 字段不全时 auth_failed 也先追问（决策函数顺序：字段 > 认证）
-    assert (
-        boundary_vpn(VPN_FAULT_AUTH_FAILED, False, False, False, True)
-        == BOUNDARY_MUST_ASK
-    )
+    assert boundary_vpn(VPN_FAULT_AUTH_FAILED, False, False, False, True) == BOUNDARY_MUST_ASK

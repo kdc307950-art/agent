@@ -71,7 +71,13 @@ async def search_vpn_knowledge(
     if adapter is None:
         return _json({"content": "错误：VPN 数据源未配置", "evidence": []})
     result = await adapter.search_knowledge(query, limit=limit)
-    return _json({"content": result.get("content", ""), "evidence": result.get("evidence", []), "found": result.get("found", False)})
+    return _json(
+        {
+            "content": result.get("content", ""),
+            "evidence": result.get("evidence", []),
+            "found": result.get("found", False),
+        }
+    )
 
 
 @tool
@@ -172,12 +178,14 @@ async def get_recent_similar_tickets(
     if adapter is None:
         return _json({"content": "错误：VPN 数据源未配置"})
     result = await adapter.get_similar_tickets(user_id, fault=fault)
-    return _json({
-        "content": result.get("content", ""),
-        "found": result.get("found", False),
-        "tickets": result.get("tickets", []),
-        "fault": fault,
-    })
+    return _json(
+        {
+            "content": result.get("content", ""),
+            "found": result.get("found", False),
+            "tickets": result.get("tickets", []),
+            "fault": fault,
+        }
+    )
 
 
 @tool
@@ -223,11 +231,13 @@ async def get_client_config_version(
     if adapter is None:
         return _json({"content": "错误：VPN 数据源未配置"})
     result = await adapter.get_client_config_version(user_id)
-    return _json({
-        "content": result.get("content", ""),
-        "found": result.get("found", False),
-        "version": result.get("version"),
-    })
+    return _json(
+        {
+            "content": result.get("content", ""),
+            "found": result.get("found", False),
+            "version": result.get("version"),
+        }
+    )
 
 
 @tool
@@ -275,9 +285,7 @@ async def reissue_vpn_config(
         idempotency_key=key,
         expected_version=0,
     )
-    result = await execute_approved_reissue(
-        request=request, runtime=runtime, run_context=context
-    )
+    result = await execute_approved_reissue(request=request, runtime=runtime, run_context=context)
     return _json(result.model_dump(mode="json"))
 
 

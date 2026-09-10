@@ -38,7 +38,9 @@ class _Tickets:
         self.transition_calls.append(command.action)
         self.status = transition_ticket(self.status, command, scopes=set(scopes or ()))
         self.version += 1
-        return SimpleNamespace(status=self.status, version=self.version, ticket_id=command.ticket_id)
+        return SimpleNamespace(
+            status=self.status, version=self.version, ticket_id=command.ticket_id
+        )
 
     async def start_workflow_operation(self, **kwargs):
         self.workflow_status[kwargs["operation_id"]] = "started"
@@ -137,9 +139,12 @@ def test_tenant_preview_noop_does_not_create_approval_or_install():
 
     assert result["status"] == "noop"
     assert result["approval_required"] is False
-    assert asyncio.run(
-        service.store.get_operation(tenant_id="tenant-a", operation_id="redeploy:tenant-a:t-1")
-    ) is None
+    assert (
+        asyncio.run(
+            service.store.get_operation(tenant_id="tenant-a", operation_id="redeploy:tenant-a:t-1")
+        )
+        is None
+    )
     assert gateway.redeploy_calls == []
 
 
@@ -249,9 +254,7 @@ def test_submission_unknown_is_reconcilable_but_not_a_retryable_failure():
     assert result.status == ApprovalStatus.EXECUTION_UNKNOWN
     assert result.error_code == "submission_unknown"
     op = asyncio.run(
-        service.store.get_operation(
-            tenant_id="tenant-a", operation_id=request.idempotency_key
-        )
+        service.store.get_operation(tenant_id="tenant-a", operation_id=request.idempotency_key)
     )
     assert op.status == ApprovalStatus.EXECUTION_UNKNOWN
     assert len(gateway.redeploy_calls) == 1

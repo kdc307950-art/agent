@@ -116,7 +116,9 @@ class InMemoryReissueOutbox:
             "tenant_id": tenant_id,
             "operation_id": operation_id,
             "event_id": key,  # 内存版：event_id 与幂等键一致即稳定可读
-            "event_type": event_type.value if isinstance(event_type, ReissueEventType) else event_type,
+            "event_type": (
+                event_type.value if isinstance(event_type, ReissueEventType) else event_type
+            ),
             "aggregate_type": AGGREGATE_TYPE,
             "aggregate_id": operation_id,
             "idempotency_key": key,
@@ -132,11 +134,7 @@ class InMemoryReissueOutbox:
         if not operation_id:
             return []
         prefix = f"{operation_id}:"
-        return [
-            e["event_type"]
-            for k, e in self.events.items()
-            if k.startswith(prefix)
-        ]
+        return [e["event_type"] for k, e in self.events.items() if k.startswith(prefix)]
 
 
 class PostgresReissueOutbox:

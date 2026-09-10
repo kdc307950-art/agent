@@ -25,7 +25,7 @@
 - 生产链路不采用 Supervisor 多 Agent；确定性状态机负责审批、状态和副作用边界，Agent 只保留在受理/知识建议等非写入边界。
 - 工单的受控升级入口为 `POST /tickets/{ticket_id}/vpn/redeploy-request`：仅 `it.vpn`、`in_progress` 工单且具备 `ticket:agent` 权限时可创建租户级重推审批。调用方不能指定目标、用户、资产或幂等键；请求仍必须经过 preview、`diff_hash` 审批和对账，不能直接 install。
 
-Windows 演示只需执行 `./scripts/demo.ps1`：脚本构建并启动 Compose、等待 `/readyz`、生成三类开发令牌，并默认运行八步 Fake FMG 演练。Fake FMG 和仅供演示的自签名证书均在 `tools/fake-fmg/`，不再依赖 `D:\fmg-vm`。仅运行演练可执行 `./scripts/drill-fmg.ps1`；停止环境执行 `./scripts/demo.ps1 -Down`。
+Windows 演示只需执行 `./scripts/demo.ps1`：脚本构建并启动 Compose、通过前端代理等待 `/api/readyz`、生成三类开发令牌，并默认运行八步 Fake FMG 演练。Fake FMG 和仅供演示的自签名证书均在 `tools/fake-fmg/`，不再依赖 `D:\fmg-vm`。仅运行演练可执行 `./scripts/drill-fmg.ps1`；停止环境执行 `./scripts/demo.ps1 -Down`。脚本默认清空 Docker 配置中可能残留的本地 SOCKS 代理，并优先复用本机已缓存的 uv、Node.js 和 Nginx 镜像；企业代理可通过 `DEMO_HTTP_PROXY`、`DEMO_HTTPS_PROXY`、`DEMO_ALL_PROXY` 传入。
 
 版本冻结与验收清单见 [docs/product/vpn-v1-scope.md](docs/product/vpn-v1-scope.md)。冻结后只接受 bug 修复、安全修复和依赖升级；任何业务范围、状态机或外部写入语义变化必须新开版本。
 

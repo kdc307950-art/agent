@@ -202,6 +202,7 @@ def _case(
 
 # ---- S1 单用户连接失败（7 条）----
 
+
 def _scenario_connection_failed() -> list[VpnEvalCaseV2]:
     return [
         _case(
@@ -275,6 +276,7 @@ def _scenario_connection_failed() -> list[VpnEvalCaseV2]:
 
 # ---- S2 多用户同时失败（7 条）----
 
+
 def _scenario_multi_user() -> list[VpnEvalCaseV2]:
     return [
         _case(
@@ -337,7 +339,9 @@ def _scenario_multi_user() -> list[VpnEvalCaseV2]:
             scenario=SCENARIO_MULTI_USER,
             text="整个部门 VPN 都连不上",
             vpn_fault=_MU,
-            provided_fields=_missing(_fields(multi_user_impacted="是"), ("operating_system", "client_version")),
+            provided_fields=_missing(
+                _fields(multi_user_impacted="是"), ("operating_system", "client_version")
+            ),
             boundary=BOUNDARY_MUST_ASK,
             network_type="办公网",
             risk_level="high",
@@ -347,6 +351,7 @@ def _scenario_multi_user() -> list[VpnEvalCaseV2]:
 
 
 # ---- S3 769/809 错误码（7 条）----
+
 
 def _scenario_error_code() -> list[VpnEvalCaseV2]:
     return [
@@ -420,6 +425,7 @@ def _scenario_error_code() -> list[VpnEvalCaseV2]:
 
 # ---- S4 客户端版本过旧（7 条）----
 
+
 def _scenario_client_version() -> list[VpnEvalCaseV2]:
     return [
         _case(
@@ -453,7 +459,9 @@ def _scenario_client_version() -> list[VpnEvalCaseV2]:
             scenario=SCENARIO_CLIENT_VERSION,
             text="VPN 版本太旧",
             vpn_fault=_CF,
-            provided_fields=_missing(_fields(client_version="2.9.0"), ("device", "operating_system")),
+            provided_fields=_missing(
+                _fields(client_version="2.9.0"), ("device", "operating_system")
+            ),
             boundary=BOUNDARY_MUST_ASK,
             client_version="2.9.0",
             fault_hypothesis="版本过旧但字段不全，先追问补全",
@@ -491,6 +499,7 @@ def _scenario_client_version() -> list[VpnEvalCaseV2]:
 
 
 # ---- S5 家庭网络 vs 手机热点对比（7 条）----
+
 
 def _scenario_network_compare() -> list[VpnEvalCaseV2]:
     return [
@@ -543,7 +552,9 @@ def _scenario_network_compare() -> list[VpnEvalCaseV2]:
             scenario=SCENARIO_NETWORK_COMPARE,
             text="手机热点下 VPN 连接失败",
             vpn_fault=_CF,
-            provided_fields=_missing(_fields(network="手机热点 (4G/5G)"), ("vpn_client", "client_version")),
+            provided_fields=_missing(
+                _fields(network="手机热点 (4G/5G)"), ("vpn_client", "client_version")
+            ),
             boundary=BOUNDARY_MUST_ASK,
             network_type="手机热点 (4G/5G)",
             fault_hypothesis="移动网络差异诊断但字段不全，先追问补全",
@@ -567,6 +578,7 @@ def _scenario_network_compare() -> list[VpnEvalCaseV2]:
 #     vpn（子分类优先级 vpn 先于 account），因此这类样本的预期分类 it.account 是
 #     「期望行为」而非当前关键词分类器的可达结果；run_vpn_eval 会把它标为
 #     category_mismatch，由后续 metrics/integration 增强分诊逻辑闭合。
+
 
 def _scenario_account_lock() -> list[VpnEvalCaseV2]:
     return [
@@ -667,6 +679,7 @@ def _scenario_account_lock() -> list[VpnEvalCaseV2]:
 # ---- S7 无知识答案（7 条）----
 # expected_document_ids=() 且字段齐、must_escalate。
 
+
 def _scenario_no_knowledge() -> list[VpnEvalCaseV2]:
     return [
         _case(
@@ -748,6 +761,7 @@ def _scenario_no_knowledge() -> list[VpnEvalCaseV2]:
 
 # ---- S8 高风险请求（7 条）----
 # 含高影响/敏感词，must_escalate，is_negative=True。
+
 
 def _scenario_high_risk() -> list[VpnEvalCaseV2]:
     return [
@@ -834,6 +848,7 @@ def _scenario_high_risk() -> list[VpnEvalCaseV2]:
 # ---- S9 ACL 越权测试（7 条）----
 # 跨租户/越权文本与字段（departments 越界、internal=False、resource 超 ACL），
 # must_escalate，is_negative=True。
+
 
 def _scenario_acl() -> list[VpnEvalCaseV2]:
     return [

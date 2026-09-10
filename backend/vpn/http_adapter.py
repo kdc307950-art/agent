@@ -252,7 +252,9 @@ class HttpReadonlyVpnAdapter(VpnAdapter):
 
     # ---- 内部：统一的 HTTP GET + 解析 ----
 
-    async def _get(self, method: str, *, external_request_id: str | None = None, **kwargs: Any) -> dict[str, Any]:
+    async def _get(
+        self, method: str, *, external_request_id: str | None = None, **kwargs: Any
+    ) -> dict[str, Any]:
         request_id = external_request_id or self._new_request_id()
         url, params = self._build_url(method, **kwargs)
         headers = self._headers(request_id)
@@ -268,13 +270,22 @@ class HttpReadonlyVpnAdapter(VpnAdapter):
         self._last_vendor_trace = resp.headers.get("X-Trace-Id")
         # 4xx/5xx：不抛异常，返回结构化错误 dict。
         if resp.status_code >= 400:
-            return self._error(request_id, "http_error", f"HTTP {resp.status_code}", reason_from_status(resp.status_code))
+            return self._error(
+                request_id,
+                "http_error",
+                f"HTTP {resp.status_code}",
+                reason_from_status(resp.status_code),
+            )
         try:
             data = resp.json()
         except ValueError:
-            return self._error(request_id, "invalid_response", "厂商返回非 JSON", reason="响应体不是有效 JSON")
+            return self._error(
+                request_id, "invalid_response", "厂商返回非 JSON", reason="响应体不是有效 JSON"
+            )
         if not isinstance(data, dict):
-            return self._error(request_id, "invalid_response", "厂商返回非对象", reason="响应体不是 JSON 对象")
+            return self._error(
+                request_id, "invalid_response", "厂商返回非对象", reason="响应体不是 JSON 对象"
+            )
         result = self._parse(method, data, **kwargs)
         return self._add_trace(result, request_id)
 
@@ -322,17 +333,25 @@ class HttpReadonlyVpnAdapter(VpnAdapter):
             return self._not_found(data, f"未找到用户 {user_id} 的 VPN 账号记录", user_id=user_id)
         record = dict(data)
         record.setdefault("user_id", user_id)
-        record.setdefault("content", f"账号 {user_id} 状态={data.get('status', 'unknown')}, "
-                                    f"过期={data.get('expires_at', '未知')}, 角色={data.get('role', '未知')}")
+        record.setdefault(
+            "content",
+            f"账号 {user_id} 状态={data.get('status', 'unknown')}, "
+            f"过期={data.get('expires_at', '未知')}, 角色={data.get('role', '未知')}",
+        )
         return record
 
-    def _parse_get_client_config_version(self, data: dict[str, Any], user_id: str) -> dict[str, Any]:
+    def _parse_get_client_config_version(
+        self, data: dict[str, Any], user_id: str
+    ) -> dict[str, Any]:
         if not self._found(data, keys=("version",)):
             return self._not_found(data, f"未找到用户 {user_id} 的客户端配置版本", user_id=user_id)
         record = dict(data)
         record.setdefault("user_id", user_id)
-        record.setdefault("content", f"客户端配置版本 user={user_id} version={data.get('version', '未知')} "
-                                    f"生成于 {data.get('generated_at', '未知')}")
+        record.setdefault(
+            "content",
+            f"客户端配置版本 user={user_id} version={data.get('version', '未知')} "
+            f"生成于 {data.get('generated_at', '未知')}",
+        )
         return record
 
     def _parse_get_gateway_status(
@@ -342,8 +361,11 @@ class HttpReadonlyVpnAdapter(VpnAdapter):
             return self._not_found(data, "未找到匹配的网关", gateway_id=gateway_id, region=region)
         record = dict(data)
         record.setdefault("gateway_id", data.get("gateway_id") or gateway_id)
-        record.setdefault("content", f"网关 {data.get('gateway_id')} region={data.get('region', '未知')} "
-                                    f"status={data.get('status', 'unknown')}")
+        record.setdefault(
+            "content",
+            f"网关 {data.get('gateway_id')} region={data.get('region', '未知')} "
+            f"status={data.get('status', 'unknown')}",
+        )
         return record
 
     def _parse_get_asset(
@@ -353,9 +375,12 @@ class HttpReadonlyVpnAdapter(VpnAdapter):
             return self._not_found(data, "未找到匹配的资产", asset_id=asset_id, query=query)
         record = dict(data)
         record.setdefault("asset_id", data.get("asset_id") or asset_id)
-        record.setdefault("content", f"资产：{data.get('asset_id')} {data.get('hostname') or data.get('name') or ''} "
-                                    f"({data.get('asset_type')}) 状态={data.get('status')} "
-                                    f"归属={data.get('owner_user_id') or '无'}")
+        record.setdefault(
+            "content",
+            f"资产：{data.get('asset_id')} {data.get('hostname') or data.get('name') or ''} "
+            f"({data.get('asset_type')}) 状态={data.get('status')} "
+            f"归属={data.get('owner_user_id') or '无'}",
+        )
         return record
 
     def _parse_get_incident_status(self, data: dict[str, Any], incident_id: str) -> dict[str, Any]:
@@ -363,8 +388,11 @@ class HttpReadonlyVpnAdapter(VpnAdapter):
             return self._not_found(data, f"未找到事件 {incident_id}", incident_id=incident_id)
         record = dict(data)
         record.setdefault("incident_id", incident_id)
-        record.setdefault("content", f"事件 {incident_id} status={data.get('status', 'unknown')} "
-                                    f"severity={data.get('severity', 'unknown')}")
+        record.setdefault(
+            "content",
+            f"事件 {incident_id} status={data.get('status', 'unknown')} "
+            f"severity={data.get('severity', 'unknown')}",
+        )
         return record
 
     def _parse_get_similar_tickets(
@@ -382,7 +410,9 @@ class HttpReadonlyVpnAdapter(VpnAdapter):
         record.setdefault("tickets", tickets)
         record.setdefault("user_id", user_id)
         record.setdefault("fault", fault)
-        record.setdefault("content", "历史相似工单：\n" + "\n".join(lines) if lines else "没有找到相似的历史工单")
+        record.setdefault(
+            "content", "历史相似工单：\n" + "\n".join(lines) if lines else "没有找到相似的历史工单"
+        )
         return record
 
     # ---- 工具方法 ----

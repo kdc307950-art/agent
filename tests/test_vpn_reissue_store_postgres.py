@@ -34,6 +34,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(autouse=True)
 def _purge_operations_table():
     """每个测试前清空 vpn_reissue_operations，避免跨测试/跨租户残留影响全局 claim/list 扫描。"""
+
     async def _purge():
         from psycopg import AsyncConnection
 
@@ -268,10 +269,16 @@ def test_set_result_and_mark_reconciled():
             got2 = await store.get_operation(tenant_id=tenant, operation_id="op-1")
             assert got2.status == ApprovalStatus.CONFIRMED
             # mark 不存在的操作 -> False
-            assert await store.mark_reconciled(
-                tenant_id=tenant, operation_id="op-missing", status=ApprovalStatus.CONFIRMED,
-                external_result=None, result_hash=None,
-            ) is False
+            assert (
+                await store.mark_reconciled(
+                    tenant_id=tenant,
+                    operation_id="op-missing",
+                    status=ApprovalStatus.CONFIRMED,
+                    external_result=None,
+                    result_hash=None,
+                )
+                is False
+            )
             await _cleanup(pool, tenant)
             return True
         finally:
@@ -289,12 +296,18 @@ def test_claim_reconcilable_uses_lease():
             # 一个可对账，一个已终态
             await store.create_operation(
                 **_seed_kwargs(
-                    tenant_id=tenant, operation_id="op-1", key="k-1", status=ApprovalStatus.EXECUTION_UNKNOWN
+                    tenant_id=tenant,
+                    operation_id="op-1",
+                    key="k-1",
+                    status=ApprovalStatus.EXECUTION_UNKNOWN,
                 )
             )
             await store.create_operation(
                 **_seed_kwargs(
-                    tenant_id=tenant, operation_id="op-2", key="k-2", status=ApprovalStatus.CONFIRMED
+                    tenant_id=tenant,
+                    operation_id="op-2",
+                    key="k-2",
+                    status=ApprovalStatus.CONFIRMED,
                 )
             )
             claimed = await store.claim_reconcilable(worker_id="w-1", lease_seconds=60, limit=10)
@@ -327,6 +340,7 @@ def test_two_workers_claim_disjoint_sets_skip_locked():
 
     并发领取同一批可对账行时，每个 worker 各拿一部分且互不重叠。
     """
+
     async def run():
         pool = await _open_pool()
         try:
@@ -336,13 +350,17 @@ def test_two_workers_claim_disjoint_sets_skip_locked():
             for i in range(3):
                 await store.create_operation(
                     **_seed_kwargs(
-                        tenant_id=tenant, operation_id=f"op-{i}", key=f"k-{i}",
+                        tenant_id=tenant,
+                        operation_id=f"op-{i}",
+                        key=f"k-{i}",
                         status=ApprovalStatus.EXECUTION_UNKNOWN,
                     )
                 )
             await store.create_operation(
                 **_seed_kwargs(
-                    tenant_id=tenant, operation_id="op-done", key="k-done",
+                    tenant_id=tenant,
+                    operation_id="op-done",
+                    key="k-done",
                     status=ApprovalStatus.CONFIRMED,
                 )
             )
@@ -365,6 +383,7 @@ def test_two_workers_claim_disjoint_sets_skip_locked():
 
 def test_lease_expires_allows_reclaim_after_worker_crash():
     """worker 领取后崩溃（租约过期）→ 后续 worker 可重新领取恢复对账。"""
+
     async def run():
         pool = await _open_pool()
         try:
@@ -372,7 +391,9 @@ def test_lease_expires_allows_reclaim_after_worker_crash():
             tenant = _tenant()
             await store.create_operation(
                 **_seed_kwargs(
-                    tenant_id=tenant, operation_id="op-1", key="k-1",
+                    tenant_id=tenant,
+                    operation_id="op-1",
+                    key="k-1",
                     status=ApprovalStatus.RECONCILIATION_REQUIRED,
                 )
             )
@@ -398,6 +419,7 @@ def test_lease_expires_allows_reclaim_after_worker_crash():
 
 def test_mark_reconciled_flips_terminal_and_removes_from_claim_scope():
     """mark_reconciled 把可对账行翻转为终态，且不再出现在 list/claim 范围。"""
+
     async def run():
         pool = await _open_pool()
         try:
@@ -405,14 +427,19 @@ def test_mark_reconciled_flips_terminal_and_removes_from_claim_scope():
             tenant = _tenant()
             await store.create_operation(
                 **_seed_kwargs(
-                    tenant_id=tenant, operation_id="op-1", key="k-1",
+                    tenant_id=tenant,
+                    operation_id="op-1",
+                    key="k-1",
                     status=ApprovalStatus.RECONCILIATION_REQUIRED,
                 )
             )
             # 收敛为终态 CONFIRMED（释放租约）。
             marked = await store.mark_reconciled(
-                tenant_id=tenant, operation_id="op-1", status=ApprovalStatus.CONFIRMED,
-                external_result={"ok": True}, result_hash="h-1",
+                tenant_id=tenant,
+                operation_id="op-1",
+                status=ApprovalStatus.CONFIRMED,
+                external_result={"ok": True},
+                result_hash="h-1",
             )
             assert marked is True
             got = await store.get_operation(tenant_id=tenant, operation_id="op-1")

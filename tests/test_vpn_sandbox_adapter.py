@@ -263,16 +263,22 @@ class _FlakyAdapter(VpnAdapter):
     # 其余契约方法未用到，仅占位。
     async def get_gateway_status(self, gateway_id=None, region=None):
         return {"found": False}
+
     async def get_asset(self, asset_id=None, query=""):
         return {"found": False}
+
     async def get_incident_status(self, incident_id):
         return {"found": False}
+
     async def get_similar_tickets(self, user_id, fault=None):
         return {"found": False}
+
     async def search_knowledge(self, query, limit=5):
         return {"found": False}
+
     async def get_client_config_version(self, user_id):
         return {"found": False}
+
     async def reissue_config(self, *, user_id, idempotency_key, target_version=None):
         return {"found": False}
 
@@ -304,16 +310,22 @@ def test_non_retryable_error_not_retried():
 
         async def get_gateway_status(self, gateway_id=None, region=None):
             return {"found": False}
+
         async def get_asset(self, asset_id=None, query=""):
             return {"found": False}
+
         async def get_incident_status(self, incident_id):
             return {"found": False}
+
         async def get_similar_tickets(self, user_id, fault=None):
             return {"found": False}
+
         async def search_knowledge(self, query, limit=5):
             return {"found": False}
+
         async def get_client_config_version(self, user_id):
             return {"found": False}
+
         async def reissue_config(self, *, user_id, idempotency_key, target_version=None):
             return {"found": False}
 
@@ -378,8 +390,16 @@ def test_breaker_state_transitions_after_recovery():
 def test_reissue_idempotency_key_dedupes():
     inner = SandboxVpnAdapter(seed=1)
     resilient = VpnResilientAdapter(inner)
-    r1 = _run(resilient.reissue_config(user_id="user-sbx-001", idempotency_key="idem-1", target_version="v2.5.0"))
-    r2 = _run(resilient.reissue_config(user_id="user-sbx-001", idempotency_key="idem-1", target_version="v2.5.0"))
+    r1 = _run(
+        resilient.reissue_config(
+            user_id="user-sbx-001", idempotency_key="idem-1", target_version="v2.5.0"
+        )
+    )
+    r2 = _run(
+        resilient.reissue_config(
+            user_id="user-sbx-001", idempotency_key="idem-1", target_version="v2.5.0"
+        )
+    )
     assert r1.get("delivered") is True and r2.get("delivered") is True
     # 二次调用返回同一幂等键既有结果（不重复副作用）
     assert r1.get("idempotency_key") == r2.get("idempotency_key")

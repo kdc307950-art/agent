@@ -78,7 +78,9 @@ def _run_context(principal: Principal, *, ticket_id: str) -> RunContext:
     )
 
 
-async def _ticket_or_404(runtime, tenant_id: str, ticket_id: str, *, requester_id: str | None = None):
+async def _ticket_or_404(
+    runtime, tenant_id: str, ticket_id: str, *, requester_id: str | None = None
+):
     tickets = getattr(runtime, "tickets", None)
     if tickets is None or not hasattr(tickets, "get"):
         raise HTTPException(status_code=503, detail="工单服务尚未初始化")

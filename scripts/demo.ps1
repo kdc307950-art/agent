@@ -10,9 +10,19 @@ $root = Split-Path -Parent $PSScriptRoot
 $compose = @("compose", "-f", (Join-Path $root "infra/compose.demo.yml"))
 
 function Invoke-Compose {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
-    & docker @compose @Arguments
-    if ($LASTEXITCODE -ne 0) { throw "Docker Compose command failed." }
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+    $output = @(& docker @compose @Arguments 2>&1)
+    $exitCode = $LASTEXITCODE
+    if ($output.Count -gt 0) {
+        $output | ForEach-Object { Write-Host $_ }
+    }
+    if ($exitCode -ne 0) {
+        $details = ($output | Out-String)
+        if ($details -match "registry-1\.docker\.io|failed to resolve source metadata|no HTTPS proxy|proxyconnect tcp|failed to fetch anonymous token|dial tcp .*:443") {
+            throw "Docker Compose failed while reaching a container registry. Configure Docker Desktop HTTP/HTTPS proxy or preload the required base images, then retry."
+        }
+        throw "Docker Compose command failed with exit code $exitCode."
+    }
 }
 
 function Assert-DockerReady {
@@ -29,11 +39,60 @@ function Assert-DockerReady {
     }
 }
 
+function Test-LocalImage {
+    param([Parameter(Mandatory = $true)][string]$Image)
+    & docker image inspect $Image *> $null
+    return $LASTEXITCODE -eq 0
+}
+
+function Use-CachedBuildImages {
+    $fallbacks = @(
+        @{
+            Variable = "DEMO_UV_IMAGE"
+            Preferred = "ghcr.io/astral-sh/uv:0.11"
+            Cached = "ghcr.nju.edu.cn/astral-sh/uv:0.11"
+            Label = "uv"
+        },
+        @{
+            Variable = "DEMO_NODE_IMAGE"
+            Preferred = "node:22-alpine"
+            Cached = "docker.1ms.run/library/node:20-alpine"
+            Label = "Node.js"
+        },
+        @{
+            Variable = "DEMO_NGINX_IMAGE"
+            Preferred = "nginx:1.27-alpine"
+            Cached = "docker.1ms.run/library/nginx:1.27-alpine"
+            Label = "Nginx"
+        }
+    )
+
+    foreach ($item in $fallbacks) {
+        $current = [Environment]::GetEnvironmentVariable($item.Variable, "Process")
+        if (-not [string]::IsNullOrWhiteSpace($current)) { continue }
+        if (Test-LocalImage $item.Preferred) { continue }
+        if (Test-LocalImage $item.Cached) {
+            [Environment]::SetEnvironmentVariable($item.Variable, $item.Cached, "Process")
+            Write-Host "Using cached $($item.Label) image: $($item.Cached)"
+        }
+    }
+
+    # Docker Desktop may inject a stale socks5://127.0.0.1 proxy from the
+    # user's Docker config. Empty values make the demo build use direct access;
+    # enterprise users can set DEMO_*_PROXY explicitly before running this file.
+    foreach ($name in @("DEMO_HTTP_PROXY", "DEMO_HTTPS_PROXY", "DEMO_ALL_PROXY")) {
+        if ($null -eq [Environment]::GetEnvironmentVariable($name, "Process")) {
+            [Environment]::SetEnvironmentVariable($name, "", "Process")
+        }
+    }
+}
+
 function Wait-DemoReady {
     $deadline = (Get-Date).AddSeconds(120)
     do {
         try {
-            $response = Invoke-RestMethod -Uri "http://127.0.0.1:8000/readyz" -TimeoutSec 3
+            # 8000 is the Nginx public port; /api/* is proxied to agent.
+            $response = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/readyz" -TimeoutSec 3
             if ($response.status -eq "ready") { return }
         } catch {
             # Containers are still starting; keep probing until the deadline.
@@ -45,16 +104,17 @@ function Wait-DemoReady {
 
 Set-Location $root
 Assert-DockerReady
+Use-CachedBuildImages
 if ($Down) {
-    Invoke-Compose down
+    Invoke-Compose -Arguments @("down")
     Write-Host "Demo environment stopped."
     exit 0
 }
 
 if ($SkipBuild) {
-    Invoke-Compose up -d
+    Invoke-Compose -Arguments @("up", "-d")
 } else {
-    Invoke-Compose up -d --build
+    Invoke-Compose -Arguments @("up", "-d", "--build")
 }
 Wait-DemoReady
 

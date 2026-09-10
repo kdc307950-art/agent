@@ -337,7 +337,9 @@ class VpnDiagnosisAgent:
 
         messages: list[Any] = [SystemMessage(content=_system_prompt(request))]
         messages.append(
-            HumanMessage(content="请分析工单上下文，需要时调用只读工具收集证据，最后输出结构化命令。")
+            HumanMessage(
+                content="请分析工单上下文，需要时调用只读工具收集证据，最后输出结构化命令。"
+            )
         )
 
         # 生产 AgentRuntime 没有 .context；工具从 config["configurable"]["runtime"].context
@@ -355,7 +357,9 @@ class VpnDiagnosisAgent:
                 break
             try:
                 async with asyncio.timeout(remaining_total):
-                    response = await self.model.ainvoke(messages, config=_runtime_config(tool_runtime))
+                    response = await self.model.ainvoke(
+                        messages, config=_runtime_config(tool_runtime)
+                    )
             except TimeoutError:
                 error_code = "diagnosis_timeout"
                 break
@@ -387,7 +391,11 @@ class VpnDiagnosisAgent:
                     tool_name = str(call.get("name") or "")
                     call_id = str(call["id"])
                     tool_trace.append(
-                        {"tool": tool_name, "status": "denied", "reason": "tool_call_limit_exceeded"}
+                        {
+                            "tool": tool_name,
+                            "status": "denied",
+                            "reason": "tool_call_limit_exceeded",
+                        }
                     )
                     messages.append(
                         ToolMessage(

@@ -183,7 +183,8 @@ def no_evidence_auto_reply(rows: Sequence[Mapping[str, Any]]) -> tuple[int, int,
     bad = [
         r["id"]
         for r in rows
-        if not r["pred_requires_human"] and (not r["pred_evidence"] or r["pred_hypothesis"] == "no_evidence")
+        if not r["pred_requires_human"]
+        and (not r["pred_evidence"] or r["pred_hypothesis"] == "no_evidence")
     ]
     return len(bad), len(rows), bad
 
@@ -272,7 +273,11 @@ def run_frozen_metrics(samples: Sequence[FrozenSample]) -> dict[str, Any]:
                 "total": cite_total,
             },
             "high_risk_false_auto": {"value": hr_bad, "gold_human_total": hr_total, "ids": hr_ids},
-            "multi_user_misclassified": {"value": mu_bad, "multi_user_total": mu_total, "ids": mu_ids},
+            "multi_user_misclassified": {
+                "value": mu_bad,
+                "multi_user_total": mu_total,
+                "ids": mu_ids,
+            },
             "no_evidence_auto_reply": {"value": ne_bad, "total": ne_total, "ids": ne_ids},
         },
         "gates": gates,

@@ -96,7 +96,12 @@ class _AlwaysToolCallModel:
         return AIMessage(
             content="继续",
             tool_calls=[
-                {"name": self.tool_name, "args": {"query": "x"}, "id": f"call-{self.round}", "type": "tool_call"}
+                {
+                    "name": self.tool_name,
+                    "args": {"query": "x"},
+                    "id": f"call-{self.round}",
+                    "type": "tool_call",
+                }
             ],
         )
 
@@ -117,7 +122,9 @@ class _FakeMetrics:
         self.counts[name] = self.counts.get(name, 0) + (amount or 1)
 
 
-def _runtime(*, scopes=frozenset({"ticket:agent"}), allowed_tools=VPN_DIAGNOSIS_TOOLS, tenant_id="tenant-a"):
+def _runtime(
+    *, scopes=frozenset({"ticket:agent"}), allowed_tools=VPN_DIAGNOSIS_TOOLS, tenant_id="tenant-a"
+):
     context = RunContext(
         run_id="run-vpn-agent",
         request_id="req-1",
@@ -152,7 +159,9 @@ def _request(**overrides) -> DiagnosisRequest:
     return DiagnosisRequest(**base)
 
 
-def _agent(tools: dict[str, Any], model, limits: DiagnosisLimits | None = None) -> VpnDiagnosisAgent:
+def _agent(
+    tools: dict[str, Any], model, limits: DiagnosisLimits | None = None
+) -> VpnDiagnosisAgent:
     return VpnDiagnosisAgent(model=model, tools=tools, limits=limits)
 
 
@@ -263,7 +272,11 @@ def test_single_tool_timeout_is_captured_not_fatal():
             {"search_vpn_knowledge": tool},
             _CommandModel(
                 ["search_vpn_knowledge"],
-                final_command={"command": "ask_customer", "content": "请提供错误码", "confidence": 0.9},
+                final_command={
+                    "command": "ask_customer",
+                    "content": "请提供错误码",
+                    "confidence": 0.9,
+                },
             ),
             limits=DiagnosisLimits(single_tool_timeout_seconds=0.01),
         )

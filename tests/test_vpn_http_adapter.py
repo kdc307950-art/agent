@@ -34,7 +34,9 @@ def _config() -> HttpVpnConfig:
     return HttpVpnConfig(base_url="https://vpn.example.com", api_key="key-1", tenant_id="tenant-a")
 
 
-def _adapter(handler: Handler, *, captured: list[httpx.Request] | None = None) -> HttpReadonlyVpnAdapter:
+def _adapter(
+    handler: Handler, *, captured: list[httpx.Request] | None = None
+) -> HttpReadonlyVpnAdapter:
     def wrapped(request: httpx.Request) -> httpx.Response:
         if captured is not None:
             captured.append(request)
@@ -52,26 +54,77 @@ def _run(coro):
 def _default_handler(request: httpx.Request) -> httpx.Response:
     path = request.url.path
     if path == "/accounts/user-x":
-        return httpx.Response(200, json={"found": True, "status": "active", "role": "member",
-                                         "expires_at": "2026-12-31", "user_id": "user-x"})
+        return httpx.Response(
+            200,
+            json={
+                "found": True,
+                "status": "active",
+                "role": "member",
+                "expires_at": "2026-12-31",
+                "user_id": "user-x",
+            },
+        )
     if path == "/accounts/user-x/client-config":
-        return httpx.Response(200, json={"found": True, "version": "v2.4.1", "generated_at": "2026-01-15T00:00:00Z",
-                                         "user_id": "user-x"})
+        return httpx.Response(
+            200,
+            json={
+                "found": True,
+                "version": "v2.4.1",
+                "generated_at": "2026-01-15T00:00:00Z",
+                "user_id": "user-x",
+            },
+        )
     if path == "/gateways/gw-1":
-        return httpx.Response(200, json={"found": True, "gateway_id": "gw-1", "region": "north",
-                                         "status": "up", "load_percent": 42})
+        return httpx.Response(
+            200,
+            json={
+                "found": True,
+                "gateway_id": "gw-1",
+                "region": "north",
+                "status": "up",
+                "load_percent": 42,
+            },
+        )
     if path == "/assets/a-1":
-        return httpx.Response(200, json={"found": True, "asset_id": "a-1", "hostname": "h1",
-                                         "asset_type": "laptop", "status": "active",
-                                         "owner_user_id": "user-x"})
+        return httpx.Response(
+            200,
+            json={
+                "found": True,
+                "asset_id": "a-1",
+                "hostname": "h1",
+                "asset_type": "laptop",
+                "status": "active",
+                "owner_user_id": "user-x",
+            },
+        )
     if path == "/incidents/INC-9":
-        return httpx.Response(200, json={"found": True, "incident_id": "INC-9", "status": "monitoring",
-                                         "severity": "major", "affected_user_count": 25})
+        return httpx.Response(
+            200,
+            json={
+                "found": True,
+                "incident_id": "INC-9",
+                "status": "monitoring",
+                "severity": "major",
+                "affected_user_count": 25,
+            },
+        )
     if path == "/users/user-x/similar-tickets":
-        return httpx.Response(200, json={"found": True, "tickets": [
-            {"ticket_id": "T-1", "status": "resolved", "category": "it.vpn", "fault": "connection_failed",
-             "title": "VPN 频繁掉线", "resolved_at": "2025-05-01T10:00:00Z"}
-        ]})
+        return httpx.Response(
+            200,
+            json={
+                "found": True,
+                "tickets": [
+                    {
+                        "ticket_id": "T-1",
+                        "status": "resolved",
+                        "category": "it.vpn",
+                        "fault": "connection_failed",
+                        "title": "VPN 频繁掉线",
+                        "resolved_at": "2025-05-01T10:00:00Z",
+                    }
+                ],
+            },
+        )
     if path == "/accounts/ghost":
         return httpx.Response(200, json={"found": False, "content": "未找到"})
     if path == "/gateways/gw-missing":
@@ -122,7 +175,9 @@ def test_get_incident_status_parsed():
 
 
 def test_get_similar_tickets_parsed():
-    result = _run(_adapter(_default_handler).get_similar_tickets("user-x", fault="connection_failed"))
+    result = _run(
+        _adapter(_default_handler).get_similar_tickets("user-x", fault="connection_failed")
+    )
     assert result.get("found") is True
     assert isinstance(result.get("tickets"), list)
     assert len(result.get("tickets")) == 1

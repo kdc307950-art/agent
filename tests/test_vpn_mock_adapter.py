@@ -26,7 +26,9 @@ def _default_adapter() -> MockVpnAdapter:
 def test_loads_from_dict():
     data = {
         "accounts": {"user-x": {"user_id": "user-x", "status": "active", "found": True}},
-        "gateways": {"gw-1": {"gateway_id": "gw-1", "region": "north", "status": "up", "found": True}},
+        "gateways": {
+            "gw-1": {"gateway_id": "gw-1", "region": "north", "status": "up", "found": True}
+        },
         "assets": {"a-1": {"asset_id": "a-1", "hostname": "h1", "found": True}},
         "incidents": {"INC-1": {"incident_id": "INC-1", "status": "open", "found": True}},
         "similar_tickets": {"user-x": [{"ticket_id": "T-1", "fault": "connection_failed"}]},
@@ -99,7 +101,9 @@ def test_get_asset_hit_by_id_and_query():
     adapter = _default_adapter()
 
     async def run():
-        return await adapter.get_asset(asset_id="asset-001"), await adapter.get_asset(query="laptop")
+        return await adapter.get_asset(asset_id="asset-001"), await adapter.get_asset(
+            query="laptop"
+        )
 
     by_id, by_query = asyncio.run(run())
     assert by_id.get("found") is True

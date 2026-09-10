@@ -10,7 +10,6 @@
 全部纯函数、无 IO、无真实模型/DB/VPN 凭证；不跑 CLI。
 """
 
-
 from backend.vpn.eval_metrics import (
     FrozenSample,
     build_evidence_from_sample,

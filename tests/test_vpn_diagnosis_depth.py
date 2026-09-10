@@ -13,7 +13,6 @@
 全部纯函数、无 IO、无真实模型/DB/VPN 凭证。
 """
 
-
 from backend.vpn.rules import (
     CONCLUSION_FIELDS,
     AccountStatus,
@@ -98,7 +97,11 @@ def test_five_fault_classes_distinct_hypothesis():
 def test_auth_failed_is_high_risk_and_human():
     """auth_failed：账号/认证歧义 -> 高层人工，绝不自动给排障步骤。"""
     d = evaluate_evidence(
-        VpnEvidence(fault="auth_failed", account_status=AccountStatus.ACTIVE, gateway_status=GatewayStatus.UP)
+        VpnEvidence(
+            fault="auth_failed",
+            account_status=AccountStatus.ACTIVE,
+            gateway_status=GatewayStatus.UP,
+        )
     )
     assert d.hypothesis == "auth_failed"
     assert d.must_handoff is True
@@ -173,7 +176,9 @@ def test_tree_single_user_nat_branch():
 
 def test_tree_single_user_gateway_no_anomaly_branch():
     t = diagnose_vpn_tree(
-        VpnEvidence(account_status=AccountStatus.ACTIVE, gateway_status=GatewayStatus.UP, knowledge_hit=True)
+        VpnEvidence(
+            account_status=AccountStatus.ACTIVE, gateway_status=GatewayStatus.UP, knowledge_hit=True
+        )
     )
     assert t.hypothesis == "connection_failed"
     assert t.requires_human is False
@@ -181,7 +186,9 @@ def test_tree_single_user_gateway_no_anomaly_branch():
 
 def test_tree_multi_user_gateway_region_vendor():
     gw = diagnose_vpn_tree(
-        VpnEvidence(fault="multi_user_impact", multi_user_impact=True, gateway_status=GatewayStatus.DOWN)
+        VpnEvidence(
+            fault="multi_user_impact", multi_user_impact=True, gateway_status=GatewayStatus.DOWN
+        )
     )
     assert gw.hypothesis == "gateway_down"
     region = diagnose_vpn_tree(
@@ -246,11 +253,23 @@ def test_guardrail_confidence_gate_forces_human():
 
 def test_guardrail_high_risk_auth_multiuser_no_evidence():
     # auth_failed 恒必须人工
-    assert guardrail_evaluate(
-        VpnEvidence(fault="auth_failed", account_status=AccountStatus.ACTIVE, gateway_status=GatewayStatus.UP)
-    ).requires_human is True
+    assert (
+        guardrail_evaluate(
+            VpnEvidence(
+                fault="auth_failed",
+                account_status=AccountStatus.ACTIVE,
+                gateway_status=GatewayStatus.UP,
+            )
+        ).requires_human
+        is True
+    )
     # multi_user 恒必须人工
-    assert guardrail_evaluate(VpnEvidence(fault="multi_user_impact", multi_user_impact=True)).requires_human is True
+    assert (
+        guardrail_evaluate(
+            VpnEvidence(fault="multi_user_impact", multi_user_impact=True)
+        ).requires_human
+        is True
+    )
     # 无证据恒必须人工
     assert guardrail_evaluate(VpnEvidence()).requires_human is True
 

@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # 后端镜像。两阶段构建：builder 用 uv 装依赖，runtime 只带虚拟环境和源码。
 #
 # 入口不用 `uv run`：uv 每次启动都会校验并可能改写 .venv，而生产容器应跑在
@@ -10,8 +9,18 @@
 #   docker build --build-arg UV_IMAGE=ghcr.nju.edu.cn/astral-sh/uv:0.11
 # COPY --from 不支持变量，所以先用 ARG 定义一个独立的 uv 源 stage。
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11
+ARG UV_INDEX_URL=
 FROM ${UV_IMAGE} AS uv-source
 FROM python:3.12-slim AS builder
+
+# Compose demo 默认清空宿主机可能遗留的本地 SOCKS 代理；企业网络可通过
+# DEMO_HTTP_PROXY / DEMO_HTTPS_PROXY / DEMO_ALL_PROXY 显式传入代理。
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG ALL_PROXY
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    ALL_PROXY=${ALL_PROXY}
 
 COPY --from=uv-source /uv /usr/local/bin/uv
 
@@ -29,7 +38,11 @@ COPY pyproject.toml uv.lock ./
 #   让 setuptools 去打包它只会猜错目录结构
 # --no-dev：pytest 等开发依赖不进生产镜像
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev
+    if [ -n "$UV_INDEX_URL" ]; then \
+        uv sync --index-url "$UV_INDEX_URL" --frozen --no-install-project --no-dev; \
+    else \
+        uv sync --frozen --no-install-project --no-dev; \
+    fi
 
 # ─── Stage 2: 运行时 ─────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime

@@ -45,9 +45,19 @@ from backend.vpn_eval_metrics import (
 
 def test_classification_hit_miss_and_negative_excluded():
     records = [
-        VpnEvalRecord(is_negative=False, expected_fault="connection_failed", predicted_fault="connection_failed"),  # hit
-        VpnEvalRecord(is_negative=False, expected_fault="auth_failed", predicted_fault="connection_failed"),  # miss
-        VpnEvalRecord(is_negative=True, expected_fault="connection_failed", predicted_fault="connection_failed"),  # excluded
+        VpnEvalRecord(
+            is_negative=False,
+            expected_fault="connection_failed",
+            predicted_fault="connection_failed",
+        ),  # hit
+        VpnEvalRecord(
+            is_negative=False, expected_fault="auth_failed", predicted_fault="connection_failed"
+        ),  # miss
+        VpnEvalRecord(
+            is_negative=True,
+            expected_fault="connection_failed",
+            predicted_fault="connection_failed",
+        ),  # excluded
     ]
     out = compute_classification(records)
     assert out["sample_count"] == 2
@@ -65,8 +75,12 @@ def test_classification_empty_returns_zero_rate():
 
 def test_field_completion_detection_and_complete_rate():
     records = [
-        VpnEvalRecord(is_negative=False, expected_missing=("device",), actual_missing=("device",)),  # 检测正确
-        VpnEvalRecord(is_negative=False, expected_missing=(), actual_missing=("network",)),  # 检测错误
+        VpnEvalRecord(
+            is_negative=False, expected_missing=("device",), actual_missing=("device",)
+        ),  # 检测正确
+        VpnEvalRecord(
+            is_negative=False, expected_missing=(), actual_missing=("network",)
+        ),  # 检测错误
         VpnEvalRecord(is_negative=False, expected_missing=(), actual_missing=()),  # 检测正确 + 完整
         VpnEvalRecord(is_negative=True, expected_missing=(), actual_missing=()),  # 负向，检测正确
     ]
@@ -81,8 +95,14 @@ def test_field_completion_detection_and_complete_rate():
 
 def test_hypothesis_hit_fallback_and_negative_excluded():
     records = [
-        VpnEvalRecord(is_negative=False, expected_fault="connection_failed", predicted_fault="connection_failed"),  # 回退命中
-        VpnEvalRecord(is_negative=False, expected_fault="auth_failed", predicted_fault="connection_failed"),  # 回退未命中
+        VpnEvalRecord(
+            is_negative=False,
+            expected_fault="connection_failed",
+            predicted_fault="connection_failed",
+        ),  # 回退命中
+        VpnEvalRecord(
+            is_negative=False, expected_fault="auth_failed", predicted_fault="connection_failed"
+        ),  # 回退未命中
         VpnEvalRecord(  # 显式假设命中
             is_negative=False,
             expected_fault="connection_failed",
@@ -90,7 +110,11 @@ def test_hypothesis_hit_fallback_and_negative_excluded():
             expected_hypothesis="gateway_down",
             predicted_hypothesis="gateway_down",
         ),
-        VpnEvalRecord(is_negative=True, expected_fault="connection_failed", predicted_fault="connection_failed"),  # 负向排除
+        VpnEvalRecord(
+            is_negative=True,
+            expected_fault="connection_failed",
+            predicted_fault="connection_failed",
+        ),  # 负向排除
     ]
     out = compute_hypothesis_hit(records)
     assert out["sample_count"] == 3
@@ -170,7 +194,9 @@ def test_reference_support_db_and_static_modes():
     records = [
         VpnEvalRecord(expected_boundary="auto_suggest", reference_supported=True),  # 命中
         VpnEvalRecord(expected_boundary="auto_suggest", reference_supported=False),  # 未命中
-        VpnEvalRecord(expected_boundary="must_escalate", reference_supported=True),  # 非 auto_suggest 排除
+        VpnEvalRecord(
+            expected_boundary="must_escalate", reference_supported=True
+        ),  # 非 auto_suggest 排除
         VpnEvalRecord(expected_boundary="auto_suggest", reference_supported=None),  # 无判定，排除
     ]
     db_out = compute_reference_support(records, mode="db")
@@ -189,8 +215,12 @@ def test_reference_support_db_and_static_modes():
 
 def test_high_risk_misdirect_rate():
     records = [
-        VpnEvalRecord(is_negative=False, is_high_risk=True, predicted_boundary="auto_suggest"),  # 非负向，不计入分母
-        VpnEvalRecord(is_negative=True, predicted_boundary="auto_suggest"),  # 负向 + auto_suggest -> 误放行
+        VpnEvalRecord(
+            is_negative=False, is_high_risk=True, predicted_boundary="auto_suggest"
+        ),  # 非负向，不计入分母
+        VpnEvalRecord(
+            is_negative=True, predicted_boundary="auto_suggest"
+        ),  # 负向 + auto_suggest -> 误放行
         VpnEvalRecord(is_negative=True, predicted_boundary="must_escalate"),  # 负向 + 正确升级
     ]
     out = compute_high_risk_misdirect(records)
@@ -365,7 +395,9 @@ def test_acl_rejection_rate():
         VpnEvalRecord(
             scenario="acl_out_of_scope", is_negative=True, predicted_boundary="auto_suggest"
         ),
-        VpnEvalRecord(scenario="no_knowledge_answer", is_negative=True, predicted_boundary="must_escalate"),
+        VpnEvalRecord(
+            scenario="no_knowledge_answer", is_negative=True, predicted_boundary="must_escalate"
+        ),
     ]
     out = compute_acl_rejection(records)
     assert out["acl_sample_count"] == 3
@@ -384,7 +416,9 @@ def test_acl_rejection_ideal_all_rejected():
 
 
 def test_acl_rejection_no_acl_samples_returns_none():
-    out = compute_acl_rejection([VpnEvalRecord(scenario="high_risk_request", predicted_boundary="must_escalate")])
+    out = compute_acl_rejection(
+        [VpnEvalRecord(scenario="high_risk_request", predicted_boundary="must_escalate")]
+    )
     assert out["acl_sample_count"] == 0
     assert out["rejection_rate"] is None
 
@@ -520,9 +554,13 @@ def test_evidence_sufficiency_empty_returns_none():
 
 def test_wrong_escalation_rate_fp_only():
     records = [
-        VpnEvalRecord(expected_boundary="auto_suggest", predicted_boundary="must_escalate"),  # wrong
+        VpnEvalRecord(
+            expected_boundary="auto_suggest", predicted_boundary="must_escalate"
+        ),  # wrong
         VpnEvalRecord(expected_boundary="auto_suggest", predicted_boundary="auto_suggest"),  # ok
-        VpnEvalRecord(expected_boundary="must_escalate", predicted_boundary="must_escalate"),  # 需升级，不计入分母
+        VpnEvalRecord(
+            expected_boundary="must_escalate", predicted_boundary="must_escalate"
+        ),  # 需升级，不计入分母
     ]
     out = compute_wrong_escalation(records)
     assert out["sample_count"] == 2  # 仅无需升级的样本
@@ -602,7 +640,10 @@ def test_manual_takeover_rate_field_priority():
 
 def test_manual_takeover_inferred_from_boundary():
     out = compute_manual_takeover(
-        [VpnEvalRecord(predicted_boundary="must_escalate"), VpnEvalRecord(predicted_boundary="auto_suggest")]
+        [
+            VpnEvalRecord(predicted_boundary="must_escalate"),
+            VpnEvalRecord(predicted_boundary="auto_suggest"),
+        ]
     )
     assert out["takeover_count"] == 1
     assert out["takeover_rate"] == 0.5
@@ -653,8 +694,22 @@ def test_to_record_from_snapshot_customer_completion_and_rediagnosis():
     """两次诊断（再次诊断）+ 客户步骤 + 回填结果 -> 各字段正确取值。"""
     snapshot = {
         "runs": [
-            {"run_id": "r1", "hypothesis": "gateway_down", "confidence": 0.9, "next_action": "provide_steps", "status": "completed", "evidence": [{"tool_name": "x"}]},
-            {"run_id": "r2", "hypothesis": "connection_failed", "confidence": 0.85, "next_action": "escalate_incident", "status": "handed_off", "reason_codes": ["handoff:no_evidence"]},
+            {
+                "run_id": "r1",
+                "hypothesis": "gateway_down",
+                "confidence": 0.9,
+                "next_action": "provide_steps",
+                "status": "completed",
+                "evidence": [{"tool_name": "x"}],
+            },
+            {
+                "run_id": "r2",
+                "hypothesis": "connection_failed",
+                "confidence": 0.85,
+                "next_action": "escalate_incident",
+                "status": "handed_off",
+                "reason_codes": ["handoff:no_evidence"],
+            },
         ],
         "actions": [{"action_id": "a1"}],
         "results": [{"action_id": "a1", "result": "已重连"}],
@@ -676,7 +731,14 @@ def test_to_record_from_snapshot_no_rediagnosis():
     """单次诊断 + 客户步骤但未回填 -> 不适用字段为 None，未转人工。"""
     snapshot = {
         "runs": [
-            {"run_id": "r1", "hypothesis": "client_version_outdated", "confidence": 0.85, "next_action": "provide_steps", "status": "completed", "evidence": [{"tool_name": "x"}]}
+            {
+                "run_id": "r1",
+                "hypothesis": "client_version_outdated",
+                "confidence": 0.85,
+                "next_action": "provide_steps",
+                "status": "completed",
+                "evidence": [{"tool_name": "x"}],
+            }
         ],
         "actions": [{"action_id": "a1"}],
         "results": [],
@@ -720,12 +782,30 @@ def test_to_record_from_snapshot_failed_rediagnosis():
 def test_records_from_diagnosis_snapshots_batch():
     snapshots = [
         {
-            "runs": [{"run_id": "r1", "hypothesis": "gateway_down", "confidence": 0.9, "next_action": "escalate_incident", "status": "handed_off", "evidence": [{}]}],
+            "runs": [
+                {
+                    "run_id": "r1",
+                    "hypothesis": "gateway_down",
+                    "confidence": 0.9,
+                    "next_action": "escalate_incident",
+                    "status": "handed_off",
+                    "evidence": [{}],
+                }
+            ],
             "actions": [{"action_id": "a1"}],
             "results": [{"action_id": "a1", "result": "x"}],
         },
         {
-            "runs": [{"run_id": "r1", "hypothesis": "client_version_outdated", "confidence": 0.85, "next_action": "provide_steps", "status": "completed", "evidence": [{}]}],
+            "runs": [
+                {
+                    "run_id": "r1",
+                    "hypothesis": "client_version_outdated",
+                    "confidence": 0.85,
+                    "next_action": "provide_steps",
+                    "status": "completed",
+                    "evidence": [{}],
+                }
+            ],
             "actions": [{"action_id": "a1"}],
             "results": [],
         },

@@ -90,6 +90,7 @@ async def _cleanup(pool: AsyncConnectionPool, tenant_id: str) -> None:
 
 def test_publish_then_worker_delivers():
     """发布一条 vpn_reissue 事件 → 通用 worker 领取并成功投递为 delivered。"""
+
     async def run():
         pool = await _open_pool()
         try:
@@ -137,6 +138,7 @@ def test_publish_then_worker_delivers():
 
 def test_publish_is_idempotent_by_idempotency_key():
     """同一 (operation_id, event_type) 重复发布不重复入箱（ON CONFLICT DO NOTHING）。"""
+
     async def run():
         pool = await _open_pool()
         try:
@@ -176,6 +178,7 @@ def test_publish_is_idempotent_by_idempotency_key():
 
 def test_worker_transient_failure_retries_then_dead():
     """sender 抛瞬时失败 → worker 退避重试；超过 max_attempts → 死信（dead）。"""
+
     async def run():
         pool = await _open_pool()
         try:

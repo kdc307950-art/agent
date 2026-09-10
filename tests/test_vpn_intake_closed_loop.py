@@ -84,7 +84,9 @@ class _FakeAudit:
 
 
 class _FakeTickets:
-    def __init__(self, *, initial_status=TicketStatus.IN_PROGRESS, version=0, requester_id="customer-1"):
+    def __init__(
+        self, *, initial_status=TicketStatus.IN_PROGRESS, version=0, requester_id="customer-1"
+    ):
         self.cur_status = initial_status
         self.version = version
         self.requester_id = requester_id
@@ -102,9 +104,13 @@ class _FakeTickets:
     async def transition(self, tenant_id, command, scopes=None):
         self.transition_calls.append(command.action)
         self.cur_status = transition_ticket(self.cur_status, command, scopes=set(scopes or ()))
-        return SimpleNamespace(ticket_id=command.ticket_id, status=self.cur_status, version=self.version)
+        return SimpleNamespace(
+            ticket_id=command.ticket_id, status=self.cur_status, version=self.version
+        )
 
-    async def append_status_event(self, tenant_id, ticket_id, *, action, actor_type, actor_id, payload=None):
+    async def append_status_event(
+        self, tenant_id, ticket_id, *, action, actor_type, actor_id, payload=None
+    ):
         self.timeline.append(action)
         return True
 

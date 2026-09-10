@@ -271,7 +271,9 @@ class VpnReissueService:
             }
         if submission_state not in ("submitted", "not_submitted"):
             return {"ok": False, "error_code": "invalid_submission_state"}
-        if submission_state == "submitted" and (not isinstance(vendor_task_id, int) or vendor_task_id <= 0):
+        if submission_state == "submitted" and (
+            not isinstance(vendor_task_id, int) or vendor_task_id <= 0
+        ):
             return {"ok": False, "error_code": "vendor_task_id_required"}
         if submission_state == "not_submitted" and vendor_task_id is not None:
             return {"ok": False, "error_code": "vendor_task_id_forbidden"}
@@ -322,7 +324,9 @@ class VpnReissueService:
                 to_status=ApprovalStatus.FAILED,
                 error_code="not_submitted_confirmed",
             )
-            await self._mark_operation_failed(runtime, run_context, request, "not_submitted_confirmed")
+            await self._mark_operation_failed(
+                runtime, run_context, request, "not_submitted_confirmed"
+            )
             await self._publish_outbox(
                 ReissueEventType.OPERATION_FAILED,
                 tenant_id=tenant_id,

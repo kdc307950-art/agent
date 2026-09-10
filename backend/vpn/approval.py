@@ -254,18 +254,20 @@ def build_tenant_redeploy_idempotency_key(*, tenant_id: str, ticket_id: str) -> 
 
 
 def _stable_hash(value: Any) -> str:
-    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-async def preflight_tenant_redeploy(
-    *, runtime: Any, tenant_id: str
-) -> ReissuePreflightResult:
+async def preflight_tenant_redeploy(*, runtime: Any, tenant_id: str) -> ReissuePreflightResult:
     """租户级 FMG 只读门禁：目标映射可见且 preview 可生成。"""
     gateway = getattr(runtime, "vpn_command_gateway", None)
     if gateway is None:
         return ReissuePreflightResult(
-            ok=False, fail_reasons=["fortimanager_gateway_unavailable"], tenant_match=bool(tenant_id)
+            ok=False,
+            fail_reasons=["fortimanager_gateway_unavailable"],
+            tenant_match=bool(tenant_id),
         )
     try:
         target = await gateway.validate_tenant_target(tenant_id=tenant_id)
@@ -814,7 +816,9 @@ def _operation_result(op: Any) -> ReissueExecutionResult | None:
         return None
     return ReissueExecutionResult(
         ok=True,
-        action=ReissueAction((op.request_snapshot or {}).get("action", ReissueAction.REISSUE_VPN_CONFIG)),
+        action=ReissueAction(
+            (op.request_snapshot or {}).get("action", ReissueAction.REISSUE_VPN_CONFIG)
+        ),
         status=status,
         idempotency_key=op.idempotency_key,
         delivered=True,

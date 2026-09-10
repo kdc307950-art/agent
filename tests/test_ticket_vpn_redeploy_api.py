@@ -63,7 +63,9 @@ class _Tickets:
         return {"status": "started", "intent": None}
 
 
-def _principal(*, tenant_id: str = "demo", scopes: tuple[str, ...] = ("ticket:agent",)) -> Principal:
+def _principal(
+    *, tenant_id: str = "demo", scopes: tuple[str, ...] = ("ticket:agent",)
+) -> Principal:
     return Principal(tenant_id=tenant_id, user_id="agent-1", scopes=frozenset(scopes))
 
 

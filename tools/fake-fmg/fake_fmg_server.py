@@ -162,12 +162,12 @@ class FakeFmgHandler(BaseHTTPRequestHandler):
             if adom == "REJECT":
                 self._send(
                     200,
-                    self._result(request_id, url, code=-11, message="No permission for the resource"),
+                    self._result(
+                        request_id, url, code=-11, message="No permission for the resource"
+                    ),
                 )
                 return
-            task_id = self._new_task(
-                kind=url.rsplit("/", 1)[-1], stall=adom == "STALL"
-            )
+            task_id = self._new_task(kind=url.rsplit("/", 1)[-1], stall=adom == "STALL")
             self._send(200, self._result(request_id, url, data={"task": task_id}))
             return
 

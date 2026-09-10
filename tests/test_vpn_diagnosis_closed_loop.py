@@ -155,7 +155,9 @@ def test_parse_steps_to_actions_empty_returns_empty():
 
 
 def _cmd(action: TicketAction, actor_type: ActorType) -> TicketCommand:
-    return TicketCommand(ticket_id="t-1", action=action, actor_type=actor_type, actor_id="x", expected_version=1)
+    return TicketCommand(
+        ticket_id="t-1", action=action, actor_type=actor_type, actor_id="x", expected_version=1
+    )
 
 
 def test_diagnosing_transitions():
@@ -241,7 +243,9 @@ class _FakeAudit:
 
 
 class _FakeTickets:
-    def __init__(self, *, initial_status=TicketStatus.IN_PROGRESS, version=0, requester_id="user-042"):
+    def __init__(
+        self, *, initial_status=TicketStatus.IN_PROGRESS, version=0, requester_id="user-042"
+    ):
         self.cur_status = initial_status
         self.version = version
         self.requester_id = requester_id
@@ -258,7 +262,9 @@ class _FakeTickets:
     async def transition(self, tenant_id, command, scopes=None):
         self.transition_calls.append(command.action)
         self.cur_status = transition_ticket(self.cur_status, command, scopes=set(scopes or ()))
-        return SimpleNamespace(ticket_id=command.ticket_id, status=self.cur_status, version=self.version)
+        return SimpleNamespace(
+            ticket_id=command.ticket_id, status=self.cur_status, version=self.version
+        )
 
 
 class _StubDiagnosisService:
@@ -330,7 +336,9 @@ def _rc(scope="ticket:agent", user_id="user-1"):
 
 def test_diagnose_persists_run_and_prescribes_steps():
     runtime, svc, tickets, audit = _make_loop()
-    out = asyncio.run(svc.diagnose(runtime=runtime, tenant_id="tenant-a", ticket_id="t-1", run_context=_rc()))
+    out = asyncio.run(
+        svc.diagnose(runtime=runtime, tenant_id="tenant-a", ticket_id="t-1", run_context=_rc())
+    )
     run = out["run"]
     assert run["next_action"] == "provide_steps"
     assert run["ticket_id"] == "t-1"
@@ -350,7 +358,9 @@ def test_diagnose_persists_run_and_prescribes_steps():
 
 def test_diagnose_must_handoff_records_escalation_and_reconcile():
     runtime, svc, tickets, audit = _make_loop(outcomes=[_handoff_outcome()])
-    out = asyncio.run(svc.diagnose(runtime=runtime, tenant_id="tenant-a", ticket_id="t-1", run_context=_rc()))
+    out = asyncio.run(
+        svc.diagnose(runtime=runtime, tenant_id="tenant-a", ticket_id="t-1", run_context=_rc())
+    )
     assert out["run"]["status"] == "handed_off"
     assert out["dispatch"]["status"] == "handed_off"
     snapshot = asyncio.run(svc.get_snapshot(tenant_id="tenant-a", ticket_id="t-1"))
@@ -381,7 +391,9 @@ def test_resume_opens_a_new_run_and_keeps_previous_run():
 def test_submit_action_result_closes_loop():
     runtime, svc, tickets, audit = _make_loop()
     # 先诊断产出步骤
-    asyncio.run(svc.diagnose(runtime=runtime, tenant_id="tenant-a", ticket_id="t-1", run_context=_rc()))
+    asyncio.run(
+        svc.diagnose(runtime=runtime, tenant_id="tenant-a", ticket_id="t-1", run_context=_rc())
+    )
     action = svc.registry.list_actions("t-1")[0]
     # 客户回填结果（用客户 scope）
     out = asyncio.run(
@@ -407,7 +419,9 @@ def test_submit_action_result_closes_loop():
 
 def test_submit_action_result_rejects_unknown_or_wrong_ticket_action():
     runtime, svc, _tickets, _audit = _make_loop()
-    asyncio.run(svc.diagnose(runtime=runtime, tenant_id="tenant-a", ticket_id="t-1", run_context=_rc()))
+    asyncio.run(
+        svc.diagnose(runtime=runtime, tenant_id="tenant-a", ticket_id="t-1", run_context=_rc())
+    )
     with pytest.raises(VpnCustomerActionError):
         asyncio.run(
             svc.submit_action_result(
@@ -511,12 +525,16 @@ def test_submit_action_result_requires_customer_and_own_ticket():
         client.post("/tickets/t-1/vpn/diagnose")
         action_id = client.get("/tickets/t-1/vpn/diagnosis").json()["actions"][0]["action_id"]
         # agent 无权提交客户动作结果
-        resp = client.post(f"/tickets/t-1/vpn/actions/{action_id}/result", json={"result": "已处理"})
+        resp = client.post(
+            f"/tickets/t-1/vpn/actions/{action_id}/result", json={"result": "已处理"}
+        )
     assert resp.status_code == 403
     # 客户（本人工单）可提交
     _install_principal(app, _principal("user-042", ("ticket:customer",)))
     with TestClient(app) as client:
-        resp2 = client.post(f"/tickets/t-1/vpn/actions/{action_id}/result", json={"result": "已处理"})
+        resp2 = client.post(
+            f"/tickets/t-1/vpn/actions/{action_id}/result", json={"result": "已处理"}
+        )
     assert resp2.status_code == 200, resp2.text
 
 
@@ -547,7 +565,11 @@ def _evidence_chain_outcome():
             "must_handoff": False,
             "evaluation": {"must_handoff": False, "handoff_reasons": [], "confidence": 0.85},
             "tool_evidence": [
-                {"tool_name": "get_vpn_gateway_status", "content": "网关 gw-up status=up", "found": True}
+                {
+                    "tool_name": "get_vpn_gateway_status",
+                    "content": "网关 gw-up status=up",
+                    "found": True,
+                }
             ],
             "evidence_chain": {
                 "hypothesis": "client_version_outdated",
@@ -564,12 +586,8 @@ def _evidence_chain_outcome():
 
 def test_build_run_uses_evidence_chain_hypothesis():
     """证据链结构化假设应写入 VpnDiagnosisRun（而非 command.content）。"""
-    svc = VpnClosedLoopService(
-        diagnosis_service=_StubDiagnosisService([_evidence_chain_outcome()])
-    )
-    run = svc._build_run(
-        _evidence_chain_outcome(), tenant_id="tenant-a", ticket_id="t-1"
-    )
+    svc = VpnClosedLoopService(diagnosis_service=_StubDiagnosisService([_evidence_chain_outcome()]))
+    run = svc._build_run(_evidence_chain_outcome(), tenant_id="tenant-a", ticket_id="t-1")
     assert run.hypothesis == "client_version_outdated"
     assert run.confidence == 0.85
     assert run.next_action == "provide_steps"
@@ -583,9 +601,7 @@ def test_build_run_uses_evidence_chain_hypothesis():
 def test_build_run_falls_back_without_evidence_chain():
     """无 evidence_chain 时回退到 command 维度（向后兼容）。"""
     outcome = _provide_steps_outcome()
-    svc = VpnClosedLoopService(
-        diagnosis_service=_StubDiagnosisService([outcome])
-    )
+    svc = VpnClosedLoopService(diagnosis_service=_StubDiagnosisService([outcome]))
     run = svc._build_run(outcome, tenant_id="tenant-a", ticket_id="t-1")
     assert run.next_action == "provide_steps"
     assert run.hypothesis == "1. 检查客户端版本\n2. 重启客户端\n3. 切换网络"  # command.content 兜底

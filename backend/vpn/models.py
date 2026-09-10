@@ -45,10 +45,10 @@ ALLOWED_COMMANDS: frozenset[str] = frozenset(command.value for command in Diagno
 class HandoffReason(StrEnum):
     """必须转人工的具体原因（确定性编码，审计/展示用）。"""
 
-    NO_EVIDENCE = "no_evidence"              # 证据不足：工具未返回可支撑结论的依据
-    LOW_CONFIDENCE = "low_confidence"        # 置信度低于阈值（默认对齐 0.80）
+    NO_EVIDENCE = "no_evidence"  # 证据不足：工具未返回可支撑结论的依据
+    LOW_CONFIDENCE = "low_confidence"  # 置信度低于阈值（默认对齐 0.80）
     MULTI_USER_IMPACT = "multi_user_impact"  # 群体/多用户影响（对应 vpn_fault=multi_user_impact）
-    IDENTITY_MISSING = "identity_missing"    # 身份缺失：无法确认用户/资产/账号归属
+    IDENTITY_MISSING = "identity_missing"  # 身份缺失：无法确认用户/资产/账号归属
 
 
 # 必须转人工的默认置信度阈值（对齐 backend/copilot/service.py 的 MIN_CONFIDENCE=0.80）。

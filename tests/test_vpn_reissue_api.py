@@ -41,7 +41,9 @@ class _FakeAssets:
         pass
 
     async def get(self, tenant_id, asset_id):
-        return SimpleNamespace(asset_id=asset_id, owner_user_id="user-042", status="active", is_deleted=False)
+        return SimpleNamespace(
+            asset_id=asset_id, owner_user_id="user-042", status="active", is_deleted=False
+        )
 
 
 class _FakeTickets:
@@ -59,17 +61,32 @@ class _FakeTickets:
     async def transition(self, tenant_id, command, scopes=None):
         self.transition_calls.append(command.action)
         self.cur_status = transition_ticket(self.cur_status, command, scopes=set(scopes or ()))
-        return SimpleNamespace(ticket_id=command.ticket_id, status=self.cur_status, version=self.version)
+        return SimpleNamespace(
+            ticket_id=command.ticket_id, status=self.cur_status, version=self.version
+        )
 
-    async def start_workflow_operation(self, *, tenant_id, ticket_id, operation_id, command_type, expected_version, checkpoint_thread_id):
+    async def start_workflow_operation(
+        self,
+        *,
+        tenant_id,
+        ticket_id,
+        operation_id,
+        command_type,
+        expected_version,
+        checkpoint_thread_id,
+    ):
         self.operation_started.append(operation_id)
         return {"status": "started", "operation_id": operation_id}
 
-    async def mark_workflow_operation_failed(self, *, tenant_id, ticket_id, operation_id, error_code):
+    async def mark_workflow_operation_failed(
+        self, *, tenant_id, ticket_id, operation_id, error_code
+    ):
         self.operation_failed.append((operation_id, error_code))
         return True
 
-    async def mark_workflow_operation_committed(self, *, tenant_id, ticket_id, operation_id, result_hash):
+    async def mark_workflow_operation_committed(
+        self, *, tenant_id, ticket_id, operation_id, result_hash
+    ):
         self.operation_committed.append(operation_id)
         return True
 
@@ -269,7 +286,9 @@ def test_approve_decision_outside_literal_returns_422():
         _install_principal(app, agent)
         key = client.post("/vpn/reissue", json=_payload()).json()["idempotency_key"]
         _install_principal(app, _principal("approver-1", ("ticket:approve",)))
-        resp = client.post(f"/vpn/reissue/{key}/approve", json={"operation_id": key, "decision": "hold"})
+        resp = client.post(
+            f"/vpn/reissue/{key}/approve", json={"operation_id": key, "decision": "hold"}
+        )
         assert resp.status_code == 422
 
 
@@ -308,7 +327,9 @@ def test_cross_tenant_approve_returns_403():
         assert resp_rej.status_code == 403
 
 
-def _make_unknown_operation(app: FastAPI, svc: VpnReissueService, client, *, principal: Principal) -> str:
+def _make_unknown_operation(
+    app: FastAPI, svc: VpnReissueService, client, *, principal: Principal
+) -> str:
     _install_principal(app, principal)
     key = client.post("/vpn/reissue", json=_payload()).json()["idempotency_key"]
     import asyncio
@@ -372,7 +393,9 @@ def test_confirm_submission_validation_and_cross_tenant_guards():
     owner = _principal("agent-1", ("ticket:agent", "vpn:reconcile"), tenant_id="tenant-a")
     with TestClient(app) as client:
         key = _make_unknown_operation(app, svc, client, principal=owner)
-        _install_principal(app, _principal("other", ("ticket:agent", "vpn:reconcile"), tenant_id="tenant-b"))
+        _install_principal(
+            app, _principal("other", ("ticket:agent", "vpn:reconcile"), tenant_id="tenant-b")
+        )
         cross = client.post(
             f"/vpn/reissue/{key}/confirm-submission",
             json={"operation_id": key, "submission_state": "submitted", "vendor_task_id": 1},

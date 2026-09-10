@@ -63,7 +63,9 @@ REISSUE_USER = "user-042"  # MockVpnAdapter 里 active + 有 client_config 版�
 REISSUE_TARGET_VERSION = "v2.5.0"
 
 
-async def _open_runtime() -> tuple[AsyncConnectionPool, AuditRepository, TicketRepository, AssetRepository]:
+async def _open_runtime() -> (
+    tuple[AsyncConnectionPool, AuditRepository, TicketRepository, AssetRepository]
+):
     os.environ.setdefault("DATABASE_URL", DATABASE_URL)
     from backend.migrations import setup_postgres
 
@@ -192,7 +194,9 @@ async def _domain_transition(
     )
 
 
-def run_context(*, tenant_id: str, user_id: str, scopes: frozenset[str], ticket_id: str = "t") -> RunContext:
+def run_context(
+    *, tenant_id: str, user_id: str, scopes: frozenset[str], ticket_id: str = "t"
+) -> RunContext:
     return RunContext(
         run_id=f"ctx-{uuid4().hex[:12]}",
         request_id=uuid4().hex[:12],
@@ -222,7 +226,9 @@ def test_cross_tenant_tool_call_denied_and_audited():
                 tenant_allowlist={"tenant-a": frozenset({"search_knowledge", "search_assets"})},
             )
             # 租户 b 不在白名单，尽管它有 ticket:agent scope
-            ctx = run_context(tenant_id="tenant-b", user_id="user-1", scopes=frozenset({"ticket:agent"}))
+            ctx = run_context(
+                tenant_id="tenant-b", user_id="user-1", scopes=frozenset({"ticket:agent"})
+            )
             await audit.start_run(ctx, metadata={"label": "cross-tenant deny"})
 
             executed = False
@@ -233,7 +239,12 @@ def test_cross_tenant_tool_call_denied_and_audited():
                 return "should not run"
 
             request = SimpleNamespace(
-                tool_call={"name": "search_knowledge", "args": {"query": "VPN"}, "id": "call-1", "type": "tool_call"},
+                tool_call={
+                    "name": "search_knowledge",
+                    "args": {"query": "VPN"},
+                    "id": "call-1",
+                    "type": "tool_call",
+                },
                 tool=object(),
                 runtime=SimpleNamespace(context=ctx),
             )
@@ -260,7 +271,9 @@ def test_tool_denied_when_missing_scope_and_not_executed():
         pool, audit, _tickets, _assets = await _open_runtime()
         try:
             governance = ToolGovernance(audit, policies=DEFAULT_TOOL_POLICIES)
-            ctx = run_context(tenant_id="tenant-a", user_id="user-1", scopes=frozenset({"chat:read"}))
+            ctx = run_context(
+                tenant_id="tenant-a", user_id="user-1", scopes=frozenset({"chat:read"})
+            )
             await audit.start_run(ctx, metadata={"label": "missing-scope deny"})
 
             executed = False
@@ -271,7 +284,12 @@ def test_tool_denied_when_missing_scope_and_not_executed():
                 return "should not run"
 
             request = SimpleNamespace(
-                tool_call={"name": "search_knowledge", "args": {"query": "VPN"}, "id": "call-2", "type": "tool_call"},
+                tool_call={
+                    "name": "search_knowledge",
+                    "args": {"query": "VPN"},
+                    "id": "call-2",
+                    "type": "tool_call",
+                },
                 tool=object(),
                 runtime=SimpleNamespace(context=ctx),
             )
@@ -318,7 +336,12 @@ def test_unapproved_reissue_no_side_effect():
                 tenant_id=tenant,
                 expected_version=ticket.version,
             )
-            ctx = run_context(tenant_id=tenant, user_id="agent-1", scopes=frozenset({"ticket:agent"}), ticket_id=ticket_id)
+            ctx = run_context(
+                tenant_id=tenant,
+                user_id="agent-1",
+                scopes=frozenset({"ticket:agent"}),
+                ticket_id=ticket_id,
+            )
             await audit.start_run(ctx, metadata={"label": "unapproved-reissue"})
 
             start = await svc.start(request=req, runtime=runtime, run_context=ctx)
@@ -398,7 +421,10 @@ def test_reject_path_terminal_and_ticket_recoverable():
             )
             # service.start（自建 run_context 并注册，审计事件才能落真实 PG）
             agent_ctx = run_context(
-                tenant_id=tenant, user_id="agent-1", scopes=frozenset({"ticket:agent"}), ticket_id=ticket_id
+                tenant_id=tenant,
+                user_id="agent-1",
+                scopes=frozenset({"ticket:agent"}),
+                ticket_id=ticket_id,
             )
             await audit.start_run(agent_ctx, metadata={"label": "reject-start"})
             start = await svc.start(request=req, runtime=runtime, run_context=agent_ctx)
@@ -410,7 +436,9 @@ def test_reject_path_terminal_and_ticket_recoverable():
             from backend.security import Principal
             from backend.vpn.api import approve_reissue as approve_ep
 
-            agent_p = Principal(tenant_id=tenant, user_id="agent-1", scopes=frozenset({"ticket:agent"}))
+            agent_p = Principal(
+                tenant_id=tenant, user_id="agent-1", scopes=frozenset({"ticket:agent"})
+            )
             with pytest.raises(HTTPException) as exc:
                 await approve_ep(
                     operation_id=key,
@@ -423,19 +451,27 @@ def test_reject_path_terminal_and_ticket_recoverable():
             # 跨租户查询（key 内嵌租户与主体不一致）-> 403
             from backend.vpn.api import get_reissue as get_ep
 
-            other = Principal(tenant_id="tenant-other", user_id="x", scopes=frozenset({"ticket:agent"}))
+            other = Principal(
+                tenant_id="tenant-other", user_id="x", scopes=frozenset({"ticket:agent"})
+            )
             with pytest.raises(HTTPException) as exc2:
                 await get_ep(operation_id=key, request=_fake_request(runtime), principal=other)
             assert exc2.value.status_code == 403
 
             # 审批拒绝 -> REJECTED
             approver_ctx = run_context(
-                tenant_id=tenant, user_id="approver-1", scopes=frozenset({"ticket:approve"}), ticket_id=ticket_id
+                tenant_id=tenant,
+                user_id="approver-1",
+                scopes=frozenset({"ticket:approve"}),
+                ticket_id=ticket_id,
             )
             await audit.start_run(approver_ctx, metadata={"label": "reject"})
             rejected = await svc.reject(
-                request=req, runtime=runtime, run_context=approver_ctx,
-                approver_user_id="approver-1", reason="审批拒绝",
+                request=req,
+                runtime=runtime,
+                run_context=approver_ctx,
+                approver_user_id="approver-1",
+                reason="审批拒绝",
             )
             assert rejected.status == ApprovalStatus.REJECTED
             assert registry.get_status(key) == ApprovalStatus.REJECTED
@@ -490,7 +526,10 @@ def test_approve_path_power_idempotent_and_ticket_recoverable():
                 expected_version=ticket.version,
             )
             agent_ctx = run_context(
-                tenant_id=tenant, user_id="agent-1", scopes=frozenset({"ticket:agent"}), ticket_id=ticket_id
+                tenant_id=tenant,
+                user_id="agent-1",
+                scopes=frozenset({"ticket:agent"}),
+                ticket_id=ticket_id,
             )
             await audit.start_run(agent_ctx, metadata={"label": "approve-start"})
             start = await svc.start(request=req, runtime=runtime, run_context=agent_ctx)
@@ -498,11 +537,17 @@ def test_approve_path_power_idempotent_and_ticket_recoverable():
             assert start["status"] == ApprovalStatus.PENDING.value
 
             approver_ctx = run_context(
-                tenant_id=tenant, user_id="approver-1", scopes=frozenset({"ticket:approve"}), ticket_id=ticket_id
+                tenant_id=tenant,
+                user_id="approver-1",
+                scopes=frozenset({"ticket:approve"}),
+                ticket_id=ticket_id,
             )
             await audit.start_run(approver_ctx, metadata={"label": "approve"})
             approved = await svc.approve(
-                request=req, approver_user_id="approver-1", runtime=runtime, run_context=approver_ctx
+                request=req,
+                approver_user_id="approver-1",
+                runtime=runtime,
+                run_context=approver_ctx,
             )
             assert approved.ok is True
             assert approved.status == ApprovalStatus.CONFIRMED
@@ -512,7 +557,10 @@ def test_approve_path_power_idempotent_and_ticket_recoverable():
 
             # 幂等：重复审批不重复执行
             again = await svc.approve(
-                request=req, approver_user_id="approver-1", runtime=runtime, run_context=approver_ctx
+                request=req,
+                approver_user_id="approver-1",
+                runtime=runtime,
+                run_context=approver_ctx,
             )
             assert again.status == ApprovalStatus.CONFIRMED
 
@@ -560,7 +608,9 @@ async def _create_ticket(tickets: TicketRepository, tenant_id: str, ticket_id: s
     )
 
 
-def _action(*, tenant_id: str, ticket_id: str, action_id: str, status: CustomerActionStatus) -> VpnCustomerAction:
+def _action(
+    *, tenant_id: str, ticket_id: str, action_id: str, status: CustomerActionStatus
+) -> VpnCustomerAction:
     return VpnCustomerAction(
         action_id=action_id,
         ticket_id=ticket_id,
@@ -587,7 +637,14 @@ def test_get_action_is_tenant_and_ticket_scoped():
             action_id = f"act-{uuid4().hex[:12]}"
             await _create_ticket(tickets, tenant_a, ticket)
 
-            await repo.add_action(_action(tenant_id=tenant_a, ticket_id=ticket, action_id=action_id, status=CustomerActionStatus.ISSUED))
+            await repo.add_action(
+                _action(
+                    tenant_id=tenant_a,
+                    ticket_id=ticket,
+                    action_id=action_id,
+                    status=CustomerActionStatus.ISSUED,
+                )
+            )
 
             # 同租户 + 同工单 -> 命中
             found = await repo.get_action(tenant_a, ticket, action_id)
@@ -619,19 +676,43 @@ def test_update_action_status_is_tenant_scoped_and_reports_miss():
             ticket = f"ticket-{uuid4().hex[:10]}"
             action_id = f"act-{uuid4().hex[:12]}"
             await _create_ticket(tickets, tenant_a, ticket)
-            await repo.add_action(_action(tenant_id=tenant_a, ticket_id=ticket, action_id=action_id, status=CustomerActionStatus.ISSUED))
+            await repo.add_action(
+                _action(
+                    tenant_id=tenant_a,
+                    ticket_id=ticket,
+                    action_id=action_id,
+                    status=CustomerActionStatus.ISSUED,
+                )
+            )
 
             # 同租户 + 同工单 -> 命中
-            assert await repo.update_action_status(tenant_a, ticket, action_id, CustomerActionStatus.EXECUTED) is True
+            assert (
+                await repo.update_action_status(
+                    tenant_a, ticket, action_id, CustomerActionStatus.EXECUTED
+                )
+                is True
+            )
             updated = await repo.get_action(tenant_a, ticket, action_id)
             assert updated is not None and updated.status == CustomerActionStatus.EXECUTED
 
             # 跨租户 -> rowcount=0 -> False，且不影响租户 a 的原动作
-            assert await repo.update_action_status(tenant_b, ticket, action_id, CustomerActionStatus.CONFIRMED) is False
-            assert (await repo.get_action(tenant_a, ticket, action_id)).status == CustomerActionStatus.EXECUTED
+            assert (
+                await repo.update_action_status(
+                    tenant_b, ticket, action_id, CustomerActionStatus.CONFIRMED
+                )
+                is False
+            )
+            assert (
+                await repo.get_action(tenant_a, ticket, action_id)
+            ).status == CustomerActionStatus.EXECUTED
 
             # 跨工单 -> rowcount=0 -> False
-            assert await repo.update_action_status(tenant_a, "ticket-other", action_id, CustomerActionStatus.CONFIRMED) is False
+            assert (
+                await repo.update_action_status(
+                    tenant_a, "ticket-other", action_id, CustomerActionStatus.CONFIRMED
+                )
+                is False
+            )
         finally:
             await pool.close()
 
@@ -652,8 +733,22 @@ def test_add_action_and_add_action_result_are_idempotent_upserts():
             await _create_ticket(tickets, tenant, ticket)
 
             # 重复 add_action：同 action_id，第二次改状态，仍应只有一行
-            await repo.add_action(_action(tenant_id=tenant, ticket_id=ticket, action_id=action_id, status=CustomerActionStatus.ISSUED))
-            await repo.add_action(_action(tenant_id=tenant, ticket_id=ticket, action_id=action_id, status=CustomerActionStatus.EXECUTED))
+            await repo.add_action(
+                _action(
+                    tenant_id=tenant,
+                    ticket_id=ticket,
+                    action_id=action_id,
+                    status=CustomerActionStatus.ISSUED,
+                )
+            )
+            await repo.add_action(
+                _action(
+                    tenant_id=tenant,
+                    ticket_id=ticket,
+                    action_id=action_id,
+                    status=CustomerActionStatus.EXECUTED,
+                )
+            )
             actions = await repo.list_actions(tenant, ticket)
             assert len(actions) == 1, "同 action_id 重复 upsert 不得产生新行"
             assert actions[0].status == CustomerActionStatus.EXECUTED

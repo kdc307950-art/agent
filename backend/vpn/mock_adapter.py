@@ -146,9 +146,7 @@ class VpnDataSource(Protocol):
         self, gateway_id: str | None = None, region: str | None = None
     ) -> dict[str, Any]: ...
 
-    async def get_asset(
-        self, asset_id: str | None = None, query: str = ""
-    ) -> dict[str, Any]: ...
+    async def get_asset(self, asset_id: str | None = None, query: str = "") -> dict[str, Any]: ...
 
     async def get_incident_status(self, incident_id: str) -> dict[str, Any]: ...
 
@@ -181,17 +179,13 @@ class VpnAdapter:
     ) -> dict[str, Any]:
         raise NotImplementedError
 
-    async def get_asset(
-        self, asset_id: str | None = None, query: str = ""
-    ) -> dict[str, Any]:
+    async def get_asset(self, asset_id: str | None = None, query: str = "") -> dict[str, Any]:
         raise NotImplementedError
 
     async def get_incident_status(self, incident_id: str) -> dict[str, Any]:
         raise NotImplementedError
 
-    async def get_similar_tickets(
-        self, user_id: str, fault: str | None = None
-    ) -> dict[str, Any]:
+    async def get_similar_tickets(self, user_id: str, fault: str | None = None) -> dict[str, Any]:
         raise NotImplementedError
 
     async def search_knowledge(self, query: str, limit: int = 5) -> dict[str, Any]:
@@ -279,11 +273,14 @@ class MockVpnAdapter(VpnAdapter):
                     f"status={record.get('status', 'unknown')}"
                 )
                 return record
-        return {"found": False, "content": "未找到匹配的网关", "gateway_id": gateway_id, "region": region}
+        return {
+            "found": False,
+            "content": "未找到匹配的网关",
+            "gateway_id": gateway_id,
+            "region": region,
+        }
 
-    async def get_asset(
-        self, asset_id: str | None = None, query: str = ""
-    ) -> dict[str, Any]:
+    async def get_asset(self, asset_id: str | None = None, query: str = "") -> dict[str, Any]:
         assets = self._assets()
         if asset_id and asset_id in assets:
             record = dict(assets[asset_id])
@@ -295,7 +292,11 @@ class MockVpnAdapter(VpnAdapter):
             matches = [
                 a
                 for a in assets.values()
-                if keyword in " ".join(str(a.get(k) or "").lower() for k in ("asset_id", "hostname", "name", "asset_type", "owner_user_id"))
+                if keyword
+                in " ".join(
+                    str(a.get(k) or "").lower()
+                    for k in ("asset_id", "hostname", "name", "asset_type", "owner_user_id")
+                )
             ]
             if matches:
                 record = dict(matches[0])
@@ -307,7 +308,11 @@ class MockVpnAdapter(VpnAdapter):
     async def get_incident_status(self, incident_id: str) -> dict[str, Any]:
         incident = self._incidents().get(incident_id)
         if incident is None:
-            return {"found": False, "content": f"未找到事件 {incident_id}", "incident_id": incident_id}
+            return {
+                "found": False,
+                "content": f"未找到事件 {incident_id}",
+                "incident_id": incident_id,
+            }
         record = dict(incident)
         record.setdefault("found", True)
         record["content"] = (
@@ -316,14 +321,17 @@ class MockVpnAdapter(VpnAdapter):
         )
         return record
 
-    async def get_similar_tickets(
-        self, user_id: str, fault: str | None = None
-    ) -> dict[str, Any]:
+    async def get_similar_tickets(self, user_id: str, fault: str | None = None) -> dict[str, Any]:
         tickets = list(self._similar_tickets().get(user_id, []))
         if fault:
             tickets = [t for t in tickets if t.get("fault") == fault]
         if not tickets:
-            return {"found": False, "content": "没有找到相似的历史工单", "user_id": user_id, "fault": fault}
+            return {
+                "found": False,
+                "content": "没有找到相似的历史工单",
+                "user_id": user_id,
+                "fault": fault,
+            }
         lines = [
             f"- #{t['ticket_id']} [{t.get('status', '?')}] {t.get('category', '?')} "
             f"| {t.get('title', '')}"
@@ -344,18 +352,14 @@ class MockVpnAdapter(VpnAdapter):
         if keyword:
             for doc in self._knowledge():
                 haystack = " ".join(
-                    str(doc.get(k) or "").lower()
-                    for k in ("document_id", "title", "content")
+                    str(doc.get(k) or "").lower() for k in ("document_id", "title", "content")
                 )
                 if keyword in haystack:
                     hits.append(doc)
         hits = hits[: max(1, min(limit, 20))]
         if not hits:
             return {"found": False, "content": "知识库未找到相关内容", "evidence": []}
-        lines = [
-            f"- [{d['document_id']}] {d['title']}: {d.get('content', '')[:80]}"
-            for d in hits
-        ]
+        lines = [f"- [{d['document_id']}] {d['title']}: {d.get('content', '')[:80]}" for d in hits]
         return {
             "found": True,
             "content": "知识库命中：\n" + "\n".join(lines),

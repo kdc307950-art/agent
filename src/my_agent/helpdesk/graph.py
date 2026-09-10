@@ -366,7 +366,9 @@ def build_helpdesk_intake_graph(
         run = outcome.get("run") or {} if isinstance(outcome, dict) else {}
         result = outcome.get("result") or {} if isinstance(outcome, dict) else {}
         dispatch = outcome.get("dispatch") or {} if isinstance(outcome, dict) else {}
-        must_handoff = bool(result.get("must_handoff")) or str(dispatch.get("status")) == "handed_off"
+        must_handoff = (
+            bool(result.get("must_handoff")) or str(dispatch.get("status")) == "handed_off"
+        )
         return {
             "vpn_diagnosis_run": True,
             "vpn_diagnosis_run_id": run.get("run_id"),
@@ -423,9 +425,7 @@ def build_helpdesk_intake_graph(
         # 则走「诊断落库 + 状态机联动 + 给客户步骤/升级」闭环，而非仅只读诊断。
         closed_loop = getattr(runtime, "vpn_closed_loop", None)
         if closed_loop is not None:
-            return await _run_closed_loop(
-                state, config, runtime, closed_loop, tenant_id, user_id
-            )
+            return await _run_closed_loop(state, config, runtime, closed_loop, tenant_id, user_id)
 
         text = state.get("text", "")
         fault = classify_vpn_fault(text) if text else "connection_failed"
@@ -483,9 +483,7 @@ def build_helpdesk_intake_graph(
             except Exception:
                 # 禁止/非法命令：本身已被模型校验或业务校验拒绝，降级为转人工。
                 must_handoff = True
-                handoff_reasons = list(
-                    result.get("evaluation", {}).get("handoff_reasons", [])
-                )
+                handoff_reasons = list(result.get("evaluation", {}).get("handoff_reasons", []))
                 if "forbidden_command" not in handoff_reasons:
                     handoff_reasons.append("forbidden_command")
                 result = {
@@ -509,12 +507,12 @@ def build_helpdesk_intake_graph(
                         "vpn_diagnosis_handoff",
                         status="handoff",
                         payload={
-                            "handoff_reasons": list(
-                                (evaluation or {}).get("handoff_reasons", [])
+                            "handoff_reasons": list((evaluation or {}).get("handoff_reasons", [])),
+                            "command": (
+                                command_payload.get("command")
+                                if isinstance(command_payload, dict)
+                                else None
                             ),
-                            "command": command_payload.get("command")
-                            if isinstance(command_payload, dict)
-                            else None,
                         },
                     )
                 except Exception:
@@ -523,9 +521,7 @@ def build_helpdesk_intake_graph(
         return {
             "vpn_diagnosis_run": True,
             "vpn_diagnosis_must_handoff": must_handoff,
-            "vpn_diagnosis_handoff_reasons": list(
-                (evaluation or {}).get("handoff_reasons", [])
-            ),
+            "vpn_diagnosis_handoff_reasons": list((evaluation or {}).get("handoff_reasons", [])),
             "vpn_diagnosis_command": validated_command,
             "vpn_diagnosis_evaluation": evaluation,
             "vpn_diagnosis_error_code": str(error_code) if error_code else None,

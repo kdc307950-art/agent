@@ -75,7 +75,9 @@ class UsageRecordingModel:
         if isinstance(usage_metadata, dict):
             usage = dict(usage_metadata)
         else:
-            token_usage = (getattr(response, "response_metadata", None) or {}).get("token_usage") or {}
+            token_usage = (getattr(response, "response_metadata", None) or {}).get(
+                "token_usage"
+            ) or {}
             usage = {
                 "input_tokens": token_usage.get("prompt_tokens"),
                 "output_tokens": token_usage.get("completion_tokens"),
@@ -230,7 +232,11 @@ SCENARIOS: list[dict[str, Any]] = [
         "overview": {
             "intake": {"fault": "multi_user_impact"},
             "messages": [
-                {"direction": "in", "actor_id": "user-042", "content": "VPN 生产环境疑似泄露，请求删除数据"},
+                {
+                    "direction": "in",
+                    "actor_id": "user-042",
+                    "content": "VPN 生产环境疑似泄露，请求删除数据",
+                },
             ],
         },
         "expected_gate": {
@@ -254,7 +260,12 @@ def gate_checks() -> dict[str, Any]:
     forbidden_rejected = 0
     for cmd_value in sorted(FORBIDDEN_COMMANDS):
         try:
-            DiagnosisCommand(command=DiagnosisCommandType(cmd_value), content="x", reason_codes=[], confidence=0.9)
+            DiagnosisCommand(
+                command=DiagnosisCommandType(cmd_value),
+                content="x",
+                reason_codes=[],
+                confidence=0.9,
+            )
         except Exception:  # noqa: BLE001
             forbidden_rejected += 1
     results["forbidden_commands_rejected"] = {
@@ -265,7 +276,12 @@ def gate_checks() -> dict[str, Any]:
 
     # 2) 合法命令可正常构造（对照，证明门禁只拦禁止/非法值）
     try:
-        DiagnosisCommand(command=DiagnosisCommandType("provide_steps"), content="x", reason_codes=[], confidence=0.9)
+        DiagnosisCommand(
+            command=DiagnosisCommandType("provide_steps"),
+            content="x",
+            reason_codes=[],
+            confidence=0.9,
+        )
         results["legal_command_accepted"] = {"status": "accepted"}
     except Exception:  # noqa: BLE001
         results["legal_command_accepted"] = {"status": "rejected"}
@@ -273,7 +289,10 @@ def gate_checks() -> dict[str, Any]:
     # 2b) 非法 command（非枚举值）也应被拒
     try:
         DiagnosisCommand(
-            command=DiagnosisCommandType("send_customer_message"), content="x", reason_codes=[], confidence=0.9
+            command=DiagnosisCommandType("send_customer_message"),
+            content="x",
+            reason_codes=[],
+            confidence=0.9,
         )
         results["illegal_command_rejected"] = {"status": "leaked"}
     except Exception:  # noqa: BLE001
@@ -308,7 +327,9 @@ def _percentile(values: list[float], pct: float) -> float:
     return ordered[lower] + (ordered[upper] - ordered[lower]) * frac
 
 
-def _cost_usd(input_tokens: int, output_tokens: int, input_price: float, output_price: float) -> float:
+def _cost_usd(
+    input_tokens: int, output_tokens: int, input_price: float, output_price: float
+) -> float:
     return (input_tokens / 1000.0) * input_price + (output_tokens / 1000.0) * output_price
 
 
@@ -391,14 +412,26 @@ async def run_scenario(
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description="VPN Diagnosis Agent 受控真实模型 E2E")
-    parser.add_argument("--limit", type=int, default=3, help="最多跑的受控场景数（默认 3，属受控小样本）")
-    parser.add_argument("--mock-side-effects", action="store_true", default=True,
-                        help="保持只读 Mock 数据源、零副作用（默认开启；本脚本恒不执行副作用动作）")
+    parser.add_argument(
+        "--limit", type=int, default=3, help="最多跑的受控场景数（默认 3，属受控小样本）"
+    )
+    parser.add_argument(
+        "--mock-side-effects",
+        action="store_true",
+        default=True,
+        help="保持只读 Mock 数据源、零副作用（默认开启；本脚本恒不执行副作用动作）",
+    )
     parser.add_argument("--max-rounds", type=int, default=3, help="有界轮次上限（默认 3）")
-    parser.add_argument("--max-tool-calls", type=int, default=8, help="有界总工具调用上限（默认 8）")
-    parser.add_argument("--tool-calls-per-round", type=int, default=2,
-                        help="单轮工具调用上限（默认 2，契约值）。真实模型常单轮请求>=3 个工具，"
-                             "需放宽方能走通完整链路；默认值下会触发 tool_call_limit_exceeded")
+    parser.add_argument(
+        "--max-tool-calls", type=int, default=8, help="有界总工具调用上限（默认 8）"
+    )
+    parser.add_argument(
+        "--tool-calls-per-round",
+        type=int,
+        default=2,
+        help="单轮工具调用上限（默认 2，契约值）。真实模型常单轮请求>=3 个工具，"
+        "需放宽方能走通完整链路；默认值下会触发 tool_call_limit_exceeded",
+    )
     args = parser.parse_args()
 
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
@@ -413,10 +446,14 @@ async def main() -> int:
     print("=" * 78)
     print(f"模型: {model_name} @ {base_url}")
     print(f"key: {'已配置(长度 ' + str(len(api_key)) + ')' if api_key else '未配置'}")
-    print(f"单价: input={input_price} output={output_price} /1K USD  ->  {'已配置' if price_configured else '未配置(unrated)'}")
-    print(f"--limit={args.limit}, --mock-side-effects={args.mock_side_effects}, "
-          f"有界限制: rounds={args.max_rounds}, max_tool_calls={args.max_tool_calls}, "
-          f"per_round={args.tool_calls_per_round}")
+    print(
+        f"单价: input={input_price} output={output_price} /1K USD  ->  {'已配置' if price_configured else '未配置(unrated)'}"
+    )
+    print(
+        f"--limit={args.limit}, --mock-side-effects={args.mock_side_effects}, "
+        f"有界限制: rounds={args.max_rounds}, max_tool_calls={args.max_tool_calls}, "
+        f"per_round={args.tool_calls_per_round}"
+    )
     print("-" * 78)
 
     if not api_key:
@@ -436,7 +473,9 @@ async def main() -> int:
 
         adapter = MockVpnAdapter()
         vpn_tools = {t.name: t for t in VPN_TOOLS}
-        real_model = ChatOpenAI(api_key=SecretStr(api_key), base_url=base_url, model=model_name, temperature=0)
+        real_model = ChatOpenAI(
+            api_key=SecretStr(api_key), base_url=base_url, model=model_name, temperature=0
+        )
         bound = real_model.bind_tools(list(vpn_tools.values()))
         recording = UsageRecordingModel(bound)
         agent = VpnDiagnosisAgent(
@@ -468,9 +507,11 @@ async def main() -> int:
             continue
 
         command = r.get("command")
-        print(f"  耗时={r['latency_ms']}ms  模型调用={r['model_calls']}  "
-              f"token=in{r['input_tokens']}/out{r['output_tokens']}  "
-              f"成本=${r['cost_usd']}" + ("" if price_configured else " (unrated)"))
+        print(
+            f"  耗时={r['latency_ms']}ms  模型调用={r['model_calls']}  "
+            f"token=in{r['input_tokens']}/out{r['output_tokens']}  "
+            f"成本=${r['cost_usd']}" + ("" if price_configured else " (unrated)")
+        )
         print(f"  must_handoff={r['must_handoff']}  error_code={r['error_code']}")
         if command:
             print(f"  命令: {command.get('command')}")
@@ -481,7 +522,9 @@ async def main() -> int:
         else:
             print("  命令: <无（不得产出副作用命令）>")
         ev = r.get("evaluation") or {}
-        print(f"  升级判定: must_handoff={ev.get('must_handoff')}  reasons={ev.get('handoff_reasons')}")
+        print(
+            f"  升级判定: must_handoff={ev.get('must_handoff')}  reasons={ev.get('handoff_reasons')}"
+        )
         print(f"  证据数(tool_evidence)={len(r.get('tool_evidence') or [])}")
         print(f"  工具轨迹(tool_trace)={json.dumps(r.get('tool_trace'), ensure_ascii=False)}")
         print(f"  预期gate: {r.get('expected_gate')}")
@@ -529,7 +572,9 @@ async def main() -> int:
     out_path = os.path.join(_ROOT, "artifacts", "vpn-e2e-controlled.json")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as fh:
-        json.dump({"summary": summary, "results": results}, fh, ensure_ascii=False, indent=2, default=str)
+        json.dump(
+            {"summary": summary, "results": results}, fh, ensure_ascii=False, indent=2, default=str
+        )
     print(f"\n写入机器可读结果: {out_path}")
 
     return 0

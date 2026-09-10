@@ -74,17 +74,32 @@ class _FakeTickets:
     async def transition(self, tenant_id, command, scopes=None):
         self.transition_calls.append(command.action)
         self.cur_status = transition_ticket(self.cur_status, command, scopes=set(scopes or ()))
-        return SimpleNamespace(ticket_id=command.ticket_id, status=self.cur_status, version=self.version)
+        return SimpleNamespace(
+            ticket_id=command.ticket_id, status=self.cur_status, version=self.version
+        )
 
-    async def start_workflow_operation(self, *, tenant_id, ticket_id, operation_id, command_type, expected_version, checkpoint_thread_id):
+    async def start_workflow_operation(
+        self,
+        *,
+        tenant_id,
+        ticket_id,
+        operation_id,
+        command_type,
+        expected_version,
+        checkpoint_thread_id,
+    ):
         self.operation_started_calls.append(operation_id)
         return {"status": "started", "operation_id": operation_id}
 
-    async def mark_workflow_operation_failed(self, *, tenant_id, ticket_id, operation_id, error_code):
+    async def mark_workflow_operation_failed(
+        self, *, tenant_id, ticket_id, operation_id, error_code
+    ):
         self.operation_failed_calls.append((operation_id, error_code))
         return True
 
-    async def mark_workflow_operation_committed(self, *, tenant_id, ticket_id, operation_id, result_hash):
+    async def mark_workflow_operation_committed(
+        self, *, tenant_id, ticket_id, operation_id, result_hash
+    ):
         self.operation_committed_calls.append(operation_id)
         return True
 
@@ -99,7 +114,9 @@ def _runtime(
     return SimpleNamespace(audit=audit, tickets=tickets, vpn_adapter=adapter, assets=assets)
 
 
-def _run_context(tenant_id="tenant-a", user_id="user-042", scopes=frozenset({"ticket:agent", "ticket:approve"})):
+def _run_context(
+    tenant_id="tenant-a", user_id="user-042", scopes=frozenset({"ticket:agent", "ticket:approve"})
+):
     return RunContext(
         run_id="run-reissue",
         request_id="req-1",
@@ -112,7 +129,9 @@ def _run_context(tenant_id="tenant-a", user_id="user-042", scopes=frozenset({"ti
     )
 
 
-def _request(*, tenant_id="tenant-a", user_id="user-042", ticket_id="t-1", client_version="v2.5.0") -> ReissueActionRequest:
+def _request(
+    *, tenant_id="tenant-a", user_id="user-042", ticket_id="t-1", client_version="v2.5.0"
+) -> ReissueActionRequest:
     return build_reissue_request(
         tenant_id=tenant_id,
         user_id=user_id,
@@ -191,7 +210,9 @@ def test_approve_executes_once_and_marks_success():
     asyncio.run(svc.start(request=req, runtime=runtime, run_context=ctx))
 
     async def run():
-        result = await svc.approve(request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx)
+        result = await svc.approve(
+            request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx
+        )
         return result
 
     result = asyncio.run(run())
@@ -234,8 +255,12 @@ def test_repeated_approve_does_not_repeat_execution():
     asyncio.run(svc.start(request=req, runtime=runtime, run_context=ctx))
 
     async def run():
-        r1 = await svc.approve(request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx)
-        r2 = await svc.approve(request=req, approver_user_id="approver-2", runtime=runtime, run_context=ctx)
+        r1 = await svc.approve(
+            request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx
+        )
+        r2 = await svc.approve(
+            request=req, approver_user_id="approver-2", runtime=runtime, run_context=ctx
+        )
         return r1, r2
 
     r1, r2 = asyncio.run(run())
@@ -281,7 +306,12 @@ def test_forbidden_action_is_rejected_in_dispatch():
     # 直接验证白名单校验拒绝 modify_vpn_config（等价 dispatch 的栅栏）
     try:
         build_reissue_request_from_payload(
-            {"action": "modify_vpn_config", "user_id": "u", "ticket_id": "t", "target_version": "v"},
+            {
+                "action": "modify_vpn_config",
+                "user_id": "u",
+                "ticket_id": "t",
+                "target_version": "v",
+            },
             tenant_id="tenant-a",
         )
         raise AssertionError("红线 action 不应被允许")
@@ -306,7 +336,13 @@ def test_execute_failure_marks_failed_and_returns_to_manual_queue():
             return {"found": True, "version": "v2.4.1", "content": "x"}
 
         async def reissue_config(self, **kwargs):
-            return {"found": False, "delivered": False, "confirmed": False, "error_code": "vendor_error", "reason": "供应商超时"}
+            return {
+                "found": False,
+                "delivered": False,
+                "confirmed": False,
+                "error_code": "vendor_error",
+                "reason": "供应商超时",
+            }
 
         async def get_asset(self, asset_id=None, query=""):
             return {"found": True, "owner_user_id": "user-042", "status": "active"}
@@ -318,7 +354,9 @@ def test_execute_failure_marks_failed_and_returns_to_manual_queue():
     asyncio.run(svc.start(request=req, runtime=runtime, run_context=ctx))
 
     async def run():
-        return await svc.approve(request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx)
+        return await svc.approve(
+            request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx
+        )
 
     result = asyncio.run(run())
     assert result.ok is False
@@ -346,7 +384,9 @@ def test_full_link_audits_associate_ticket_user_approver_tool_result():
     async def run():
         await svc.start(request=req, runtime=runtime, run_context=ctx)
         tickets.cur_status = TicketStatus.AWAITING_APPROVAL
-        result = await svc.approve(request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx)
+        result = await svc.approve(
+            request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx
+        )
         return result
 
     asyncio.run(run())
@@ -354,7 +394,7 @@ def test_full_link_audits_associate_ticket_user_approver_tool_result():
     for expected in ("vpn_reissue_started", "vpn_reissue_approved", "vpn_reissue_executed"):
         assert expected in names, f"缺审计事件 {expected}"
     # 每个事件都关联 tenant/user/ticket/工具名 action=reissue_vpn_config/idempotency_key
-    for (event, _status, payload) in audit.events:
+    for event, _status, payload in audit.events:
         if event.startswith("vpn_reissue"):
             assert payload.get("tenant_id") == req.tenant_id
             assert payload.get("user_id") == req.user_id
@@ -381,8 +421,17 @@ def _adapter_with_account(*, status="active"):
     return _Mock(
         data={
             "accounts": {"user-042": {"user_id": "user-042", "status": status, "found": True}},
-            "assets": {"asset-001": {"asset_id": "asset-001", "owner_user_id": "user-042", "status": "active", "found": True}},
-            "client_configs": {"user-042": {"user_id": "user-042", "version": "v2.4.1", "found": True}},
+            "assets": {
+                "asset-001": {
+                    "asset_id": "asset-001",
+                    "owner_user_id": "user-042",
+                    "status": "active",
+                    "found": True,
+                }
+            },
+            "client_configs": {
+                "user-042": {"user_id": "user-042", "version": "v2.4.1", "found": True}
+            },
             "gateways": {},
             "incidents": {},
             "similar_tickets": {},
@@ -430,13 +479,18 @@ def test_approve_high_risk_denied_without_explicit_scope():
     runtime = _runtime(audit=audit, tickets=tickets, adapter=MockVpnAdapter(), assets=_FakeAssets())
     svc = VpnReissueService(registry=ReissueRegistry())
     req = build_reissue_request(
-        tenant_id="tenant-a", user_id="user-042", ticket_id="t-1",
-        client_version="v2.5.0", asset_id="asset-001", reason_codes=["multi_user_impact"],
+        tenant_id="tenant-a",
+        user_id="user-042",
+        ticket_id="t-1",
+        client_version="v2.5.0",
+        asset_id="asset-001",
+        reason_codes=["multi_user_impact"],
     )
     asyncio.run(svc.start(request=req, runtime=runtime, run_context=_run_context()))
 
     # 审批人只有 ticket:approve（无 vpn:high_risk_approve）
     ctx = _run_context(scopes=frozenset({"ticket:agent", "ticket:approve"}))
+
     async def run():
         return await svc.approve(
             request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx
@@ -458,11 +512,18 @@ def test_approve_high_risk_allowed_with_explicit_scope():
     runtime = _runtime(audit=audit, tickets=tickets, adapter=MockVpnAdapter(), assets=_FakeAssets())
     svc = VpnReissueService(registry=ReissueRegistry())
     req = build_reissue_request(
-        tenant_id="tenant-a", user_id="user-042", ticket_id="t-1",
-        client_version="v2.5.0", asset_id="asset-001", reason_codes=["multi_user_impact"],
+        tenant_id="tenant-a",
+        user_id="user-042",
+        ticket_id="t-1",
+        client_version="v2.5.0",
+        asset_id="asset-001",
+        reason_codes=["multi_user_impact"],
     )
     asyncio.run(svc.start(request=req, runtime=runtime, run_context=_run_context()))
-    ctx = _run_context(scopes=frozenset({"ticket:agent", "ticket:approve", HIGH_RISK_APPROVE_SCOPE}))
+    ctx = _run_context(
+        scopes=frozenset({"ticket:agent", "ticket:approve", HIGH_RISK_APPROVE_SCOPE})
+    )
+
     async def run():
         return await svc.approve(
             request=req, approver_user_id="approver-1", runtime=runtime, run_context=ctx

@@ -91,7 +91,7 @@ HYPOTHESIS_NO_EVIDENCE = "no_evidence"  # 无可信证据：不给出根因结�
 # 结构化诊断树（diagnose_vpn_tree / guardrail 分支）新增的叶子假设。
 HYPOTHESIS_LOCAL_NETWORK_NAT = "local_network_nat"  # 单用户：本地网络 / NAT 风险
 HYPOTHESIS_REGIONAL_INCIDENT = "regional_incident"  # 多用户：区域性事件
-HYPOTHESIS_VENDOR_ANOMALY = "vendor_anomaly"        # 多用户：VPN 厂商侧异常
+HYPOTHESIS_VENDOR_ANOMALY = "vendor_anomaly"  # 多用户：VPN 厂商侧异常
 
 # 处置命令（复用 DiagnosisCommandType 允许命令；escalate_incident 为事件升级/转人工）。
 NEXT_ACTION_ESCALATE = DiagnosisCommandType.ESCALATE_INCIDENT.value
@@ -443,7 +443,10 @@ def _evaluate_evidence_core(evidence: VpnEvidence) -> EvidenceDiagnosis:
     reason_codes = ["connection_failed"]
     if evidence.error_code:
         reason_codes.append(f"error_code_signal={evidence.error_code}")
-    evidence_notes = [f"账号状态={evidence.account_status.value}", f"网关状态={evidence.gateway_status.value}"]
+    evidence_notes = [
+        f"账号状态={evidence.account_status.value}",
+        f"网关状态={evidence.gateway_status.value}",
+    ]
     if evidence.error_code:
         evidence_notes.append(f"错误码={evidence.error_code}（仅作假设信号，非根因）")
     confidence = 0.85 if evidence.knowledge_hit else 0.6
@@ -457,9 +460,7 @@ def _evaluate_evidence_core(evidence: VpnEvidence) -> EvidenceDiagnosis:
             HYPOTHESIS_CLIENT_VERSION_OUTDATED,
             HYPOTHESIS_MULTI_USER_IMPACT,
         ],
-        next_action=(
-            NEXT_ACTION_PROVIDE_STEPS if evidence.knowledge_hit else NEXT_ACTION_ESCALATE
-        ),
+        next_action=(NEXT_ACTION_PROVIDE_STEPS if evidence.knowledge_hit else NEXT_ACTION_ESCALATE),
         reason_codes=reason_codes,
         must_handoff=not evidence.knowledge_hit,
         requires_human=not evidence.knowledge_hit,
@@ -606,7 +607,10 @@ def hypothesis_code_from_hint(hint: str) -> str:
         (HYPOTHESIS_CLIENT_VERSION_OUTDATED, ("版本", "客户端", "升级")),
         (HYPOTHESIS_GATEWAY_DOWN, ("网关", "gateway")),
         (HYPOTHESIS_AUTH_FAILED, ("认证失败", "登录失败", "密码错误", "认证")),
-        (HYPOTHESIS_FREQUENT_DISCONNECT, ("频繁掉线", "频繁断线", "经常掉线", "掉了", "掉线", "断线")),
+        (
+            HYPOTHESIS_FREQUENT_DISCONNECT,
+            ("频繁掉线", "频繁断线", "经常掉线", "掉了", "掉线", "断线"),
+        ),
         (HYPOTHESIS_INTRANET_UNREACHABLE, ("内网", "intranet", "内网不可达")),
         (HYPOTHESIS_LOCAL_NETWORK_NAT, ("NAT", "网络地址转换", "本地网络", "局域网")),
         (HYPOTHESIS_REGIONAL_INCIDENT, ("区域", "地区", "片区")),
@@ -662,8 +666,12 @@ def build_evidence_from_case(case: Mapping[str, Any], *, identity_ok: bool = Tru
         # 阶段四新增信号（无则回退默认值，绝不抛异常）。
         auth_attempts=_safe_int(provided.get("auth_attempts") or case.get("auth_attempts")),
         intranet_signal=_safe_bool(provided.get("intranet_signal") or case.get("intranet_signal")),
-        local_network_nat=_safe_bool(provided.get("local_network_nat") or case.get("local_network_nat")),
-        regional_incident=_safe_bool(provided.get("regional_incident") or case.get("regional_incident")),
+        local_network_nat=_safe_bool(
+            provided.get("local_network_nat") or case.get("local_network_nat")
+        ),
+        regional_incident=_safe_bool(
+            provided.get("regional_incident") or case.get("regional_incident")
+        ),
         vendor_anomaly=_safe_bool(provided.get("vendor_anomaly") or case.get("vendor_anomaly")),
         evidence_quote=str(provided.get("evidence_quote") or case.get("evidence_quote") or ""),
     )
@@ -722,7 +730,15 @@ _ACCOUNT_LOCKOUT_WEAK_TERMS = (
     "停用",
 )
 # 排除词：单纯「登录失败/密码错误」一次失败属认证类，不应误判为账号锁定。
-_ACCOUNT_LOCKOUT_EXCLUDE_TERMS = ("登录失败", "密码错误", "认证失败", "身份验证", "验证码", "用户名", "证书")
+_ACCOUNT_LOCKOUT_EXCLUDE_TERMS = (
+    "登录失败",
+    "密码错误",
+    "认证失败",
+    "身份验证",
+    "验证码",
+    "用户名",
+    "证书",
+)
 
 
 def _account_status_from_text(text: str) -> AccountStatus:
@@ -883,7 +899,12 @@ def diagnose_vpn_tree(evidence: VpnEvidence) -> DiagnosisConclusion:
             HYPOTHESIS_NO_EVIDENCE,
             0.2,
             ["身份/归属缺失，无法确认用户与资产"],
-            [HYPOTHESIS_ACCOUNT_LOCKED, HYPOTHESIS_MULTI_USER_IMPACT, HYPOTHESIS_CLIENT_VERSION_OUTDATED, HYPOTHESIS_GATEWAY_DOWN],
+            [
+                HYPOTHESIS_ACCOUNT_LOCKED,
+                HYPOTHESIS_MULTI_USER_IMPACT,
+                HYPOTHESIS_CLIENT_VERSION_OUTDATED,
+                HYPOTHESIS_GATEWAY_DOWN,
+            ],
             NEXT_ACTION_ESCALATE,
             True,
         )
@@ -907,7 +928,11 @@ def diagnose_vpn_tree(evidence: VpnEvidence) -> DiagnosisConclusion:
                 HYPOTHESIS_REGIONAL_INCIDENT,
                 0.85,
                 ["多用户同时失败且无网关异常，疑似区域性事件"],
-                [HYPOTHESIS_ACCOUNT_LOCKED, HYPOTHESIS_CLIENT_VERSION_OUTDATED, HYPOTHESIS_GATEWAY_DOWN],
+                [
+                    HYPOTHESIS_ACCOUNT_LOCKED,
+                    HYPOTHESIS_CLIENT_VERSION_OUTDATED,
+                    HYPOTHESIS_GATEWAY_DOWN,
+                ],
                 NEXT_ACTION_ESCALATE,
                 True,
             )
@@ -916,7 +941,11 @@ def diagnose_vpn_tree(evidence: VpnEvidence) -> DiagnosisConclusion:
             HYPOTHESIS_VENDOR_ANOMALY,
             0.8,
             ["多用户同时失败，无网关/区域信号，疑似 VPN 厂商侧异常"],
-            [HYPOTHESIS_ACCOUNT_LOCKED, HYPOTHESIS_CLIENT_VERSION_OUTDATED, HYPOTHESIS_GATEWAY_DOWN],
+            [
+                HYPOTHESIS_ACCOUNT_LOCKED,
+                HYPOTHESIS_CLIENT_VERSION_OUTDATED,
+                HYPOTHESIS_GATEWAY_DOWN,
+            ],
             NEXT_ACTION_ESCALATE,
             True,
         )
@@ -928,7 +957,11 @@ def diagnose_vpn_tree(evidence: VpnEvidence) -> DiagnosisConclusion:
             HYPOTHESIS_ACCOUNT_LOCKED,
             0.95,
             [f"账号状态={evidence.account_status.value}（锁定/禁用，需人工处理）"],
-            [HYPOTHESIS_GATEWAY_DOWN, HYPOTHESIS_CLIENT_VERSION_OUTDATED, HYPOTHESIS_MULTI_USER_IMPACT],
+            [
+                HYPOTHESIS_GATEWAY_DOWN,
+                HYPOTHESIS_CLIENT_VERSION_OUTDATED,
+                HYPOTHESIS_MULTI_USER_IMPACT,
+            ],
             NEXT_ACTION_ESCALATE,
             True,
         )
@@ -953,17 +986,29 @@ def diagnose_vpn_tree(evidence: VpnEvidence) -> DiagnosisConclusion:
             HYPOTHESIS_GATEWAY_DOWN,
             conf,
             [f"网关状态={evidence.gateway_status.value}"],
-            [HYPOTHESIS_ACCOUNT_LOCKED, HYPOTHESIS_CLIENT_VERSION_OUTDATED, HYPOTHESIS_CONNECTION_FAILED],
+            [
+                HYPOTHESIS_ACCOUNT_LOCKED,
+                HYPOTHESIS_CLIENT_VERSION_OUTDATED,
+                HYPOTHESIS_CONNECTION_FAILED,
+            ],
             NEXT_ACTION_ESCALATE,
             True,
         )
     # 8. 单用户 + 本地网络/NAT 风险（内网不可达）
-    if evidence.intranet_signal or evidence.local_network_nat or evidence.fault == HYPOTHESIS_INTRANET_UNREACHABLE:
+    if (
+        evidence.intranet_signal
+        or evidence.local_network_nat
+        or evidence.fault == HYPOTHESIS_INTRANET_UNREACHABLE
+    ):
         return _mk(
             HYPOTHESIS_LOCAL_NETWORK_NAT,
             0.8,
             ["本地网络/NAT 风险（内网不可达），需排查本地路由"],
-            [HYPOTHESIS_ACCOUNT_LOCKED, HYPOTHESIS_GATEWAY_DOWN, HYPOTHESIS_CLIENT_VERSION_OUTDATED],
+            [
+                HYPOTHESIS_ACCOUNT_LOCKED,
+                HYPOTHESIS_GATEWAY_DOWN,
+                HYPOTHESIS_CLIENT_VERSION_OUTDATED,
+            ],
             NEXT_ACTION_PROVIDE_STEPS if evidence.knowledge_hit else NEXT_ACTION_ESCALATE,
             not evidence.knowledge_hit,
         )
@@ -973,7 +1018,12 @@ def diagnose_vpn_tree(evidence: VpnEvidence) -> DiagnosisConclusion:
             HYPOTHESIS_NO_EVIDENCE,
             0.2,
             ["账号/网关状态未知且无知识命中，无可信证据支撑根因"],
-            [HYPOTHESIS_ACCOUNT_LOCKED, HYPOTHESIS_MULTI_USER_IMPACT, HYPOTHESIS_CLIENT_VERSION_OUTDATED, HYPOTHESIS_GATEWAY_DOWN],
+            [
+                HYPOTHESIS_ACCOUNT_LOCKED,
+                HYPOTHESIS_MULTI_USER_IMPACT,
+                HYPOTHESIS_CLIENT_VERSION_OUTDATED,
+                HYPOTHESIS_GATEWAY_DOWN,
+            ],
             NEXT_ACTION_ESCALATE,
             True,
         )
@@ -982,7 +1032,12 @@ def diagnose_vpn_tree(evidence: VpnEvidence) -> DiagnosisConclusion:
         HYPOTHESIS_CONNECTION_FAILED,
         0.85 if evidence.knowledge_hit else 0.6,
         [f"网关状态={evidence.gateway_status.value}（无异常）", "809/通用连接失败，网关无异常"],
-        [HYPOTHESIS_ACCOUNT_LOCKED, HYPOTHESIS_GATEWAY_DOWN, HYPOTHESIS_CLIENT_VERSION_OUTDATED, HYPOTHESIS_MULTI_USER_IMPACT],
+        [
+            HYPOTHESIS_ACCOUNT_LOCKED,
+            HYPOTHESIS_GATEWAY_DOWN,
+            HYPOTHESIS_CLIENT_VERSION_OUTDATED,
+            HYPOTHESIS_MULTI_USER_IMPACT,
+        ],
         NEXT_ACTION_PROVIDE_STEPS if evidence.knowledge_hit else NEXT_ACTION_ESCALATE,
         not evidence.knowledge_hit,
     )
@@ -1010,7 +1065,11 @@ def guardrail_evaluate(evidence: VpnEvidence) -> DiagnosisConclusion:
     # (ii) 高风险升级
     if evidence.fault in (HYPOTHESIS_MULTI_USER_IMPACT, HYPOTHESIS_AUTH_FAILED):
         requires_human = True
-    if dia.hypothesis in (HYPOTHESIS_NO_EVIDENCE, HYPOTHESIS_REGIONAL_INCIDENT, HYPOTHESIS_VENDOR_ANOMALY):
+    if dia.hypothesis in (
+        HYPOTHESIS_NO_EVIDENCE,
+        HYPOTHESIS_REGIONAL_INCIDENT,
+        HYPOTHESIS_VENDOR_ANOMALY,
+    ):
         requires_human = True
     # (iii) 无证据 -> 不得自动回复
     if not dia.evidence:

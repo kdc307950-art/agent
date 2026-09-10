@@ -98,9 +98,7 @@ def _expected_missing(case: Mapping[str, Any]) -> tuple[str, ...]:
 
 def _actual_missing(fields: Mapping[str, Any]) -> tuple[str, ...]:
     """8 项 VPN 必填字段的实际缺失检测（应补尽补）。"""
-    return tuple(
-        name for name in VPN_REQUIRED_FIELDS if fields.get(name) in (None, "", [], {})
-    )
+    return tuple(name for name in VPN_REQUIRED_FIELDS if fields.get(name) in (None, "", [], {}))
 
 
 def _rate(numerator: int, denominator: int) -> float:
@@ -180,18 +178,14 @@ async def _evaluate_case(
 
     # 负向/越界样例“误导向 it.vpn 自动建议”= 被分类到 it.vpn 且判定为 auto_suggest
     misdirect = bool(
-        is_negative
-        and actual_category == "it.vpn"
-        and predicted_boundary == "auto_suggest"
+        is_negative and actual_category == "it.vpn" and predicted_boundary == "auto_suggest"
     )
 
     # 阶段三：结构化证据链假设（M3 真实口径）。
     #   - 预期假设编码：由样本的 fault_hypothesis 文本归一化（无则用 vpn_fault 兜底）；
     #   - 预测假设编码：由确定性规则 evaluate_evidence(build_evidence_from_case) 产出，
     #     不再回退 vpn_fault；evidence_found 用于证据充分率。
-    evidence_chain = evaluate_evidence(
-        build_evidence_from_case(case, identity_ok=True)
-    )
+    evidence_chain = evaluate_evidence(build_evidence_from_case(case, identity_ok=True))
     expected_hypothesis_code = hypothesis_code_from_hint(
         str(case.get("fault_hypothesis") or expected_fault)
     )
@@ -259,9 +253,7 @@ def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
         fault_by_ok[fault] += int(item["fault_ok"])
 
     category_check = sum(int(item["category_ok"]) for item in results)
-    closed_loop = sum(
-        int(item["actual_category"] == "it.vpn") for item in vpn_results
-    )
+    closed_loop = sum(int(item["actual_category"] == "it.vpn") for item in vpn_results)
 
     boundary_counts_seen: dict[str, int] = defaultdict(int)
     boundary_ok_by: dict[str, int] = defaultdict(int)
@@ -275,8 +267,7 @@ def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
     auto_suggest_hits = [
         item
         for item in results
-        if item["expected_boundary"] == "auto_suggest"
-        and item["reference_supported"] is not None
+        if item["expected_boundary"] == "auto_suggest" and item["reference_supported"] is not None
     ]
     support_denominator = len(auto_suggest_hits)
     support_numerator = sum(int(item["reference_supported"]) for item in auto_suggest_hits)
@@ -315,9 +306,7 @@ def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "total": total,
         "classify_vpn_fault": {
-            "accuracy": _rate(
-                sum(int(item["fault_ok"]) for item in vpn_results), vpn_total
-            ),
+            "accuracy": _rate(sum(int(item["fault_ok"]) for item in vpn_results), vpn_total),
             "sample_count": vpn_total,
             "by_fault": {
                 fault: _rate(fault_by_ok[fault], fault_by_counts[fault])
@@ -331,17 +320,13 @@ def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
             ),
         },
         "field_completion": {
-            "detection_rate": _rate(
-                sum(int(item["field_check_ok"]) for item in results), total
-            ),
+            "detection_rate": _rate(sum(int(item["field_check_ok"]) for item in results), total),
             "complete_rate": _rate(
                 sum(int(item["fields_complete"]) for item in vpn_results), vpn_total
             ),
         },
         "boundary": {
-            "accuracy": _rate(
-                sum(int(item["boundary_ok"]) for item in results), total
-            ),
+            "accuracy": _rate(sum(int(item["boundary_ok"]) for item in results), total),
             "by_boundary": {
                 boundary: _rate(boundary_ok_by[boundary], boundary_counts_seen[boundary])
                 for boundary in sorted(boundary_counts_seen)
@@ -366,21 +351,33 @@ def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
                 if mode == "db" and support_denominator
                 else None
             ),
-            "reference_support_denominator": (
-                support_denominator if mode == "db" else None
-            ),
+            "reference_support_denominator": (support_denominator if mode == "db" else None),
         },
         "closed_loop_reachable": {
             "rate": _rate(closed_loop, vpn_total),
             "sample_count": vpn_total,
         },
         "latency_ms": {
-            "p50": round(sorted(latencies)[
-                min(len(latencies) - 1, max(0, round((len(latencies) - 1) * 0.50)))
-            ] if latencies else 0.0, 3),
-            "p95": round(sorted(latencies)[
-                min(len(latencies) - 1, max(0, round((len(latencies) - 1) * 0.95)))
-            ] if latencies else 0.0, 3),
+            "p50": round(
+                (
+                    sorted(latencies)[
+                        min(len(latencies) - 1, max(0, round((len(latencies) - 1) * 0.50)))
+                    ]
+                    if latencies
+                    else 0.0
+                ),
+                3,
+            ),
+            "p95": round(
+                (
+                    sorted(latencies)[
+                        min(len(latencies) - 1, max(0, round((len(latencies) - 1) * 0.95)))
+                    ]
+                    if latencies
+                    else 0.0
+                ),
+                3,
+            ),
         },
         "failures": failures,
         "failure_count": len(failures),
@@ -467,8 +464,7 @@ async def _run_eval(
         repository = KnowledgeRepository(pool)
     try:
         results = [
-            await _evaluate_case(classifier, policy, case, repository, tenant_id)
-            for case in cases
+            await _evaluate_case(classifier, policy, case, repository, tenant_id) for case in cases
         ]
     finally:
         if pool is not None:

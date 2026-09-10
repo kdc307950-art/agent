@@ -68,7 +68,12 @@ class _CountingAdapter(VpnAdapter):
 
     async def reissue_config(self, *, user_id, idempotency_key, target_version=None):
         self.reissue_calls += 1
-        return {"found": True, "delivered": True, "user_id": user_id, "idempotency_key": idempotency_key}
+        return {
+            "found": True,
+            "delivered": True,
+            "user_id": user_id,
+            "idempotency_key": idempotency_key,
+        }
 
 
 # ===========================================================================
@@ -113,7 +118,9 @@ def test_cache_hit_reinjects_current_trace_id():
     """缓存命中时回填「本次调用」的新 trace_id，保证逐调用可审计。"""
     inner = _CountingAdapter()
     cache = ResultCache(ttl_seconds=5.0)
-    resilient = VpnResilientAdapter(inner, cache=cache, resilience=ResilienceConfig(cache_ttl_seconds=5.0))
+    resilient = VpnResilientAdapter(
+        inner, cache=cache, resilience=ResilienceConfig(cache_ttl_seconds=5.0)
+    )
     r1 = _run(resilient.get_account_status("user-x"))
     r2 = _run(resilient.get_account_status("user-x"))
     assert r1.get("trace_id") != r2.get("trace_id"), "缓存命中应回填本次调用的新 trace_id"
@@ -124,7 +131,9 @@ def test_result_cache_expires_after_ttl():
     """TTL 过期后强制重新打厂商。"""
     inner = _CountingAdapter()
     cache = ResultCache(ttl_seconds=5.0)
-    resilient = VpnResilientAdapter(inner, cache=cache, resilience=ResilienceConfig(cache_ttl_seconds=5.0))
+    resilient = VpnResilientAdapter(
+        inner, cache=cache, resilience=ResilienceConfig(cache_ttl_seconds=5.0)
+    )
     _run(resilient.get_account_status("user-x"))
     assert inner.calls == 1
     # 手动使缓存条目过期
@@ -162,9 +171,7 @@ def test_side_effect_same_key_idempotent():
 def test_external_request_id_carried_to_inner_and_result():
     """每次读调用的 external_request_id 透传给 inner，且回填进返回结果。"""
     inner = _CountingAdapter()
-    resilient = VpnResilientAdapter(
-        inner, external_request_id_factory=lambda: "EXT-42"
-    )
+    resilient = VpnResilientAdapter(inner, external_request_id_factory=lambda: "EXT-42")
     result = _run(resilient.get_account_status("user-x"))
     assert inner.seen_external_ids == ["EXT-42"], "external_request_id 应透传给 inner"
     assert result.get("external_request_id") == "EXT-42"
@@ -278,7 +285,10 @@ def test_build_real_mode_still_rejects_unsupported_mode():
 
 def test_build_mock_and_sandbox_still_work():
     assert build_vpn_adapter("mock").data_source_tier == VpnDataSourceTier.FIXED_MOCK
-    assert build_vpn_adapter("sandbox", seed=1).data_source_tier == VpnDataSourceTier.REPRODUCIBLE_SANDBOX
+    assert (
+        build_vpn_adapter("sandbox", seed=1).data_source_tier
+        == VpnDataSourceTier.REPRODUCIBLE_SANDBOX
+    )
 
 
 def test_custom_result_cache_ttl_via_build():

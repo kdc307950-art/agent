@@ -49,8 +49,13 @@ async def main() -> None:
         raise SystemExit(2) from exc
 
     print("[STEP 2] status and mapping probes: read-only connectivity and tenant targets")
-    g0 = make_gw({"tenant-a": FortiManagerTarget(adom="A", device="FGT-FAKE-001",
-                                                 vdom="root", install_kind="device")})
+    g0 = make_gw(
+        {
+            "tenant-a": FortiManagerTarget(
+                adom="A", device="FGT-FAKE-001", vdom="root", install_kind="device"
+            )
+        }
+    )
     try:
         status = await g0.get_system_status()
         mapping = await g0.validate_tenant_target(tenant_id="tenant-a")
@@ -60,8 +65,17 @@ async def main() -> None:
         await g0.aclose()
 
     print("[STEP 3] confirmed: install -> task polling -> success")
-    g1 = make_gw({"tenant-a": FortiManagerTarget(adom="ADOM_OK", device="FGT-FAKE-001",
-                                                 vdom="root", package="PKG_FAKE", install_kind="package")})
+    g1 = make_gw(
+        {
+            "tenant-a": FortiManagerTarget(
+                adom="ADOM_OK",
+                device="FGT-FAKE-001",
+                vdom="root",
+                package="PKG_FAKE",
+                install_kind="package",
+            )
+        }
+    )
     try:
         preview = await g1.preview_tenant_config(tenant_id="tenant-a")
         r1 = await g1.redeploy_tenant_vpn_config(
@@ -69,15 +83,30 @@ async def main() -> None:
             idempotency_key="drill-confirm-1",
             approved_diff_hash=preview["diff_hash"],
         )
-        print("  confirmed:", r1.get("confirmed"), "| vendor_task_id:", r1.get("vendor_task_id"),
-              "| state:", r1.get("status"))
+        print(
+            "  confirmed:",
+            r1.get("confirmed"),
+            "| vendor_task_id:",
+            r1.get("vendor_task_id"),
+            "| state:",
+            r1.get("status"),
+        )
         ok = ok and (r1.get("confirmed") is True and r1.get("vendor_task_id") is not None)
     finally:
         await g1.aclose()
 
     print("[STEP 4] execution_unknown: timeout retains the FMG task id")
-    g2 = make_gw({"tenant-b": FortiManagerTarget(adom="STALL", device="FGT-FAKE-001",
-                                                 vdom="root", package="PKG_FAKE")}, max_wait=0.05)
+    # Keep enough time for the preview task's four HTTP polls inside a container;
+    # the install task is still intentionally stalled and reaches the same local
+    # timeout without being retried.
+    g2 = make_gw(
+        {
+            "tenant-b": FortiManagerTarget(
+                adom="STALL", device="FGT-FAKE-001", vdom="root", package="PKG_FAKE"
+            )
+        },
+        max_wait=0.5,
+    )
     try:
         preview = await g2.preview_tenant_config(tenant_id="tenant-b")
         r2 = await g2.redeploy_tenant_vpn_config(
@@ -98,11 +127,18 @@ async def main() -> None:
         await g2.aclose()
 
     print("[STEP 5] reconciliation rule: do not resend before confirmation")
-    print("  [PASS] vendor_task_id retained; follow-up uses confirm-submission or read-only reconciliation")
+    print(
+        "  [PASS] vendor_task_id retained; follow-up uses confirm-submission or read-only reconciliation"
+    )
 
     print("[STEP 6] rejected: FMG business rejection becomes an auditable failure")
-    g3 = make_gw({"tenant-c": FortiManagerTarget(adom="REJECT", device="FGT-FAKE-001",
-                                                 vdom="root", package="PKG_FAKE")})
+    g3 = make_gw(
+        {
+            "tenant-c": FortiManagerTarget(
+                adom="REJECT", device="FGT-FAKE-001", vdom="root", package="PKG_FAKE"
+            )
+        }
+    )
     try:
         preview = await g3.preview_tenant_config(tenant_id="tenant-c")
         r3 = await g3.redeploy_tenant_vpn_config(
@@ -116,12 +152,17 @@ async def main() -> None:
         await g3.aclose()
 
     print("[STEP 7] assertions: summarize four safety checks")
-    print("  [PASS] status=0, confirmed has task id, timeout retains task id, reject is not success" if ok else
-          "  [FAIL] at least one assertion failed")
+    print(
+        "  [PASS] status=0, confirmed has task id, timeout retains task id, reject is not success"
+        if ok
+        else "  [FAIL] at least one assertion failed"
+    )
 
     print("[STEP 8] final conclusion")
     if ok:
-        print("  ALL PASS: Fake FMG real HTTP drill verified; real FMG and production writes remain unverified.")
+        print(
+            "  ALL PASS: Fake FMG real HTTP drill verified; real FMG and production writes remain unverified."
+        )
     else:
         print("  HAS FAILURE: drill failed; do not use it as project evidence.")
         raise SystemExit(1)

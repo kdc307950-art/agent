@@ -48,10 +48,10 @@ logger = logging.getLogger("langgraph.vpn")
 class VpnDataSourceTier(StrEnum):
     """VPN 数据源级别枚举（沙箱适配器至少支持前两级：固定 Mock 与可重复沙箱）。"""
 
-    FIXED_MOCK = "mock"            # 固定 Mock（内置/文件快照）
+    FIXED_MOCK = "mock"  # 固定 Mock（内置/文件快照）
     REPRODUCIBLE_SANDBOX = "sandbox"  # 可重复沙箱（seed 确定性）
-    TEST_ENV_REAL = "test_env"     # 测试环境真实 API（本期不接）
-    PROD_READONLY = "prod_readonly"   # 生产只读（本期不接）
+    TEST_ENV_REAL = "test_env"  # 测试环境真实 API（本期不接）
+    PROD_READONLY = "prod_readonly"  # 生产只读（本期不接）
     PROD_APPROVED_WRITE = "prod_approved_write"  # 生产受审批写（本期不接）
 
 
@@ -307,7 +307,10 @@ class TenantScopePolicy(AccessPolicy):
                 return False, f"资产 {redact(asset_id)} 不在租户 {self._tenant_id} 范围"
             owner = self._asset_owners[asset_id]
             if user_id is not None and owner != user_id:
-                return False, f"资产 {redact(asset_id)} 归属 {redact(owner)} 与用户 {redact(user_id)} 不匹配"
+                return (
+                    False,
+                    f"资产 {redact(asset_id)} 归属 {redact(owner)} 与用户 {redact(user_id)} 不匹配",
+                )
         return True, None
 
 
@@ -461,21 +464,15 @@ class VpnResilientAdapter(VpnAdapter):
     async def get_gateway_status(
         self, gateway_id: str | None = None, region: str | None = None
     ) -> dict[str, Any]:
-        return await self._invoke(
-            "get_gateway_status", gateway_id=gateway_id, region=region
-        )
+        return await self._invoke("get_gateway_status", gateway_id=gateway_id, region=region)
 
-    async def get_asset(
-        self, asset_id: str | None = None, query: str = ""
-    ) -> dict[str, Any]:
+    async def get_asset(self, asset_id: str | None = None, query: str = "") -> dict[str, Any]:
         return await self._invoke("get_asset", asset_id=asset_id, query=query)
 
     async def get_incident_status(self, incident_id: str) -> dict[str, Any]:
         return await self._invoke("get_incident_status", incident_id=incident_id)
 
-    async def get_similar_tickets(
-        self, user_id: str, fault: str | None = None
-    ) -> dict[str, Any]:
+    async def get_similar_tickets(self, user_id: str, fault: str | None = None) -> dict[str, Any]:
         return await self._invoke("get_similar_tickets", user_id=user_id, fault=fault)
 
     async def search_knowledge(self, query: str, limit: int = 5) -> dict[str, Any]:
@@ -516,9 +513,7 @@ class VpnResilientAdapter(VpnAdapter):
         external_request_id = None if _side_effect else self._new_external_request_id()
 
         # 1) tenant_id 隔离 + 归属校验
-        ok, reason = self._access.authorize(
-            tenant_id=tenant_id, user_id=user_id, asset_id=asset_id
-        )
+        ok, reason = self._access.authorize(tenant_id=tenant_id, user_id=user_id, asset_id=asset_id)
         if not ok:
             deny: dict[str, Any] = {
                 "found": False,
@@ -528,7 +523,9 @@ class VpnResilientAdapter(VpnAdapter):
                 "tenant_id": tenant_id,
             }
             self._record_audit(method, request_id, "denied", deny, elapsed=0.0, tenant_id=tenant_id)
-            logger.warning("vpn access denied method=%s tenant=%s reason=%s", method, tenant_id, reason)
+            logger.warning(
+                "vpn access denied method=%s tenant=%s reason=%s", method, tenant_id, reason
+            )
             return deny
 
         # 2) 熔断器门禁
@@ -540,7 +537,9 @@ class VpnResilientAdapter(VpnAdapter):
                 "request_id": request_id,
                 "tenant_id": tenant_id,
             }
-            self._record_audit(method, request_id, "circuit_open", blocked, elapsed=0.0, tenant_id=tenant_id)
+            self._record_audit(
+                method, request_id, "circuit_open", blocked, elapsed=0.0, tenant_id=tenant_id
+            )
             return blocked
 
         # 3) 幂等键（仅副作用操作）：同键已执行过直接返回既有结果
@@ -559,8 +558,13 @@ class VpnResilientAdapter(VpnAdapter):
             if cached is not None:
                 cached = self._inject_meta(cached, request_id, tenant_id, external_request_id)
                 self._record_audit(
-                    method, request_id, "cache_hit", cached, elapsed=0.0,
-                    tenant_id=tenant_id, external_request_id=external_request_id,
+                    method,
+                    request_id,
+                    "cache_hit",
+                    cached,
+                    elapsed=0.0,
+                    tenant_id=tenant_id,
+                    external_request_id=external_request_id,
                 )
                 return cached
 
@@ -581,21 +585,33 @@ class VpnResilientAdapter(VpnAdapter):
                     result = {"found": False, "content": str(result)}
                 result = self._inject_meta(result, request_id, tenant_id, external_request_id)
                 self._record_audit(
-                    method, request_id, "ok", result, elapsed=elapsed,
-                    tenant_id=tenant_id, external_request_id=external_request_id,
+                    method,
+                    request_id,
+                    "ok",
+                    result,
+                    elapsed=elapsed,
+                    tenant_id=tenant_id,
+                    external_request_id=external_request_id,
                 )
                 if _side_effect and kwargs.get("idempotency_key"):
                     self._idempotency[f"{method}:{kwargs['idempotency_key']}"] = dict(result)
                 elif not _side_effect and self._cache is not None and cache_key is not None:
                     self._cache.put(cache_key, result)
                 return result
-            except Exception as exc:  # noqa: BLE001  外部/内部异常统一映射（含 TimeoutError/ConnectionError）
+            except (
+                Exception
+            ) as exc:  # noqa: BLE001  外部/内部异常统一映射（含 TimeoutError/ConnectionError）
                 mapped = self._config.error_mapper(exc)
                 self._breaker.record_failure()
                 elapsed = time.monotonic() - start
                 self._record_audit(
-                    method, request_id, "error", mapped, elapsed=elapsed,
-                    tenant_id=tenant_id, external_request_id=external_request_id,
+                    method,
+                    request_id,
+                    "error",
+                    mapped,
+                    elapsed=elapsed,
+                    tenant_id=tenant_id,
+                    external_request_id=external_request_id,
                 )
                 last_error = mapped
                 retryable = bool(mapped.get("retryable")) and bool(
@@ -610,7 +626,9 @@ class VpnResilientAdapter(VpnAdapter):
         result = self._inject_meta(result, request_id, tenant_id, external_request_id)
         return result
 
-    def _dispatch(self, method: str, external_request_id: str | None = None, **kwargs: Any) -> Awaitable[Any]:
+    def _dispatch(
+        self, method: str, external_request_id: str | None = None, **kwargs: Any
+    ) -> Awaitable[Any]:
         """把方法名分派到 inner。inner 若确实实现则直调；否则返回缺省 found:false。
 
         仅当 inner 明确支持（带 _accepts_external_request_id=True）时，才把 external_request_id
@@ -618,10 +636,14 @@ class VpnResilientAdapter(VpnAdapter):
         """
         fn = getattr(self._inner, method, None)
         if fn is None:
+
             async def _missing() -> dict[str, Any]:
                 return {"found": False, "content": f"数据源未实现 {method}"}
+
             return _missing()
-        if external_request_id is not None and getattr(self._inner, "_accepts_external_request_id", False):
+        if external_request_id is not None and getattr(
+            self._inner, "_accepts_external_request_id", False
+        ):
             kwargs = dict(kwargs)
             kwargs["external_request_id"] = external_request_id
         return fn(**kwargs)
@@ -854,17 +876,13 @@ class SandboxVpnAdapter(VpnAdapter):
             gateway_id=gateway_id, region=region
         )
 
-    async def get_asset(
-        self, asset_id: str | None = None, query: str = ""
-    ) -> dict[str, Any]:
+    async def get_asset(self, asset_id: str | None = None, query: str = "") -> dict[str, Any]:
         return await MockVpnAdapter(data=self._data).get_asset(asset_id=asset_id, query=query)
 
     async def get_incident_status(self, incident_id: str) -> dict[str, Any]:
         return await MockVpnAdapter(data=self._data).get_incident_status(incident_id)
 
-    async def get_similar_tickets(
-        self, user_id: str, fault: str | None = None
-    ) -> dict[str, Any]:
+    async def get_similar_tickets(self, user_id: str, fault: str | None = None) -> dict[str, Any]:
         return await MockVpnAdapter(data=self._data).get_similar_tickets(user_id, fault=fault)
 
     async def search_knowledge(self, query: str, limit: int = 5) -> dict[str, Any]:
@@ -947,9 +965,7 @@ def build_vpn_adapter(
         "real",
     }
     if mode not in supported:
-        raise ValueError(
-            f"不支持的 VPN 数据源模式: {mode}（当前仅支持 mock / sandbox / real）"
-        )
+        raise ValueError(f"不支持的 VPN 数据源模式: {mode}（当前仅支持 mock / sandbox / real）")
 
     if mode == VpnDataSourceTier.FIXED_MOCK.value:
         inner: VpnAdapter = MockVpnAdapter(data_path=data_path if data_path else None)

@@ -141,7 +141,12 @@ def test_tool_rejected_when_tenant_missing():
 def test_governance_denies_vpn_tool_without_ticket_agent_scope():
     context = _context(scopes=frozenset({"chat:write"}))  # 无 ticket:agent
     request = SimpleNamespace(
-        tool_call={"name": "search_vpn_knowledge", "args": {"query": "vpn"}, "id": "c1", "type": "tool_call"},
+        tool_call={
+            "name": "search_vpn_knowledge",
+            "args": {"query": "vpn"},
+            "id": "c1",
+            "type": "tool_call",
+        },
         tool=object(),
         runtime=SimpleNamespace(context=context),
     )
@@ -156,7 +161,12 @@ def test_governance_denies_forged_send_message_via_allowlist():
     """模型伪造 send_message：allowed_tools profile 排除则拒绝（零副作用）。"""
     context = _context(allowed_tools=VPN_DIAGNOSIS_TOOLS)
     request = SimpleNamespace(
-        tool_call={"name": "send_message", "args": {"content": "hi"}, "id": "c1", "type": "tool_call"},
+        tool_call={
+            "name": "send_message",
+            "args": {"content": "hi"},
+            "id": "c1",
+            "type": "tool_call",
+        },
         tool=object(),
         runtime=SimpleNamespace(context=context),
     )
@@ -182,7 +192,12 @@ def test_governance_denies_unregistered_tool():
 def test_governance_tool_success_is_audited():
     context = _context()
     request = SimpleNamespace(
-        tool_call={"name": "search_vpn_knowledge", "args": {"query": "vpn"}, "id": "c1", "type": "tool_call"},
+        tool_call={
+            "name": "search_vpn_knowledge",
+            "args": {"query": "vpn"},
+            "id": "c1",
+            "type": "tool_call",
+        },
         tool=object(),
         runtime=SimpleNamespace(context=context),
     )

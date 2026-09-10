@@ -33,6 +33,7 @@ def UTC_NOW() -> datetime:
     """返回当前 UTC 时间；作为 pydantic ``Field(default_factory=...)`` 的回调。"""
     return datetime.now(UTC)
 
+
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9_.:-]+$"
 
 
@@ -49,21 +50,21 @@ def _new_result_id() -> str:
 class DiagnosisRunStatus(StrEnum):
     """一次 VPN 诊断运行的终身状态。"""
 
-    DIAGNOSING = "diagnosing"          # 正在诊断 / 已产出命令等待处置
-    COMPLETED = "completed"            # 已落定（解决/关闭）
-    HANDED_OFF = "handed_off"          # 已升级人工接管
-    FAILED = "failed"                  # 诊断失败（无可用命令）
-    CANCELLED = "cancelled"            # 取消
+    DIAGNOSING = "diagnosing"  # 正在诊断 / 已产出命令等待处置
+    COMPLETED = "completed"  # 已落定（解决/关闭）
+    HANDED_OFF = "handed_off"  # 已升级人工接管
+    FAILED = "failed"  # 诊断失败（无可用命令）
+    CANCELLED = "cancelled"  # 取消
 
 
 class CustomerActionStatus(StrEnum):
     """给客户的排查步骤的可用状态。"""
 
-    ISSUED = "issued"                  # 已产生，待客户执行
-    EXECUTED = "executed"              # 客户已回填结果
-    CONFIRMED = "confirmed"            # 结果确认有效
-    ABANDONED = "abandoned"            # 客户放弃/超时
-    SUPERSEDED = "superseded"          # 被后续排查步骤取代
+    ISSUED = "issued"  # 已产生，待客户执行
+    EXECUTED = "executed"  # 客户已回填结果
+    CONFIRMED = "confirmed"  # 结果确认有效
+    ABANDONED = "abandoned"  # 客户放弃/超时
+    SUPERSEDED = "superseded"  # 被后续排查步骤取代
 
 
 class EscalationStatus(StrEnum):
@@ -155,7 +156,9 @@ class VpnCustomerActionResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    result_id: str = Field(default_factory=_new_result_id, min_length=1, max_length=128, pattern=_IDENTIFIER_PATTERN)
+    result_id: str = Field(
+        default_factory=_new_result_id, min_length=1, max_length=128, pattern=_IDENTIFIER_PATTERN
+    )
     action_id: str = Field(min_length=1, max_length=128, pattern=_IDENTIFIER_PATTERN)
     ticket_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
     tenant_id: str = Field(min_length=1, max_length=128)
@@ -216,7 +219,9 @@ class DiagnosisRegistry:
         return self._runs.get(run_id)
 
     def list_runs(self, ticket_id: str) -> list[VpnDiagnosisRun]:
-        return [self._runs[rid] for rid in self._ticket_runs.get(ticket_id, []) if rid in self._runs]
+        return [
+            self._runs[rid] for rid in self._ticket_runs.get(ticket_id, []) if rid in self._runs
+        ]
 
     def get_latest_run(self, ticket_id: str) -> VpnDiagnosisRun | None:
         runs = self.list_runs(ticket_id)

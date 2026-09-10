@@ -253,7 +253,12 @@ class FortiManagerCommandGateway:
         try:
             result, request_id = await self._rpc(method="get", url="/dvmdb/device")
         except FortiManagerBusinessError as exc:
-            return {"ok": False, "tenant_id": tenant_id, "error_code": "device_query_failed", "reason": str(exc)}
+            return {
+                "ok": False,
+                "tenant_id": tenant_id,
+                "error_code": "device_query_failed",
+                "reason": str(exc),
+            }
         devices = result.get("data") or []
         matched = self._find_named_record(devices, target.device)
         return {
@@ -275,7 +280,12 @@ class FortiManagerCommandGateway:
                 method="get", url=f"/pm/config/adom/{target.adom}/pkg"
             )
         except FortiManagerBusinessError as exc:
-            return {"ok": False, "tenant_id": tenant_id, "error_code": "package_query_failed", "reason": str(exc)}
+            return {
+                "ok": False,
+                "tenant_id": tenant_id,
+                "error_code": "package_query_failed",
+                "reason": str(exc),
+            }
         packages = result.get("data") or []
         matched = self._find_named_record(packages, target.package)
         return {
@@ -323,7 +333,9 @@ class FortiManagerCommandGateway:
             tenant_id=tenant_id, task_id=task_id, external_request_id=request_id
         )
         if task_result.get("error_code"):
-            return self._failure("preview_failed", task_result.get("reason", "preview 任务失败"), task=task_result)
+            return self._failure(
+                "preview_failed", task_result.get("reason", "preview 任务失败"), task=task_result
+            )
         result, result_request_id = await self._rpc(
             method="exec",
             url="/securityconsole/preview/result",
@@ -480,9 +492,9 @@ class FortiManagerCommandGateway:
         if isinstance(value, str):
             raw = value.encode("utf-8")
         else:
-            raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
+            raw = json.dumps(
+                value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()
 
     @staticmethod
@@ -532,12 +544,16 @@ class FortiManagerCommandGateway:
     def _require_same_preview(preview: dict[str, Any], expected_hash: str) -> None:
         if preview.get("status") == "noop":
             raise FortiManagerPreviewChangedError(
-                -409, "已批准的 preview 与当前状态不一致：当前已无待下发差异", "/securityconsole/preview"
+                -409,
+                "已批准的 preview 与当前状态不一致：当前已无待下发差异",
+                "/securityconsole/preview",
             )
         actual = preview.get("diff_hash")
         if not isinstance(actual, str) or actual != expected_hash:
             raise FortiManagerPreviewChangedError(
-                -409, "已批准的 preview diff_hash 已变化，必须重新 preview", "/securityconsole/preview"
+                -409,
+                "已批准的 preview diff_hash 已变化，必须重新 preview",
+                "/securityconsole/preview",
             )
 
     def _target(self, tenant_id: str) -> FortiManagerTarget:

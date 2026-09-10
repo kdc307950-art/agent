@@ -43,9 +43,7 @@ async def _open_pool(name: str = "vpn-reissue-store") -> AsyncConnectionPool:
     from backend.migrations import setup_postgres
 
     await setup_postgres()
-    pool = AsyncConnectionPool(
-        DATABASE_URL, min_size=1, max_size=4, open=False, name=name
-    )
+    pool = AsyncConnectionPool(DATABASE_URL, min_size=1, max_size=4, open=False, name=name)
     await pool.open(wait=True)
     return pool
 

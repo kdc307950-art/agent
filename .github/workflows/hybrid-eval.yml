@@ -99,23 +99,31 @@ jobs:
       - name: Require embedding endpoint secret
         # 未配置 secrets 时立即失败，绝不降级成 lexical-only 出"hybrid 成绩"。
         run: |
+          set -euo pipefail
           if [ -z "$KNOWLEDGE_EMBEDDING_ENDPOINT" ]; then
             echo "::error::缺少 KNOWLEDGE_EMBEDDING_ENDPOINT secret：无法执行 hybrid 评测（禁止降级伪称 hybrid）。"
             exit 1
           fi
+          case "$KNOWLEDGE_EMBEDDING_ENDPOINT" in
+            http://*|https://*) ;;
+            *)
+              echo "::error::KNOWLEDGE_EMBEDDING_ENDPOINT 必须是 http:// 或 https:// URL。"
+              exit 1
+              ;;
+          esac
       - name: Warm up embedding endpoint
         # PaaS 免费实例可能休眠（Render free 空闲即睡），首次请求可能超过
         # 评测 15s 超时；先发最小契约请求唤醒（放宽超时），再进入正式流程。
         run: |
+          set -euo pipefail
           auth_args=()
           if [ -n "$KNOWLEDGE_EMBEDDING_TOKEN" ]; then
             auth_args=(-H "X-Embedding-Proxy-Token: $KNOWLEDGE_EMBEDDING_TOKEN")
           fi
-          curl -sS -m 120 -X POST "$KNOWLEDGE_EMBEDDING_ENDPOINT" \
+          curl --fail-with-body -sS -m 120 --retry 2 --retry-delay 5 -X POST "$KNOWLEDGE_EMBEDDING_ENDPOINT" \
             -H "Content-Type: application/json" \
             "${auth_args[@]}" \
-            -d '{"texts":["warmup"]}' \
-            -o /dev/null
+            -d '{"texts":["warmup"]}'
       - name: Initialize schema
         run: uv run python -m backend.migrations
       - name: Initialize pgvector schema

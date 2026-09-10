@@ -53,6 +53,12 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        UV_IMAGE: ${DEMO_UV_IMAGE:-ghcr.io/astral-sh/uv:0.11}
+        UV_INDEX_URL: ${DEMO_UV_INDEX_URL:-}
+        HTTP_PROXY: ${DEMO_HTTP_PROXY:-}
+        HTTPS_PROXY: ${DEMO_HTTPS_PROXY:-}
+        ALL_PROXY: ${DEMO_ALL_PROXY:-}
     command: ["python", "-m", "backend.migrations"]
     healthcheck:
       disable: true
@@ -69,6 +75,12 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        UV_IMAGE: ${DEMO_UV_IMAGE:-ghcr.io/astral-sh/uv:0.11}
+        UV_INDEX_URL: ${DEMO_UV_INDEX_URL:-}
+        HTTP_PROXY: ${DEMO_HTTP_PROXY:-}
+        HTTPS_PROXY: ${DEMO_HTTPS_PROXY:-}
+        ALL_PROXY: ${DEMO_ALL_PROXY:-}
     command: ["python", "-m", "backend.seed_demo"]
     healthcheck:
       disable: true
@@ -86,6 +98,12 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        UV_IMAGE: ${DEMO_UV_IMAGE:-ghcr.io/astral-sh/uv:0.11}
+        UV_INDEX_URL: ${DEMO_UV_INDEX_URL:-}
+        HTTP_PROXY: ${DEMO_HTTP_PROXY:-}
+        HTTPS_PROXY: ${DEMO_HTTPS_PROXY:-}
+        ALL_PROXY: ${DEMO_ALL_PROXY:-}
     environment:
       APP_ENV: development
       AUTH_MODE: dev
@@ -95,10 +113,20 @@ services:
       LANGGRAPH_AUTO_SETUP: "false"
       TENANT_TOKEN_SECRET: demo_only_not_a_secret
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-demo-placeholder-key}
+      HTTP_PROXY: ${DEMO_HTTP_PROXY:-}
+      HTTPS_PROXY: ${DEMO_HTTPS_PROXY:-}
+      ALL_PROXY: ${DEMO_ALL_PROXY:-}
+      http_proxy: ${DEMO_HTTP_PROXY:-}
+      https_proxy: ${DEMO_HTTPS_PROXY:-}
+      all_proxy: ${DEMO_ALL_PROXY:-}
+      NO_PROXY: ${DEMO_NO_PROXY:-localhost,127.0.0.1,postgres,redis,fake-fmg}
+      no_proxy: ${DEMO_NO_PROXY:-localhost,127.0.0.1,postgres,redis,fake-fmg}
       VPN_COMMAND_GATEWAY_MODE: fortimanager
       VPN_FMG_BASE_URL: https://fake-fmg:8443
       VPN_FMG_API_TOKEN: fake-token-123
       VPN_FMG_VERIFY_TLS: "false"
+      FAKE_FMG_BASE_URL: https://fake-fmg:8443
+      FAKE_FMG_TOKEN: fake-token-123
       VPN_FMG_POLL_INTERVAL_SECONDS: "0.05"
       VPN_FMG_MAX_WAIT_SECONDS: "5"
       VPN_FMG_TENANT_TARGETS_JSON: '{"demo":{"adom":"ADOM_DEMO","device":"FGT-FAKE-001","vdom":"root","package":"PKG_FAKE","install_kind":"package"}}'
@@ -126,8 +154,25 @@ services:
     build:
       context: ../frontend
       dockerfile: Dockerfile
+      args:
+        NODE_IMAGE: ${DEMO_NODE_IMAGE:-node:22-alpine}
+        NGINX_IMAGE: ${DEMO_NGINX_IMAGE:-nginx:1.27-alpine}
+        HTTP_PROXY: ${DEMO_HTTP_PROXY:-}
+        HTTPS_PROXY: ${DEMO_HTTPS_PROXY:-}
+        ALL_PROXY: ${DEMO_ALL_PROXY:-}
     ports:
       - "127.0.0.1:8000:80"
+    environment:
+      # The healthcheck must reach Nginx directly even when Docker Desktop or
+      # the host shell carries a stale local SOCKS proxy setting.
+      HTTP_PROXY: ${DEMO_HTTP_PROXY:-}
+      HTTPS_PROXY: ${DEMO_HTTPS_PROXY:-}
+      ALL_PROXY: ${DEMO_ALL_PROXY:-}
+      http_proxy: ${DEMO_HTTP_PROXY:-}
+      https_proxy: ${DEMO_HTTPS_PROXY:-}
+      all_proxy: ${DEMO_ALL_PROXY:-}
+      NO_PROXY: ${DEMO_NO_PROXY:-localhost,127.0.0.1}
+      no_proxy: ${DEMO_NO_PROXY:-localhost,127.0.0.1}
     depends_on:
       agent:
         condition: service_healthy

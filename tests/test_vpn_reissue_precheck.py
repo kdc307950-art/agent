@@ -83,17 +83,32 @@ class _Tickets:
     async def transition(self, tenant_id, command, scopes=None):
         self.transition_calls.append(command.action)
         self.cur_status = transition_ticket(self.cur_status, command, scopes=set(scopes or ()))
-        return SimpleNamespace(ticket_id=command.ticket_id, status=self.cur_status, version=self.version)
+        return SimpleNamespace(
+            ticket_id=command.ticket_id, status=self.cur_status, version=self.version
+        )
 
-    async def start_workflow_operation(self, *, tenant_id, ticket_id, operation_id, command_type, expected_version, checkpoint_thread_id):
+    async def start_workflow_operation(
+        self,
+        *,
+        tenant_id,
+        ticket_id,
+        operation_id,
+        command_type,
+        expected_version,
+        checkpoint_thread_id,
+    ):
         self.operation_started.append(operation_id)
         return {"status": "started", "operation_id": operation_id}
 
-    async def mark_workflow_operation_failed(self, *, tenant_id, ticket_id, operation_id, error_code):
+    async def mark_workflow_operation_failed(
+        self, *, tenant_id, ticket_id, operation_id, error_code
+    ):
         self.operation_failed.append((operation_id, error_code))
         return True
 
-    async def mark_workflow_operation_committed(self, *, tenant_id, ticket_id, operation_id, result_hash):
+    async def mark_workflow_operation_committed(
+        self, *, tenant_id, ticket_id, operation_id, result_hash
+    ):
         self.operation_committed.append(operation_id)
         return True
 
@@ -102,7 +117,9 @@ def _runtime(*, audit, tickets, adapter, assets):
     return SimpleNamespace(audit=audit, tickets=tickets, vpn_adapter=adapter, assets=assets)
 
 
-def _run_context(tenant_id="tenant-a", user_id="user-042", scopes=frozenset({"ticket:agent", "ticket:approve"})):
+def _run_context(
+    tenant_id="tenant-a", user_id="user-042", scopes=frozenset({"ticket:agent", "ticket:approve"})
+):
     return RunContext(
         run_id="run-precheck",
         request_id="req-1",
@@ -115,7 +132,14 @@ def _run_context(tenant_id="tenant-a", user_id="user-042", scopes=frozenset({"ti
     )
 
 
-def _request(*, tenant_id="tenant-a", user_id="user-042", ticket_id="t-1", client_version="v2.5.0", reason_codes=None):
+def _request(
+    *,
+    tenant_id="tenant-a",
+    user_id="user-042",
+    ticket_id="t-1",
+    client_version="v2.5.0",
+    reason_codes=None,
+):
     return build_reissue_request(
         tenant_id=tenant_id,
         user_id=user_id,
@@ -133,9 +157,20 @@ def _event_names(audit: _FakeAudit) -> list[str]:
 def _adapter(*, account_status="active", account_found=True, config_found=True):
     """构造一个显式数据的 MockVpnAdapter，避免污染模块级共享默认数据。"""
     data = {
-        "accounts": {"user-042": {"user_id": "user-042", "status": account_status, "found": account_found}},
-        "assets": {"asset-001": {"asset_id": "asset-001", "owner_user_id": "user-042", "status": "active", "found": True}},
-        "client_configs": {"user-042": {"user_id": "user-042", "version": "v2.4.1", "found": config_found}},
+        "accounts": {
+            "user-042": {"user_id": "user-042", "status": account_status, "found": account_found}
+        },
+        "assets": {
+            "asset-001": {
+                "asset_id": "asset-001",
+                "owner_user_id": "user-042",
+                "status": "active",
+                "found": True,
+            }
+        },
+        "client_configs": {
+            "user-042": {"user_id": "user-042", "version": "v2.4.1", "found": config_found}
+        },
         "gateways": {},
         "incidents": {},
         "similar_tickets": {},
@@ -144,7 +179,13 @@ def _adapter(*, account_status="active", account_found=True, config_found=True):
     return MockVpnAdapter(data=data)
 
 
-def _recheck(runtime, *, request=None, operation_status=ApprovalStatus.PENDING, scopes=frozenset({"ticket:approve"})):
+def _recheck(
+    runtime,
+    *,
+    request=None,
+    operation_status=ApprovalStatus.PENDING,
+    scopes=frozenset({"ticket:approve"}),
+):
     req = request or _request()
     return asyncio.run(
         recheck_pre_approval(
@@ -166,9 +207,7 @@ def test_recheck_ok_when_all_live_checks_pass():
     """全部 LIVE 校验通过 -> ok=True，fail_reasons 为空。"""
     audit = _FakeAudit()
     tickets = _Tickets(initial_status=TicketStatus.AWAITING_APPROVAL, version=0)
-    runtime = _runtime(
-        audit=audit, tickets=tickets, adapter=_adapter(), assets=_Assets()
-    )
+    runtime = _runtime(audit=audit, tickets=tickets, adapter=_adapter(), assets=_Assets())
     result = _recheck(runtime)
     assert result.ok is True
     assert result.fail_reasons == []
@@ -362,7 +401,9 @@ def test_high_risk_reason_codes_block_auto():
     assert high_risk_reasons(reason_codes=["全公司影响"]) == ["high_risk_company_wide_impact"]
     assert high_risk_reasons(reason_codes=["数据泄露"]) == ["high_risk_data_breach"]
     assert high_risk_reasons(reason_codes=["账号解锁"]) == ["high_risk_account_unlock"]
-    assert high_risk_reasons(reason_codes=["网关配置修改"]) == ["high_risk_gateway_config_modification"]
+    assert high_risk_reasons(reason_codes=["网关配置修改"]) == [
+        "high_risk_gateway_config_modification"
+    ]
     # flags 也纳入判定
     assert high_risk_reasons(flags=["production"]) == ["high_risk_production_env"]
     # 去重 + 定序：重复触发词只出现一次
@@ -445,8 +486,10 @@ def test_high_risk_reasons_include_request_reason_codes_at_approve():
     async def run():
         # 审批人入参不携带原因，仅 scope；快照里的 reason_codes 仍是 data_breach。
         return await svc.approve(
-            request=req, approver_user_id="approver-1",
-            runtime=runtime, run_context=_run_context(scopes=frozenset({"ticket:approve"})),
+            request=req,
+            approver_user_id="approver-1",
+            runtime=runtime,
+            run_context=_run_context(scopes=frozenset({"ticket:approve"})),
         )
 
     result = asyncio.run(run())
@@ -519,7 +562,9 @@ def test_full_chain_via_api_ends_ticket_in_progress():
 
         # 人工审批
         _install_principal(app, approver)
-        resp2 = client.post(f"/vpn/reissue/{key}/approve", json={"operation_id": key, "decision": "approve"})
+        resp2 = client.post(
+            f"/vpn/reissue/{key}/approve", json={"operation_id": key, "decision": "approve"}
+        )
         assert resp2.status_code == 200, resp2.text
         result = resp2.json()
         assert result["ok"] is True

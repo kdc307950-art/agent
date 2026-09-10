@@ -53,6 +53,17 @@ jobs:
           --health-retries 20
     steps:
       - uses: actions/checkout@v4
+      - name: Validate live E2E configuration
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in DEEPSEEK_API_KEY LIVE_AGENT_TOKEN TENANT_TOKEN_SECRET; do
+            if [ -z "${!name:-}" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::live-e2e environment is missing: ${missing[*]}"
+            exit 1
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -69,13 +80,26 @@ jobs:
           KNOWLEDGE_EMBEDDING_DIMENSION: "8"
         run: uv run python -m backend.vector_migrations
       - name: Start agent
-        run: nohup uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 > agent.log 2>&1 &
+        run: |
+          set -euo pipefail
+          nohup uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --log-level info > agent.log 2>&1 &
+          echo $! > agent.pid
       - name: Wait for health
         run: |
-          for i in {1..30}; do
-            curl --fail --silent http://127.0.0.1:8000/health && exit 0
+          set -u
+          for i in {1..45}; do
+            if curl --fail --silent --show-error http://127.0.0.1:8000/health; then
+              exit 0
+            fi
+            if [ -f agent.pid ] && ! kill -0 "$(cat agent.pid)" 2>/dev/null; then
+              echo "Agent process exited before health became available."
+              cat agent.log
+              exit 1
+            fi
             sleep 2
           done
+          echo "Timed out waiting for agent health."
+          ps -ef | grep -E '[u]vicorn|[p]ython' || true
           cat agent.log
           exit 1
       - name: Run live E2E

@@ -12,7 +12,6 @@
 全部为纯函数，无 IO、无外部模型、无 DB。
 """
 
-
 from backend.vpn.models import DiagnosisRequest
 from backend.vpn.rules import (
     AccountStatus,
@@ -225,7 +224,9 @@ def test_evidence_diagnosis_to_dict_shape():
 
 def test_evaluate_evidence_handoff_integration():
     d, handoff = evaluate_evidence_handoff(
-        VpnEvidence(account_status=AccountStatus.ACTIVE, gateway_status=GatewayStatus.UP, knowledge_hit=True)
+        VpnEvidence(
+            account_status=AccountStatus.ACTIVE, gateway_status=GatewayStatus.UP, knowledge_hit=True
+        )
     )
     assert isinstance(d, EvidenceDiagnosis)
     # 连接兜底：规则 must_handoff=False，handoff 也应为 False（证据充分+非群体+身份齐+置信度达标）
@@ -243,7 +244,9 @@ def test_evaluate_evidence_handoff_no_evidence_forces_handoff():
 
 
 def test_hypothesis_code_from_hint():
-    assert hypothesis_code_from_hint("客户端版本过旧，建议升级到 3.4.2") == "client_version_outdated"
+    assert (
+        hypothesis_code_from_hint("客户端版本过旧，建议升级到 3.4.2") == "client_version_outdated"
+    )
     assert hypothesis_code_from_hint("账号被锁定，需要重置密码") == "account_locked"
     assert hypothesis_code_from_hint("群体故障，整个部门都连不上") == "multi_user_impact"
     assert hypothesis_code_from_hint("网关 status=down") == "gateway_down"
@@ -392,8 +395,16 @@ def test_m3_hypothesis_does_not_fallback_for_account_lockout():
 def _service_agent_result(**overrides) -> dict:
     base = {
         "tool_evidence": [
-            {"tool_name": "get_vpn_account_status", "content": "账号 user-042 状态=locked", "found": True},
-            {"tool_name": "get_vpn_gateway_status", "content": "网关 gw-cn-north status=up", "found": True},
+            {
+                "tool_name": "get_vpn_account_status",
+                "content": "账号 user-042 状态=locked",
+                "found": True,
+            },
+            {
+                "tool_name": "get_vpn_gateway_status",
+                "content": "网关 gw-cn-north status=up",
+                "found": True,
+            },
         ],
         "tool_trace": [],
         "must_handoff": True,
@@ -442,8 +453,16 @@ def test_apply_handoff_evidence_chain_gateway_down():
     """网关 down 证据 -> evidence_chain=gateway_down（账号正常，无版本过期）。"""
     raw = _service_agent_result(
         tool_evidence=[
-            {"tool_name": "get_vpn_account_status", "content": "账号 user-042 状态=active", "found": True},
-            {"tool_name": "get_vpn_gateway_status", "content": "网关 gw-north status=down", "found": True},
+            {
+                "tool_name": "get_vpn_account_status",
+                "content": "账号 user-042 状态=active",
+                "found": True,
+            },
+            {
+                "tool_name": "get_vpn_gateway_status",
+                "content": "网关 gw-north status=down",
+                "found": True,
+            },
         ]
     )
     result = VpnDiagnosisService.apply_handoff(raw, _service_request())
@@ -456,8 +475,16 @@ def test_apply_handoff_evidence_chain_client_version_ok():
     """无锁定/无网关故障/有知识/有版本 -> 连接类兜底（provide_steps 或 escalate）。"""
     raw = _service_agent_result(
         tool_evidence=[
-            {"tool_name": "get_vpn_account_status", "content": "账号 user-042 状态=active", "found": True},
-            {"tool_name": "get_vpn_gateway_status", "content": "网关 gw-north status=up", "found": True},
+            {
+                "tool_name": "get_vpn_account_status",
+                "content": "账号 user-042 状态=active",
+                "found": True,
+            },
+            {
+                "tool_name": "get_vpn_gateway_status",
+                "content": "网关 gw-north status=up",
+                "found": True,
+            },
             {"tool_name": "search_vpn_knowledge", "content": "知识库命中 vpn-001", "found": True},
         ],
         command={

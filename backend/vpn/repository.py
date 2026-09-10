@@ -279,9 +279,7 @@ class VpnDiagnosisRepository:
                 )
         return escalation
 
-    async def list_escalations(
-        self, tenant_id: str, ticket_id: str
-    ) -> list[VpnEscalation]:
+    async def list_escalations(self, tenant_id: str, ticket_id: str) -> list[VpnEscalation]:
         async with self.pool.connection() as connection:
             async with connection.cursor(row_factory=dict_row) as cursor:
                 await cursor.execute(

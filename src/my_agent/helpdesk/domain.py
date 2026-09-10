@@ -39,9 +39,9 @@ class TicketStatus(StrEnum):
     IN_PROGRESS = "in_progress"
     AWAITING_APPROVAL = "awaiting_approval"
     # VPN 客户处置闭环（阶段二）新增状态：
-    DIAGNOSING = "diagnosing"                    # 诊断进行中 / 客户执行动作后再次诊断
+    DIAGNOSING = "diagnosing"  # 诊断进行中 / 客户执行动作后再次诊断
     AWAITING_CUSTOMER_ACTION = "awaiting_customer_action"  # 等待客户执行排查步骤并回填结果
-    RECONCILIATION_REQUIRED = "reconciliation_required"    # 诊断结果需人工复核/对账
+    RECONCILIATION_REQUIRED = "reconciliation_required"  # 诊断结果需人工复核/对账
     RESOLVED = "resolved"
     CLOSED = "closed"
     CANCELLED = "cancelled"
@@ -69,11 +69,11 @@ class TicketAction(StrEnum):
     CLOSE = "close"
     CANCEL = "cancel"
     # VPN 客户处置闭环（阶段二）新增动作：
-    START_DIAGNOSIS = "start_diagnosis"              # 进入诊断（agent/system）
-    PRESCRIBE_STEPS = "prescribe_steps"              # 给出排查步骤并等待客户执行
+    START_DIAGNOSIS = "start_diagnosis"  # 进入诊断（agent/system）
+    PRESCRIBE_STEPS = "prescribe_steps"  # 给出排查步骤并等待客户执行
     PROVIDE_ACTION_RESULT = "provide_action_result"  # 客户回填排查步骤结果
     REQUEST_RECONCILIATION = "request_reconciliation"  # 诊断结果需人工复核
-    RECONCILE = "reconcile"                          # 对账后回到可继续处理
+    RECONCILE = "reconcile"  # 对账后回到可继续处理
 
 
 class ActorType(StrEnum):
@@ -155,22 +155,34 @@ _TRANSITIONS = MappingProxyType(
         (TicketStatus.RESOLVED, TicketAction.REOPEN): TicketStatus.IN_PROGRESS,
         # ---- VPN 客户处置闭环（阶段二）状态迁移 ----
         (TicketStatus.IN_PROGRESS, TicketAction.START_DIAGNOSIS): TicketStatus.DIAGNOSING,
-        (TicketStatus.RECONCILIATION_REQUIRED, TicketAction.START_DIAGNOSIS): TicketStatus.DIAGNOSING,
+        (
+            TicketStatus.RECONCILIATION_REQUIRED,
+            TicketAction.START_DIAGNOSIS,
+        ): TicketStatus.DIAGNOSING,
         # 诊断重入（resume / 客户动作后再次诊断）：保持 diagnosing，避免状态原地跳动。
         (TicketStatus.DIAGNOSING, TicketAction.START_DIAGNOSIS): TicketStatus.DIAGNOSING,
-        (TicketStatus.DIAGNOSING, TicketAction.PRESCRIBE_STEPS): TicketStatus.AWAITING_CUSTOMER_ACTION,
+        (
+            TicketStatus.DIAGNOSING,
+            TicketAction.PRESCRIBE_STEPS,
+        ): TicketStatus.AWAITING_CUSTOMER_ACTION,
         (TicketStatus.DIAGNOSING, TicketAction.REQUEST_INFORMATION): TicketStatus.AWAITING_CUSTOMER,
         (TicketStatus.DIAGNOSING, TicketAction.ASSIGN): TicketStatus.ASSIGNED,
         (TicketStatus.DIAGNOSING, TicketAction.REQUEST_APPROVAL): TicketStatus.AWAITING_APPROVAL,
         (TicketStatus.DIAGNOSING, TicketAction.QUEUE): TicketStatus.QUEUED,
         (TicketStatus.DIAGNOSING, TicketAction.RESOLVE): TicketStatus.RESOLVED,
-        (TicketStatus.DIAGNOSING, TicketAction.REQUEST_RECONCILIATION): TicketStatus.RECONCILIATION_REQUIRED,
+        (
+            TicketStatus.DIAGNOSING,
+            TicketAction.REQUEST_RECONCILIATION,
+        ): TicketStatus.RECONCILIATION_REQUIRED,
         (TicketStatus.DIAGNOSING, TicketAction.CANCEL): TicketStatus.CANCELLED,
         (
             TicketStatus.AWAITING_CUSTOMER_ACTION,
             TicketAction.PROVIDE_ACTION_RESULT,
         ): TicketStatus.DIAGNOSING,
-        (TicketStatus.AWAITING_CUSTOMER_ACTION, TicketAction.REQUEST_INFORMATION): TicketStatus.AWAITING_CUSTOMER,
+        (
+            TicketStatus.AWAITING_CUSTOMER_ACTION,
+            TicketAction.REQUEST_INFORMATION,
+        ): TicketStatus.AWAITING_CUSTOMER,
         (
             TicketStatus.AWAITING_CUSTOMER_ACTION,
             TicketAction.REQUEST_RECONCILIATION,

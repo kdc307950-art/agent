@@ -1379,18 +1379,42 @@ async def ensure_schema_version(connection: AsyncConnection) -> None:
         if current < 25:
             # v25: VPN 控制面提交与 preview 快照。worker_id 已承担 lease owner 语义，
             # 因此不重复增加 lease_owner；这些字段只保存事实快照和人工对账证据。
-            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS vendor_system TEXT")
-            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS vendor_task_id BIGINT")
-            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS submission_state TEXT")
-            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS target_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb")
-            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS diff_snapshot JSONB")
-            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS diff_hash TEXT")
-            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS desired_state_hash TEXT")
-            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS last_polled_at TIMESTAMPTZ")
-            await cursor.execute("ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS poll_attempts INTEGER NOT NULL DEFAULT 0")
-            await cursor.execute("ALTER TABLE vpn_reissue_operations DROP CONSTRAINT IF EXISTS vpn_reissue_operations_submission_state_check")
-            await cursor.execute("ALTER TABLE vpn_reissue_operations DROP CONSTRAINT IF EXISTS vpn_reissue_operations_vendor_task_id_check")
-            await cursor.execute("ALTER TABLE vpn_reissue_operations DROP CONSTRAINT IF EXISTS vpn_reissue_operations_poll_attempts_check")
+            await cursor.execute(
+                "ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS vendor_system TEXT"
+            )
+            await cursor.execute(
+                "ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS vendor_task_id BIGINT"
+            )
+            await cursor.execute(
+                "ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS submission_state TEXT"
+            )
+            await cursor.execute(
+                "ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS target_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb"
+            )
+            await cursor.execute(
+                "ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS diff_snapshot JSONB"
+            )
+            await cursor.execute(
+                "ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS diff_hash TEXT"
+            )
+            await cursor.execute(
+                "ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS desired_state_hash TEXT"
+            )
+            await cursor.execute(
+                "ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS last_polled_at TIMESTAMPTZ"
+            )
+            await cursor.execute(
+                "ALTER TABLE vpn_reissue_operations ADD COLUMN IF NOT EXISTS poll_attempts INTEGER NOT NULL DEFAULT 0"
+            )
+            await cursor.execute(
+                "ALTER TABLE vpn_reissue_operations DROP CONSTRAINT IF EXISTS vpn_reissue_operations_submission_state_check"
+            )
+            await cursor.execute(
+                "ALTER TABLE vpn_reissue_operations DROP CONSTRAINT IF EXISTS vpn_reissue_operations_vendor_task_id_check"
+            )
+            await cursor.execute(
+                "ALTER TABLE vpn_reissue_operations DROP CONSTRAINT IF EXISTS vpn_reissue_operations_poll_attempts_check"
+            )
             await cursor.execute("""
                 ALTER TABLE vpn_reissue_operations
                 ADD CONSTRAINT vpn_reissue_operations_submission_state_check CHECK (

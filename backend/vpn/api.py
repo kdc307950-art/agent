@@ -163,7 +163,9 @@ def _raise_transition_error(result: ReissueExecutionResult) -> None:
     if code == "unsupported_decision":
         raise HTTPException(status_code=400, detail={"error_code": code, "reason": result.reason})
     # 兜底：未识别的结构错误
-    raise HTTPException(status_code=500, detail={"error_code": code or "unknown", "reason": result.reason})
+    raise HTTPException(
+        status_code=500, detail={"error_code": code or "unknown", "reason": result.reason}
+    )
 
 
 def _build_request(payload: ReissueStartPayload, principal: Principal):
@@ -356,7 +358,10 @@ async def confirm_submission(
         "vendor_task_id_forbidden",
         "invalid_submission_state",
     ):
-        raise HTTPException(status_code=409 if code in ("illegal_transition", "missing_request_snapshot") else 422, detail=result)
+        raise HTTPException(
+            status_code=409 if code in ("illegal_transition", "missing_request_snapshot") else 422,
+            detail=result,
+        )
     return result
 
 
@@ -432,7 +437,9 @@ async def _domain_after_reject(runtime, req, principal: Principal) -> None:
     await _transition(runtime, req, principal, TicketAction.REJECT, ActorType.APPROVER)
 
 
-async def _transition(runtime, req, principal: Principal, action: TicketAction, actor_type: ActorType) -> None:
+async def _transition(
+    runtime, req, principal: Principal, action: TicketAction, actor_type: ActorType
+) -> None:
     tickets = getattr(runtime, "tickets", None)
     if tickets is None or not hasattr(tickets, "get") or not hasattr(tickets, "transition"):
         return

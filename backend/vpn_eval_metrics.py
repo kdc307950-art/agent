@@ -522,7 +522,11 @@ def compute_customer_step_completion(
     分母 = 提供客户步骤（实际产出 customer_step_count 或 customer_steps_completed 非 None）
     的样本；分子 = 其中 customer_steps_completed 为 True。static 评测无闭环数据 -> 空。
     """
-    relevant = [r for r in records if r.customer_steps_completed is not None or r.customer_step_count is not None]
+    relevant = [
+        r
+        for r in records
+        if r.customer_steps_completed is not None or r.customer_step_count is not None
+    ]
     total = len(relevant)
     completed = sum(1 for r in relevant if r.customer_steps_completed is True)
     return {
@@ -827,9 +831,7 @@ def compute_metrics_report(
         "acl_rejection": compute_acl_rejection(records),
         "tool_failure": compute_tool_failure(records),
         "latency": compute_latency(records),
-        "cost": compute_cost(
-            records, input_per_1k=input_per_1k, output_per_1k=output_per_1k
-        ),
+        "cost": compute_cost(records, input_per_1k=input_per_1k, output_per_1k=output_per_1k),
         "evidence_sufficiency": compute_evidence_sufficiency(records),
         "wrong_escalation": compute_wrong_escalation(records),
         "customer_step_completion": compute_customer_step_completion(records),
@@ -1019,8 +1021,10 @@ def _snapshot_hypothesis(snapshot: Mapping[str, Any]) -> tuple[str | None, float
     except (TypeError, ValueError):
         confidence = None
     evidence = latest.get("evidence") or []
-    evidence_found = bool(evidence) or bool(latest.get("must_handoff")) is False and bool(
-        latest.get("reason_codes") or []
+    evidence_found = (
+        bool(evidence)
+        or bool(latest.get("must_handoff")) is False
+        and bool(latest.get("reason_codes") or [])
     )
     return hypothesis, confidence, bool(evidence_found)
 

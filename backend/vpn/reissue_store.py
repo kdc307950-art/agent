@@ -157,9 +157,7 @@ class ReissueStore(Protocol):
     所有方法以 ``*`` 强制关键字参数，避免调用方误用位置参数造成租户穿透。
     """
 
-    async def get_operation(
-        self, *, tenant_id: str, operation_id: str
-    ) -> ReissueOperation | None:
+    async def get_operation(self, *, tenant_id: str, operation_id: str) -> ReissueOperation | None:
         """按 (tenant_id, operation_id) 精确查询单条操作。"""
         ...
 
@@ -299,9 +297,7 @@ class InMemoryReissueStore:
 
     # ---- 查询 ----
 
-    async def get_operation(
-        self, *, tenant_id: str, operation_id: str
-    ) -> ReissueOperation | None:
+    async def get_operation(self, *, tenant_id: str, operation_id: str) -> ReissueOperation | None:
         op = self._ops.get(operation_id)
         if op is None or op.tenant_id != tenant_id:
             return None
@@ -490,10 +486,14 @@ class InMemoryReissueStore:
             return False
         op.submission_state = submission_state
         op.vendor_task_id = vendor_task_id
-        op.vendor_system = (external_result or {}).get("vendor_system") or op.vendor_system or "fortimanager"
+        op.vendor_system = (
+            (external_result or {}).get("vendor_system") or op.vendor_system or "fortimanager"
+        )
         if external_result is not None:
             op.external_result = {**(op.external_result or {}), **external_result}
-            op.external_request_id = external_result.get("external_request_id") or op.external_request_id
+            op.external_request_id = (
+                external_result.get("external_request_id") or op.external_request_id
+            )
         op.updated_at = _utcnow()
         self._sync_registry(op)
         return True
@@ -540,9 +540,7 @@ class PostgresReissueStore:
     def __init__(self, pool: AsyncConnectionPool) -> None:
         self.pool = pool
 
-    async def get_operation(
-        self, *, tenant_id: str, operation_id: str
-    ) -> ReissueOperation | None:
+    async def get_operation(self, *, tenant_id: str, operation_id: str) -> ReissueOperation | None:
         async with self.pool.connection() as connection:
             async with connection.cursor(row_factory=dict_row) as cursor:
                 await cursor.execute(
@@ -615,9 +613,11 @@ class PostgresReissueStore:
                             None,
                             None,
                             Jsonb(_snapshot_fields(request_snapshot)["target_snapshot"]),
-                            Jsonb(_snapshot_fields(request_snapshot)["diff_snapshot"])
-                            if _snapshot_fields(request_snapshot)["diff_snapshot"] is not None
-                            else None,
+                            (
+                                Jsonb(_snapshot_fields(request_snapshot)["diff_snapshot"])
+                                if _snapshot_fields(request_snapshot)["diff_snapshot"] is not None
+                                else None
+                            ),
                             _snapshot_fields(request_snapshot)["diff_hash"],
                             _snapshot_fields(request_snapshot)["desired_state_hash"],
                             None,
@@ -677,9 +677,21 @@ class PostgresReissueStore:
                         approver_user_id,
                         error_code,
                         Jsonb(external_result) if external_result is not None else None,
-                        _external_fields(external_result)["vendor_system"] if external_result is not None else None,
-                        _external_fields(external_result)["vendor_task_id"] if external_result is not None else None,
-                        _external_fields(external_result)["submission_state"] if external_result is not None else None,
+                        (
+                            _external_fields(external_result)["vendor_system"]
+                            if external_result is not None
+                            else None
+                        ),
+                        (
+                            _external_fields(external_result)["vendor_task_id"]
+                            if external_result is not None
+                            else None
+                        ),
+                        (
+                            _external_fields(external_result)["submission_state"]
+                            if external_result is not None
+                            else None
+                        ),
                         result_hash,
                         tenant_id,
                         operation_id,
@@ -882,7 +894,9 @@ def _row_to_operation(row: dict[str, Any]) -> ReissueOperation:
         approver_user_id=row.get("approver_user_id"),
         external_request_id=row.get("external_request_id"),
         vendor_system=row.get("vendor_system"),
-        vendor_task_id=(int(row["vendor_task_id"]) if row.get("vendor_task_id") is not None else None),
+        vendor_task_id=(
+            int(row["vendor_task_id"]) if row.get("vendor_task_id") is not None else None
+        ),
         submission_state=row.get("submission_state"),
         target_snapshot=row.get("target_snapshot") or {},
         diff_snapshot=row.get("diff_snapshot"),

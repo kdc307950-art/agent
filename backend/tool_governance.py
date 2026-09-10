@@ -186,9 +186,7 @@ INTAKE_AGENT_TOOLS: frozenset[str] = frozenset({"search_knowledge", "search_asse
 RESOLUTION_COPILOT_TOOLS: frozenset[str] = frozenset(
     {"search_knowledge", "search_assets", "get_ticket_history", "get_ticket_messages"}
 )
-HUMAN_ACTION_TOOLS: frozenset[str] = frozenset(
-    {"send_message", "reissue_vpn_config"}
-)
+HUMAN_ACTION_TOOLS: frozenset[str] = frozenset({"send_message", "reissue_vpn_config"})
 # VPN Diagnosis Agent 只读 profile：仅暴露 7 个只读诊断工具（无一含副作用），
 # 与 RESOLUTION_COPILOT_TOOLS 用法一致。运行期通过 RunContext.allowed_tools 注入，
 # ToolGovernance 据此拒绝任何未被授权的工具（模型伪造 reset_password/send_message 等

@@ -66,7 +66,9 @@ class _FakeRepo:
         self.actions[action.action_id] = action
 
     # ---- 读 ----
-    async def get_action(self, tenant_id: str, ticket_id: str, action_id: str) -> VpnCustomerAction | None:
+    async def get_action(
+        self, tenant_id: str, ticket_id: str, action_id: str
+    ) -> VpnCustomerAction | None:
         if self._fail_get_action:
             raise RuntimeError("simulated db read failure")
         action = self.actions.get(action_id)
@@ -83,16 +85,32 @@ class _FakeRepo:
         return latest
 
     async def list_runs(self, tenant_id: str, ticket_id: str) -> list[Any]:
-        return [r for r in self.runs.values() if r.tenant_id == tenant_id and r.ticket_id == ticket_id]
+        return [
+            r for r in self.runs.values() if r.tenant_id == tenant_id and r.ticket_id == ticket_id
+        ]
 
     async def list_actions(self, tenant_id: str, ticket_id: str) -> list[VpnCustomerAction]:
-        return [a for a in self.actions.values() if a.tenant_id == tenant_id and a.ticket_id == ticket_id]
+        return [
+            a
+            for a in self.actions.values()
+            if a.tenant_id == tenant_id and a.ticket_id == ticket_id
+        ]
 
-    async def list_action_results(self, tenant_id: str, ticket_id: str) -> list[VpnCustomerActionResult]:
-        return [r for r in self.results.values() if r.tenant_id == tenant_id and r.ticket_id == ticket_id]
+    async def list_action_results(
+        self, tenant_id: str, ticket_id: str
+    ) -> list[VpnCustomerActionResult]:
+        return [
+            r
+            for r in self.results.values()
+            if r.tenant_id == tenant_id and r.ticket_id == ticket_id
+        ]
 
     async def list_escalations(self, tenant_id: str, ticket_id: str) -> list[Any]:
-        return [e for e in self.escalations.values() if e.tenant_id == tenant_id and e.ticket_id == ticket_id]
+        return [
+            e
+            for e in self.escalations.values()
+            if e.tenant_id == tenant_id and e.ticket_id == ticket_id
+        ]
 
     # ---- 写 ----
     async def save_run(self, run: Any) -> Any:
@@ -155,9 +173,13 @@ class _FakeTickets:
     async def transition(self, tenant_id, command, scopes=None):
         self.transition_calls.append(command.action)
         self.cur_status = transition_ticket(self.cur_status, command, scopes=set(scopes or ()))
-        return SimpleNamespace(ticket_id=command.ticket_id, status=self.cur_status, version=self.version)
+        return SimpleNamespace(
+            ticket_id=command.ticket_id, status=self.cur_status, version=self.version
+        )
 
-    async def append_status_event(self, tenant_id, ticket_id, *, action, actor_type, actor_id, payload=None):
+    async def append_status_event(
+        self, tenant_id, ticket_id, *, action, actor_type, actor_id, payload=None
+    ):
         return True
 
 
@@ -170,7 +192,11 @@ class _StubDiagnosisService:
     async def run_with_context(self, *, runtime, tenant_id, ticket_id, run_context):
         self.calls += 1
         return {
-            "request": {"fault": "connection_failed", "ticket_id": ticket_id, "tenant_id": tenant_id},
+            "request": {
+                "fault": "connection_failed",
+                "ticket_id": ticket_id,
+                "tenant_id": tenant_id,
+            },
             "result": {
                 "command": {
                     "command": "provide_steps",
@@ -181,13 +207,19 @@ class _StubDiagnosisService:
                 },
                 "must_handoff": False,
                 "evaluation": {"must_handoff": False, "handoff_reasons": [], "confidence": 0.91},
-                "tool_evidence": [{"tool_name": "get_vpn_account_status", "content": "账号正常", "found": True}],
+                "tool_evidence": [
+                    {"tool_name": "get_vpn_account_status", "content": "账号正常", "found": True}
+                ],
             },
         }
 
 
 def _action(
-    *, tenant_id: str, ticket_id: str, action_id: str, status: CustomerActionStatus = CustomerActionStatus.ISSUED
+    *,
+    tenant_id: str,
+    ticket_id: str,
+    action_id: str,
+    status: CustomerActionStatus = CustomerActionStatus.ISSUED,
 ) -> VpnCustomerAction:
     return VpnCustomerAction(
         action_id=action_id,
@@ -287,7 +319,12 @@ def test_submit_action_via_repo_rejects_unknown_action():
 def test_submit_action_via_repo_rejects_already_executed():
     repo = _FakeRepo()
     repo.seed_action(
-        _action(tenant_id="tenant-a", ticket_id="t-1", action_id="act-1", status=CustomerActionStatus.EXECUTED)
+        _action(
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            action_id="act-1",
+            status=CustomerActionStatus.EXECUTED,
+        )
     )
     svc = _make_svc(repo)
     runtime, _tickets, _audit = _make_runtime(svc)
@@ -422,7 +459,9 @@ def test_api_persist_failure_returns_503():
     repo.seed_action(_action(tenant_id="tenant-a", ticket_id="t-1", action_id="act-1"))
     repo._fail_add_result = True
     svc = _make_svc(repo)
-    runtime, _tickets, _audit = _make_runtime(svc, initial_status=TicketStatus.AWAITING_CUSTOMER_ACTION)
+    runtime, _tickets, _audit = _make_runtime(
+        svc, initial_status=TicketStatus.AWAITING_CUSTOMER_ACTION
+    )
     runtime.vpn_closed_loop = svc
     app = _make_app(runtime)
     _install_principal(app, _principal("user-042", ("ticket:customer",), tenant_id="tenant-a"))
@@ -437,7 +476,9 @@ def test_api_cross_tenant_action_returns_409():
     repo = _FakeRepo()
     repo.seed_action(_action(tenant_id="tenant-b", ticket_id="t-1", action_id="act-1"))
     svc = _make_svc(repo)
-    runtime, _tickets, _audit = _make_runtime(svc, initial_status=TicketStatus.AWAITING_CUSTOMER_ACTION)
+    runtime, _tickets, _audit = _make_runtime(
+        svc, initial_status=TicketStatus.AWAITING_CUSTOMER_ACTION
+    )
     runtime.vpn_closed_loop = svc
     app = _make_app(runtime)
     _install_principal(app, _principal("user-042", ("ticket:customer",), tenant_id="tenant-a"))
@@ -450,10 +491,17 @@ def test_api_already_executed_action_returns_409():
     """已 EXECUTED 动作重复提交 -> 409（幂等拒绝）。"""
     repo = _FakeRepo()
     repo.seed_action(
-        _action(tenant_id="tenant-a", ticket_id="t-1", action_id="act-1", status=CustomerActionStatus.EXECUTED)
+        _action(
+            tenant_id="tenant-a",
+            ticket_id="t-1",
+            action_id="act-1",
+            status=CustomerActionStatus.EXECUTED,
+        )
     )
     svc = _make_svc(repo)
-    runtime, _tickets, _audit = _make_runtime(svc, initial_status=TicketStatus.AWAITING_CUSTOMER_ACTION)
+    runtime, _tickets, _audit = _make_runtime(
+        svc, initial_status=TicketStatus.AWAITING_CUSTOMER_ACTION
+    )
     runtime.vpn_closed_loop = svc
     app = _make_app(runtime)
     _install_principal(app, _principal("user-042", ("ticket:customer",), tenant_id="tenant-a"))

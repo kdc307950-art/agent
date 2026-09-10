@@ -192,7 +192,9 @@ class VpnClosedLoopService:
         if prev is not None and prev.status == DiagnosisRunStatus.DIAGNOSING:
             prev.status = DiagnosisRunStatus.COMPLETED
             prev.updated_at = datetime.now(UTC)
-        return await self.diagnose(runtime=runtime, tenant_id=tenant_id, ticket_id=ticket_id, run_context=run_context)
+        return await self.diagnose(
+            runtime=runtime, tenant_id=tenant_id, ticket_id=ticket_id, run_context=run_context
+        )
 
     async def submit_action_result(
         self,
@@ -240,7 +242,9 @@ class VpnClosedLoopService:
         self.registry.add_action_result(created)
         await self._persist_action_result(created)
         # 动作状态推进为 EXECUTED（内存 + PostgreSQL）。
-        await self._persist_action_status(tenant_id, ticket_id, action_id, CustomerActionStatus.EXECUTED)
+        await self._persist_action_status(
+            tenant_id, ticket_id, action_id, CustomerActionStatus.EXECUTED
+        )
 
         await self._audit(
             runtime,
@@ -262,7 +266,11 @@ class VpnClosedLoopService:
             ticket_id,
             action="vpn_customer_action",
             actor_type="customer",
-            payload={"action_id": action_id, "result_id": created.result_id, "submitted_by": actor_id},
+            payload={
+                "action_id": action_id,
+                "result_id": created.result_id,
+                "submitted_by": actor_id,
+            },
         )
 
         # 状态机：awaiting_customer_action -> diagnosing（客户提供动作结果）。
@@ -365,11 +373,11 @@ class VpnClosedLoopService:
         else:
             # 回退：无结构化证据链时用命令维度（向后兼容）。
             next_action = _next_action_from_command(command)
-            confidence = self._as_float(
-                result.get("evaluation", {}).get("confidence")
-            ) if isinstance(result.get("evaluation"), dict) else self._as_float(
-                command.get("confidence")
-            ) if isinstance(command, dict) else 0.0
+            confidence = (
+                self._as_float(result.get("evaluation", {}).get("confidence"))
+                if isinstance(result.get("evaluation"), dict)
+                else self._as_float(command.get("confidence")) if isinstance(command, dict) else 0.0
+            )
             evidence = [
                 VpnDiagnosisFinding(
                     tool_name=str(item.get("tool_name") or ""),
@@ -501,7 +509,11 @@ class VpnClosedLoopService:
                 )
         else:
             run.status = DiagnosisRunStatus.FAILED
-        return {"ok": exec_result.ok, "command": command.get("command"), "exec": asdict(exec_result)}
+        return {
+            "ok": exec_result.ok,
+            "command": command.get("command"),
+            "exec": asdict(exec_result),
+        }
 
     # ---- 内部：升级 / 对账 ----
 
@@ -620,7 +632,9 @@ class VpnClosedLoopService:
             logger.info("VPN 状态迁移跳过（%s）: %s + %s", type(exc).__name__, ticket_id, action)
             return False
         except Exception as exc:  # noqa: BLE001  陈旧版本/其它异常视为非阻断
-            logger.warning("VPN 状态迁移失败 ticket=%s action=%s: %s", ticket_id, action, type(exc).__name__)
+            logger.warning(
+                "VPN 状态迁移失败 ticket=%s action=%s: %s", ticket_id, action, type(exc).__name__
+            )
             return False
 
     @staticmethod
@@ -641,7 +655,15 @@ class VpnClosedLoopService:
 
     # ---- 内部：审计 ----
 
-    async def _audit(self, runtime: Any, run_context: Any, event_type: str, *, status: str, payload: dict[str, Any]) -> None:
+    async def _audit(
+        self,
+        runtime: Any,
+        run_context: Any,
+        event_type: str,
+        *,
+        status: str,
+        payload: dict[str, Any],
+    ) -> None:
         audit = getattr(runtime, "audit", None)
         if audit is None or run_context is None:
             return
@@ -731,7 +753,9 @@ class VpnClosedLoopService:
                 payload=payload,
             )
         except Exception as exc:  # noqa: BLE001  时间线写入失败不阻断主流程
-            logger.warning("VPN 时间线写入失败 ticket=%s action=%s: %s", ticket_id, action, type(exc).__name__)
+            logger.warning(
+                "VPN 时间线写入失败 ticket=%s action=%s: %s", ticket_id, action, type(exc).__name__
+            )
 
     # ---- 内部：工具 ----
 

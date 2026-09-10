@@ -65,7 +65,11 @@ def _run_context(tenant_id="tenant-a", user_id="user-1", scopes=frozenset({"tick
 
 def _cmd(command: DiagnosisCommandType, payload=None, content="命令文本", confidence=0.9):
     return DiagnosisCommand(
-        command=command, content=content, payload=payload or {}, reason_codes=[], confidence=confidence
+        command=command,
+        content=content,
+        payload=payload or {},
+        reason_codes=[],
+        confidence=confidence,
     )
 
 
@@ -125,7 +129,9 @@ def test_execute_non_draft_command_transitions(command_type, expected_action):
 def test_execute_provide_steps_is_draft_only_no_transition():
     runtime = _FakeRuntime()
     rc = _run_context()
-    cmd = _cmd(DiagnosisCommandType.PROVIDE_STEPS, {"ticket_id": "t-1"}, content="排查步骤：检查客户端版本")
+    cmd = _cmd(
+        DiagnosisCommandType.PROVIDE_STEPS, {"ticket_id": "t-1"}, content="排查步骤：检查客户端版本"
+    )
     result = asyncio.run(_execute(cmd, runtime, rc))
     assert result.ok is True
     assert result.reason == "draft_only"
