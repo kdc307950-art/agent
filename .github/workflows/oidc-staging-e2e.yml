@@ -117,3 +117,4 @@ jobs:
         with:
           name: oidc-staging-agent-log
           path: agent.log
+          if-no-files-found: ignore

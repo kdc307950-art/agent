@@ -111,6 +111,29 @@ jobs:
               exit 1
               ;;
           esac
+          # curl 的 exit 6 只表示 DNS 解析失败，缺少 endpoint/host 上下文时
+          # 很难判断是 Secret 填错、已下线，还是服务仅在私网可见。先显式诊断。
+          python - <<'PY'
+          import os
+          import socket
+          import sys
+          from urllib.parse import urlparse
+
+          endpoint = os.environ["KNOWLEDGE_EMBEDDING_ENDPOINT"]
+          hostname = urlparse(endpoint).hostname
+          if not hostname:
+              print("::error::KNOWLEDGE_EMBEDDING_ENDPOINT 中未解析到主机名。")
+              sys.exit(1)
+          try:
+              socket.getaddrinfo(hostname, None)
+          except socket.gaierror:
+              print(
+                  "::error::GitHub-hosted runner 无法解析 embedding endpoint 的域名。"
+                  "请检查 Secret 的 URL、DNS 记录和公网可达性；私网地址不能由 GitHub-hosted runner 访问。"
+              )
+              sys.exit(1)
+          print("Embedding endpoint DNS preflight passed.")
+          PY
       - name: Warm up embedding endpoint
         # PaaS 免费实例可能休眠（Render free 空闲即睡），首次请求可能超过
         # 评测 15s 超时；先发最小契约请求唤醒（放宽超时），再进入正式流程。

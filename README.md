@@ -445,9 +445,21 @@ uv run pytest tests -q -m "not live_e2e"
 
 命令行的环境变量优先于 `.env`（`conftest.py` 的 `load_dotenv()` 不覆盖已存在的变量），所以不必改本地配置。
 
-CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。本次冻结前本地集成栈回归为 `797 passed, 1 skipped, 3 deselected`（不含 live_e2e）；真实仓储闭环以 `tests/test_ticket_lifecycle_postgres.py` 为准。`test_ticket_api.py::test_full_lifecycle_http_regression_vpn` 为 **HTTP 路由回归（Fake runtime）**；V1 固定 90 条工单评测只有 CI 的 `run_ticket_eval --require-db` 真实检索结果才能进入 [docs/evaluation/v1-report.md](docs/evaluation/v1-report.md)。
+CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。2026-09-10 在同等 PostgreSQL/Redis 环境完成 `800 passed, 4 skipped`；真实仓储闭环以 `tests/test_ticket_lifecycle_postgres.py` 为准。`test_ticket_api.py::test_full_lifecycle_http_regression_vpn` 为 **HTTP 路由回归（Fake runtime）**；V1 固定 90 条工单评测只有 CI 的 `run_ticket_eval --require-db` 真实检索结果才能进入 [docs/evaluation/v1-report.md](docs/evaluation/v1-report.md)。
 
 真实 DeepSeek E2E 默认不运行，以免普通 CI 产生费用。手动 workflow `Live Agent E2E` 需要受保护环境中的 `DEEPSEEK_API_KEY`、`LIVE_AGENT_TOKEN` 和 `TENANT_TOKEN_SECRET`，覆盖文本 SSE、工具调用和同线程续聊。
+
+### 受保护手动 workflow 配置
+
+以下配置只写入 GitHub Actions，不写入仓库、`.env.example`、日志或截图。当前主 CI 已验证；三条手动 workflow 只有配置好外部服务后才应触发。
+
+| Workflow / GitHub Environment | GitHub Secrets | GitHub Variables | 说明 |
+|---|---|---|---|
+| `Live Agent E2E` / `live-e2e` | `DEEPSEEK_API_KEY`、`LIVE_AGENT_TOKEN`、`TENANT_TOKEN_SECRET` | 可选：`LLM_BASE_URL`、`LLM_MODEL` | 三项缺一会在启动服务前失败；`LIVE_AGENT_TOKEN` 必须是可访问测试租户的 Bearer token。 |
+| `OIDC Staging Agent E2E` / `oidc-staging` | `DEEPSEEK_API_KEY`、`OIDC_STAGING_TOKEN` | `OIDC_ISSUER_URL`、`OIDC_AUDIENCE`、`OIDC_JWKS_URL`；可选 `OIDC_TENANT_CLAIM` | OIDC token 的 issuer、audience、签名密钥及 scope 必须与变量一致。 |
+| `Hybrid Eval（手动）` / 仓库级 | `KNOWLEDGE_EMBEDDING_ENDPOINT`；可选 `KNOWLEDGE_EMBEDDING_TOKEN`、`KNOWLEDGE_EMBEDDING_MODEL`、`KNOWLEDGE_EMBEDDING_DIMENSION` | 无 | endpoint 必须是 GitHub-hosted runner 可公开解析和访问的 `http(s)` 地址；私网/本机地址不可用。维度必须与模型输出及 pgvector 列一致。 |
+
+若 Hybrid 在 warm-up 前失败并提示 DNS preflight，不是检索指标失败，而是 endpoint URL、DNS 记录或公网可达性有问题。先用同一个公网 URL 验证 `POST {"texts":["warmup"]}` 的响应契约，再重新触发工作流。完整操作见 [docs/HYBRID_EVAL_RUNBOOK.md](docs/HYBRID_EVAL_RUNBOOK.md)。
 
 ## 当前边界
 
