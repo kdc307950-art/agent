@@ -8,7 +8,7 @@ tenant or permission data from a token payload.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
@@ -126,7 +126,7 @@ async def create_dev_session(payload: DevSessionRequest, request: Request) -> De
     persona = _DEMO_PERSONAS[payload.persona]
     role = str(persona["role"])
     user_id = str(persona["user_id"])
-    departments = tuple(str(value) for value in persona["departments"])
+    departments = cast(tuple[str, ...], persona["departments"])
     internal = bool(persona["internal"])
     token = make_tenant_token(
         "demo",

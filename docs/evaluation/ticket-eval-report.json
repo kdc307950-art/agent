@@ -37,10 +37,10 @@
     "match_rate": 1.0
   },
   "knowledge": {
-    "mode": "static",
-    "reference_support_rate": null,
-    "reference_support_denominator": null,
-    "acl_leaks": null
+    "mode": "db",
+    "reference_support_rate": 1.0,
+    "reference_support_denominator": 79,
+    "acl_leaks": 0
   },
   "latency_ms": {
     "p50": 0.0,
