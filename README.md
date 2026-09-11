@@ -439,7 +439,7 @@ uv run pytest tests -q -m "not live_e2e"
 
 CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` 时缺少这两个变量会直接失败，不会静默跳过。2026-09-10 在同等 PostgreSQL/Redis 环境完成 `800 passed, 4 skipped`；真实仓储闭环以 `tests/test_ticket_lifecycle_postgres.py` 为准。`test_ticket_api.py::test_full_lifecycle_http_regression_vpn` 为 **HTTP 路由回归（Fake runtime）**；V1 固定 90 条工单评测只有 CI 的 `run_ticket_eval --require-db` 真实检索结果才能进入 [docs/evaluation/v1-report.md](docs/evaluation/v1-report.md)。
 
-真实 DeepSeek E2E 默认不运行，以免普通 CI 产生费用。手动 workflow `Live Agent E2E` 需要受保护环境中的 `DEEPSEEK_API_KEY`、`LIVE_AGENT_TOKEN` 和 `TENANT_TOKEN_SECRET`，覆盖文本 SSE、工具调用和同线程续聊。
+真实 DeepSeek E2E 默认不运行，以免普通 CI 产生费用。手动 workflow `Live Agent E2E` 需要受保护环境中的 `DEEPSEEK_API_KEY` 和 `TENANT_TOKEN_SECRET`，覆盖文本 SSE、工具调用和同线程续聊。工作流会在运行器内生成 15 分钟有效的测试 Bearer token，避免长期保存会过期的开发令牌。
 
 ### 受保护手动 workflow 配置
 
@@ -447,7 +447,7 @@ CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` �
 
 | Workflow / GitHub Environment | GitHub Secrets | GitHub Variables | 说明 |
 |---|---|---|---|
-| `Live Agent E2E` / `live-e2e` | `DEEPSEEK_API_KEY`、`LIVE_AGENT_TOKEN`、`TENANT_TOKEN_SECRET` | 可选：`LLM_BASE_URL`、`LLM_MODEL` | 三项缺一会在启动服务前失败；`LIVE_AGENT_TOKEN` 必须是可访问测试租户的 Bearer token。 |
+| `Live Agent E2E` / `live-e2e` | `DEEPSEEK_API_KEY`、`TENANT_TOKEN_SECRET` | 可选：`LLM_BASE_URL`、`LLM_MODEL` | 两项缺一会在启动服务前失败；工作流使用 `TENANT_TOKEN_SECRET` 在运行器内生成仅供本次测试使用的短期 Bearer token。 |
 | `OIDC Staging Agent E2E` / `oidc-staging` | `DEEPSEEK_API_KEY`、`OIDC_STAGING_TOKEN` | `OIDC_ISSUER_URL`、`OIDC_AUDIENCE`、`OIDC_JWKS_URL`；可选 `OIDC_TENANT_CLAIM` | OIDC token 的 issuer、audience、签名密钥及 scope 必须与变量一致。 |
 | `Hybrid Eval（手动）` / 仓库级 | `KNOWLEDGE_EMBEDDING_ENDPOINT`；可选 `KNOWLEDGE_EMBEDDING_TOKEN`、`KNOWLEDGE_EMBEDDING_MODEL`、`KNOWLEDGE_EMBEDDING_DIMENSION` | 无 | endpoint 必须是 GitHub-hosted runner 可公开解析和访问的 `http(s)` 地址；私网/本机地址不可用。维度必须与模型输出及 pgvector 列一致。 |
 
