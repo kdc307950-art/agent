@@ -5,7 +5,7 @@
  * 打开已派单工单（assigned）→ 点击"生成 AI 处理建议"→ 查看处理步骤与知识引用
  * → 采用草稿 → 复制到剪贴板（人工确认发送）→ 工单不被自动改变状态
  */
-import { test, expect } from '@playwright/test'
+import { expect } from '@playwright/test'
 import {
   baseTicket,
   mockCopilotApprove,
@@ -18,6 +18,7 @@ import {
   mockTicketOverview,
   type MockCopilotDraft,
 } from './fixtures'
+import { test } from './fixtures'
 
 test.describe('Resolution Copilot 演示流程', () => {
   test('生成处理建议、采用草稿、标记已核对', async ({ page }) => {

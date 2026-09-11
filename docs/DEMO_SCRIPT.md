@@ -1,6 +1,6 @@
 # 10 分钟演示脚本：中小企业 IT 服务台闭环
 
-> 适用环境：Windows 下先执行 `./scripts/demo.ps1`。它会启动 `infra/compose.demo.yml`（fake-fmg → migrate → seed → agent → web 自动按依赖顺序执行）、等待就绪、生成三类开发令牌并运行控制面八步演练；浏览器访问 http://127.0.0.1:8000。
+> 适用环境：Windows 下先执行 `./scripts/demo.ps1`。它会启动 `infra/compose.demo.yml`（fake-fmg → migrate → seed → agent → web 自动按依赖顺序执行）、等待就绪并运行控制面八步演练；浏览器访问 http://127.0.0.1:8000 后选择演示身份即可登录。
 > 前置：Docker Desktop 已启动，首次构建可访问镜像与 npm 依赖仓库；`DEEPSEEK_API_KEY` 已配置（自动分类 / 知识建议依赖模型；不配置时流程可走到派单，知识建议为空并转人工）。镜像已经构建过时可改用 `./scripts/demo.ps1 -SkipBuild`。
 > 产品边界（目标客户 / VPN 受理与建议闭环（主产品 it.vpn）/ 主链路 / 非目标 / 人工介入规则）见 [docs/product/vpn-v1-scope.md](docs/product/vpn-v1-scope.md)。
 
@@ -8,11 +8,11 @@
 
 | 账号 | 角色 | 令牌命令 |
 |---|---|---|
-| `demo / customer-1` | 员工（客户） | `docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo customer-1 --role helpdesk-customer` |
-| `demo / agent-1` | IT 客服 | `docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo agent-1 --role helpdesk-agent` |
-| `demo / admin-1` | IT 管理员 | `docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo admin-1 --role helpdesk-it-admin` |
+| `demo / customer-1` | 员工（客户） | 登录页选择「员工」 |
+| `demo / agent-1` | IT 客服 | 登录页选择「IT 客服」 |
+| `demo / admin-1` | IT 管理员 | 登录页选择「IT 管理员」 |
 
-三个令牌分别粘贴到浏览器页面顶部「演示令牌」输入框（保存在 sessionStorage，关闭标签页即失效；生产接 OIDC/BFF，不复用此方案）。
+演示登录由后端固定签发短期开发会话，保存在当前标签页的 sessionStorage，关闭标签页即失效；前端不接受自定义身份。生产模式使用 OIDC Authorization Code + PKCE，不复用演示会话。
 
 ## 准备（约 2 分钟）
 
@@ -20,27 +20,27 @@
 ./scripts/demo.ps1
 ```
 
-预期输出包括 `演示环境已就绪`、员工/坐席/审批令牌以及 Fake FMG 演练的 `ALL PASS`。脚本会等待 `/readyz`，超时会直接失败并提示查看 Compose 日志。若只演示服务台闭环，可使用 `./scripts/demo.ps1 -SkipDrill`；仅重跑控制面演练可使用 `./scripts/drill-fmg.ps1`。
+预期输出包括 `演示环境已就绪` 以及 Fake FMG 演练的 `ALL PASS`。脚本会等待 `/readyz`，超时会直接失败并提示查看 Compose 日志。若只演示服务台闭环，可使用 `./scripts/demo.ps1 -SkipDrill`；仅重跑控制面演练可使用 `./scripts/drill-fmg.ps1`。
 
 ## 演示流程（约 8 分钟）
 
 | # | 步骤 | 操作 | 预期结果 |
 |---|---|---|---|
-| 1 | 打开工作台 | 浏览器访问 http://127.0.0.1:8000 ，粘贴 **customer-1** 令牌 | 进入「工单队列」，左侧导航含 资产 / 知识库 / IT 策略设置 |
+| 1 | 打开工作台 | 浏览器访问 http://127.0.0.1:8000 ，选择「员工」 | 进入「工单队列」，左侧导航含 资产 / 知识库 / IT 策略设置 |
 | 2 | 员工新建工单 | 点「新建」→ 标题「VPN 无法连接」→ 描述「笔记本连不上公司 VPN，提示错误码 809」→ 关联资产选 `laptop-001` → 提交 | 工单创建成功（status `new`），进入受理 |
 | 3 | 自动分类 | 受理图自动执行分类（it + vpn） | 工单 category 显示 `it.vpn`，加载租户 IT 策略 |
 | 4 | 必填字段追问 | 策略要求 8 项固定字段：device / operating_system / vpn_client / client_version / error_code / network / multi_user_impacted / recent_change | 工单进入「等待客户」，前端出现补充信息表单 |
 | 5 | 员工补充信息 | 填写 8 项固定字段：设备「laptop-001」、系统「Windows 11」、VPN 客户端「公司客户端」、客户端版本「3.4.2」、错误码「809」、网络「办公网」、多人受影响「否」、最近变更「升级客户端」→ 提交 | 8 项必填字段补齐，受理继续 |
 | 6 | SLA 与派单 | 分类 `it.vpn` 命中 `sla-vpn`（首响 15 分钟 / 解决 2 小时）；路由规则派给 `team-it` | 工单 `queued`；详情页 SLA 显示首次响应/解决时限，处理团队 `team-it` |
 | 7 | 知识建议 | RAG 检索 `vpn-001`，生成建议回复并带引用 | 详情页「知识引用」出现《VPN 配置指南》（document_id vpn-001） |
-| 8 | 切换客服 | 粘贴 **agent-1** 令牌，刷新 | 队列中出现该工单，分类 it.vpn、优先级 normal、SLA 倒计时可见 |
+| 8 | 切换客服 | 打开侧栏退出登录，选择「IT 客服」 | 队列中出现该工单，分类 it.vpn、优先级 normal、SLA 倒计时可见 |
 | 9 | 客服接单 | 点「接单」 | 工单 `assigned`，指派给 agent-1 |
 | 10 | 开始处理 | 点「开始处理」 | 工单 `in_progress`，SLA 开始计时（首响已标记） |
 | 11 | 处理并解决 | 参考知识引用给出的排查步骤，点「标记解决」 | 工单 `resolved`，记录解决时间 |
 | 12 | 发起回访 | 客服点「发起回访」 | 生成满意度回访（`satisfaction_surveys` + Outbox 事件） |
-| 13 | 员工确认 | 切换回 **customer-1** 令牌，在工单详情确认问题已解决 | 状态流转正常，客户视角只看到自己的工单 |
+| 13 | 员工确认 | 退出登录，选择「员工」，在工单详情确认问题已解决 | 状态流转正常，客户视角只看到自己的工单 |
 | 14 | 提交满意度 | 员工提交 5 分 + 反馈 | 回访状态 `responded`，客服端可见评分 |
-| 15 | 关闭工单 | 客服切回 agent-1，点「关闭工单」 | 工单 `closed`，闭环完成 |
+| 15 | 关闭工单 | 切回「IT 客服」，点「关闭工单」 | 工单 `closed`，闭环完成 |
 | 16 | 收尾检查 | `GET /tickets` 过滤、资产台账查看 laptop-001 的历史工单 | 资产页可看到该资产关联工单；全部操作已写入审计 |
 
 ## 控制面关联入口（可选，约 1 分钟）

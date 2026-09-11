@@ -25,12 +25,12 @@
 - 生产链路不采用 Supervisor 多 Agent；确定性状态机负责审批、状态和副作用边界，Agent 只保留在受理/知识建议等非写入边界。
 - 工单的受控升级入口为 `POST /tickets/{ticket_id}/vpn/redeploy-request`：仅 `it.vpn`、`in_progress` 工单且具备 `ticket:agent` 权限时可创建租户级重推审批。调用方不能指定目标、用户、资产或幂等键；请求仍必须经过 preview、`diff_hash` 审批和对账，不能直接 install。
 
-Windows 演示只需执行 `./scripts/demo.ps1`：脚本构建并启动 Compose、通过前端代理等待 `/api/readyz`、生成三类开发令牌，并默认运行八步 Fake FMG 演练。Fake FMG 和仅供演示的自签名证书均在 `tools/fake-fmg/`，不再依赖 `D:\fmg-vm`。仅运行演练可执行 `./scripts/drill-fmg.ps1`；停止环境执行 `./scripts/demo.ps1 -Down`。脚本默认清空 Docker 配置中可能残留的本地 SOCKS 代理，并优先复用本机已缓存的 uv、Node.js 和 Nginx 镜像；企业代理可通过 `DEMO_HTTP_PROXY`、`DEMO_HTTPS_PROXY`、`DEMO_ALL_PROXY` 传入。
+Windows 演示只需执行 `./scripts/demo.ps1`：脚本构建并启动 Compose、通过前端代理等待 `/api/readyz`，并默认运行八步 Fake FMG 演练。打开工作台后选择固定演示身份即可登录，不再需要复制令牌。Fake FMG 和仅供演示的自签名证书均在 `tools/fake-fmg/`，不再依赖 `D:\fmg-vm`。仅运行演练可执行 `./scripts/drill-fmg.ps1`；停止环境执行 `./scripts/demo.ps1 -Down`。脚本默认清空 Docker 配置中可能残留的本地 SOCKS 代理，并优先复用本机已缓存的 uv、Node.js 和 Nginx 镜像；企业代理可通过 `DEMO_HTTP_PROXY`、`DEMO_HTTPS_PROXY`、`DEMO_ALL_PROXY` 传入。
 
 版本冻结与验收清单见 [docs/product/vpn-v1-scope.md](docs/product/vpn-v1-scope.md)。冻结后只接受 bug 修复、安全修复和依赖升级；任何业务范围、状态机或外部写入语义变化必须新开版本。
 
 **三档验证口径（请勿混淆）**：
-1. **本地演示**：`docker compose -f infra/compose.demo.yml up --build -d` → 浏览器访问 `http://127.0.0.1:8000` → 页面粘贴 `docker compose exec agent ... issue_dev_token` 输出；只验证“能跑通闭环”，不产生评测数字。
+1. **本地演示**：`docker compose -f infra/compose.demo.yml up --build -d` → 浏览器访问 `http://127.0.0.1:8000` → 选择固定演示身份；只验证“能跑通闭环”，不产生评测数字。API 调试仍可单独签发开发令牌。
 2. **CI 集成验证**：GitHub Actions 启动 PostgreSQL/Redis → 迁移 → 种子 → `run_ticket_eval --require-db`（90 条真实检索评测）→ 真实仓储生命周期测试（`test_ticket_lifecycle_postgres.py`）。只有这一档的数字能进 `docs/evaluation/v1-report.md`。
 3. **未验证（不写“已完成”）**：真实企业微信自建应用回调解密/消息收发、真实模型生成的引用与 P95/成本、演示视频、生产长期运行。
 
@@ -67,15 +67,7 @@ compose 的 `seed` 服务会自动生成幂等演示数据（租户 `demo`：SLA
 docker compose -f infra/compose.demo.yml exec agent python -m backend.seed_demo
 ```
 
-演示账号（在 agent 容器内签发短期开发令牌，`AUTH_MODE=dev`）：
-
-```powershell
-docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo customer-1 --role helpdesk-customer   # 员工
-docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo agent-1    --role helpdesk-agent       # IT 客服
-docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo admin-1    --role helpdesk-it-admin    # IT 管理员
-```
-
-把令牌分别粘贴到浏览器页面顶部「演示令牌」输入框（sessionStorage；生产接 OIDC/BFF），演示脚本与验收检查点见 [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md)：客户提交「VPN 无法连接」→ 自动分类 `it.vpn` → 追问缺失字段 → 命中 `sla-vpn` → 派单给 team-it → 知识建议带引用 → 客服接单处理 → 回访关闭。
+演示账号固定为 `demo` 租户下的 `customer-1`（员工）、`agent-1`（IT 客服）和 `admin-1`（IT 管理员）。打开工作台后进入「选择演示身份」，点击对应身份即可获得短期开发会话；前端不接受自定义租户、用户或角色。生产模式使用 OIDC + PKCE，演示脚本与验收检查点见 [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md)：客户提交「VPN 无法连接」→ 自动分类 `it.vpn` → 追问缺失字段 → 命中 `sla-vpn` → 派单给 team-it → 知识建议带引用 → 客服接单处理 → 回访关闭。
 
 ## 仓库里的入口
 
@@ -472,6 +464,6 @@ CI 使用 pgvector PostgreSQL 17 / Redis 7 service containers；当 `CI=true` �
 | Embedding 供应商 | pgvector、HNSW、入库流水线和 Agentic RAG 已实现；演示库 hybrid holdout 已完成受保护 CI 评测，生产仍需小范围观察效果、P95、成本与降级率，默认建议回复而不自动发送 |
 | 附件安全链路 | 尚未接对象存储、病毒扫描、临时授权下载和内容解析隔离 |
 | PostgreSQL RLS | Repository 全部强制 tenant 条件，但数据库行级安全尚未启用 |
-| 工作台认证 | 本地 Vite 代理使用单个开发令牌；生产需接 IdP 并按客户/客服/审批人分配 scope |
+| 工作台认证 | 本地演示选择固定身份并由后端签发短期会话；OIDC 模式使用 PKCE，生产按 IdP 主体分配 scope |
 | 企微追问闭环（非 V1） | 企业微信文本消息建单并追问、恢复受理等代码保留（`ticket_customer_pending_intake`），但**未纳入 V1 演示与验收**；本地演示仅 Web 闭环，真实渠道未做 Docker 真链验证 |
 | 成本统计 | 单价配置默认为 0，接入真实供应商价格前，成本与预算功能不产生实际数值 |

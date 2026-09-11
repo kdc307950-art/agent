@@ -1,10 +1,11 @@
-import { expect, test } from '@playwright/test'
+import { expect } from '@playwright/test'
 import {
   baseTicket,
   mockAssets,
   mockTicketList,
   mockTicketOverview,
 } from './fixtures'
+import { test } from './fixtures'
 
 /**
  * Web 闭环 Mock 冒烟：创建 → 缺字段补问 → 补全恢复 → 接单 → 处理 → 解决 → 关闭。

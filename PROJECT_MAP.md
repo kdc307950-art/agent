@@ -38,7 +38,8 @@ src/my_agent/                ★ Agent 核心包
     └── tools.py             受理/派单相关的工具封装
 
 backend/                     生产化 API 层
-├── app.py                   ★ FastAPI 网关 + SSE；挂载 tickets/admin/copilot/knowledge/assets 路由
+├── app.py                   ★ FastAPI 网关 + SSE；挂载 auth/tickets/admin/copilot/knowledge/assets 路由
+├── auth_api.py              Web 认证配置、固定演示会话、当前主体查询
 ├── ticket_api.py            工单 API（建单/受理/流转/回访/overview/pending-interrupt/受控重推审批入口）
 ├── settings.py              环境变量集中读取 + 校验（生产强约束）
 ├── security.py              鉴权（dev token / OIDC）、限流、CORS
@@ -84,6 +85,7 @@ backend/                     生产化 API 层
     ├── api.py / models.py / repository.py / tools.py / tool_adapter.py / worker.py
 
 frontend/src/               React 客服工作台
+├── auth/                    登录会话、Demo 身份、OIDC PKCE、路由守卫
 ├── api/                    API 封装（client/tickets/assets/knowledge/admin/chat/copilot）
 ├── views/                  各页面（QueueView / TicketDetail / AssistantView / KnowledgeView /
 │                           AssetsView / ItPoliciesView）
@@ -116,7 +118,7 @@ scripts/drill-fmg.ps1       仅运行 Fake FMG 八步演练
 ## 运行命令
 
 ```bash
-# Windows 面试演示：构建、启动、健康检查、开发令牌与 Fake FMG 演练
+# Windows 面试演示：构建、启动、健康检查、固定身份登录与 Fake FMG 演练
 ./scripts/demo.ps1
 
 # 依赖栈（Postgres/Redis/OTel）并初始化 schema

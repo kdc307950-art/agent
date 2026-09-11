@@ -7,7 +7,7 @@
 
 | 角色 | 用户 ID | 令牌命令（容器内） | 说明 |
 | --- | --- | --- | --- |
-| 员工/客户 | `customer-1` | `docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo customer-1 --role helpdesk-customer` | 拥有 laptop-001 / desktop-001 / monitor-001 |
+| 员工/客户 | `customer-1` | 工作台登录页选择「员工」 | 拥有 laptop-001 / desktop-001 / monitor-001 |
 | 员工/客户 | `customer-2` | 同上（`customer-2`） | 拥有 laptop-002 |
 | IT 客服 | `agent-1` | `... --role helpdesk-agent` | team-it 成员，全年排班 |
 | IT 管理员 | `admin-1` | `... --role helpdesk-it-admin` | 管理资产/策略/知识 |

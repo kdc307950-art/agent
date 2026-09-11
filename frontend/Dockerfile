@@ -1,5 +1,5 @@
 # 前端镜像：构建 React 静态文件，由 Nginx 托管。
-# 明确不写入任何开发令牌；令牌由用户在浏览器 sessionStorage 粘贴，运行时取自请求头。
+# 明确不写入任何访问令牌；演示会话由后端按固定身份签发，企业登录使用 OIDC PKCE。
 ARG NODE_IMAGE=node:22-alpine
 ARG NGINX_IMAGE=nginx:1.27-alpine
 FROM ${NODE_IMAGE} AS build

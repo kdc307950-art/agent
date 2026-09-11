@@ -136,7 +136,7 @@
 - 复验项：无（明确不在本期范围，作为后续边界说明）。
 
 ### (i) 本地 Fake FMG 与 Windows 演示
-- 入口：在仓库根目录执行 `./scripts/demo.ps1`。它会启动 Compose、等待服务就绪、生成开发令牌并运行 Fake FMG 八步演练；`./scripts/drill-fmg.ps1` 仅运行演练，`./scripts/demo.ps1 -Down` 停止环境。
+- 入口：在仓库根目录执行 `./scripts/demo.ps1`。它会启动 Compose、等待服务就绪并运行 Fake FMG 八步演练；打开工作台后选择固定演示身份登录。`./scripts/drill-fmg.ps1` 仅运行演练，`./scripts/demo.ps1 -Down` 停止环境。
 - 范围：`tools/fake-fmg/` 内的服务和固定自签名证书只用于协议级本地复现。它们不构成真实 FMG、staging、FortiGate 或生产写入证据，私钥不能用于任何真实环境。
 - 环境条件：首次构建必须能访问 Docker 镜像和 npm 依赖仓库；已完成构建的机器可使用 `-SkipBuild` 复用本地镜像。
 

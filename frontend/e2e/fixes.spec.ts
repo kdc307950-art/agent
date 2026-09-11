@@ -6,8 +6,8 @@
  * - 桌面端侧栏不设 inert，可键盘 Tab 访问
  * - 移动端搜索按钮展开输入框并过滤列表
  */
-import { test, expect } from '@playwright/test'
-import { baseTicket, mockTicketList } from './fixtures'
+import { expect } from '@playwright/test'
+import { baseTicket, mockTicketList, test } from './fixtures'
 
 test.describe('筛选与无障碍修复', () => {
   test('我的处理视图发送 assigned_user_id=current_user', async ({ page }) => {

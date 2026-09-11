@@ -34,6 +34,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from .assets.api import router as asset_router
 from .audit import NoopAuditRepository
+from .auth_api import router as auth_router
 from .budget import TenantBudget, TenantBudgetExceeded
 from .config import load_environment
 from .copilot.api import admin_copilot_router, copilot_router
@@ -317,6 +318,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="LangGraph Agent API", lifespan=lifespan)
+app.include_router(auth_router)
 app.include_router(ticket_router)
 app.include_router(channel_router)
 app.include_router(admin_router)

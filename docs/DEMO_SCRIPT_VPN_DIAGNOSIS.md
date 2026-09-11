@@ -38,10 +38,8 @@
 docker compose -f infra/compose.demo.yml up --build -d
 docker compose -f infra/compose.demo.yml ps
 
-# 2) 签发开发令牌（AUTH_MODE=dev；三份分别粘贴到页面顶部「演示令牌」输入框）
-docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo customer-1 --role helpdesk-customer
-docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo agent-1    --role helpdesk-agent
-docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_token demo admin-1   --role helpdesk-approver
+# 2) 登录工作台（AUTH_MODE=dev；打开页面后选择对应固定演示身份）
+# 员工：customer-1；IT 客服：agent-1；IT 管理员：admin-1
 ```
 
 > 角色→scope（`backend/security.py:231-272`）：`customer`=`ticket:customer,asset:read`；`agent`=`ticket:agent,…`；
@@ -56,7 +54,7 @@ docker compose -f infra/compose.demo.yml exec agent python -m backend.issue_dev_
 
 ### 段① VPN 报障（约 1 分钟）— 真实
 
-浏览器：粘贴 **customer-1** 令牌 → 新建工单 → 标题「VPN 无法连接」、描述「笔记本连不上公司 VPN，提示错误码 809」→ 关联资产 `laptop-001` → 提交。
+浏览器：选择「员工」身份登录 → 新建工单 → 标题「VPN 无法连接」、描述「笔记本连不上公司 VPN，提示错误码 809」→ 关联资产 `laptop-001` → 提交。
 curl（等价的建单 + 受理）：
 ```powershell
 $TOKEN_CUSTOMER = '<customer-1 令牌>'

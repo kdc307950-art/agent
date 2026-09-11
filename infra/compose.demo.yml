@@ -107,6 +107,8 @@ services:
     environment:
       APP_ENV: development
       AUTH_MODE: dev
+      DEV_DEMO_LOGIN_ENABLED: "true"
+      DEV_DEMO_TOKEN_TTL_SECONDS: "3600"
       DATABASE_URL: postgresql://langgraph:demo_only_not_a_secret@postgres:5432/langgraph
       REDIS_URL: redis://redis:6379/0
       RATE_LIMIT_BACKEND: redis

@@ -95,6 +95,8 @@ class Settings:
     llm_model: str
     auth_mode: str
     tenant_token_secret: str | None
+    dev_demo_login_enabled: bool
+    dev_demo_token_ttl_seconds: int
     oidc_issuer_url: str | None
     oidc_audience: str | None
     oidc_jwks_url: str | None
@@ -105,6 +107,11 @@ class Settings:
     oidc_require_jti: bool
     oidc_max_token_age_seconds: int
     oidc_revocation_mode: str
+    oidc_client_id: str | None
+    oidc_redirect_uri: str | None
+    oidc_authorization_endpoint: str | None
+    oidc_token_endpoint: str | None
+    oidc_web_scopes: frozenset[str]
     database_url: str
     redis_url: str | None
     rate_limit_backend: str
@@ -164,6 +171,17 @@ class Settings:
     # 控制面写入网关默认关闭；仅显式 fortimanager 才允许审批链路触发真实 install task。
     vpn_command_gateway_mode: str
 
+    @property
+    def oidc_web_configured(self) -> bool:
+        return all(
+            (
+                self.oidc_client_id,
+                self.oidc_redirect_uri,
+                self.oidc_authorization_endpoint,
+                self.oidc_token_endpoint,
+            )
+        )
+
     @classmethod
     def from_env(cls) -> Settings:
         auto_setup = os.getenv("LANGGRAPH_AUTO_SETUP", "false").strip().lower()
@@ -183,6 +201,9 @@ class Settings:
             raise RuntimeError("AUTH_MODE=dev 必须配置 TENANT_TOKEN_SECRET")
         if auth_mode == "oidc" and (not issuer or not audience):
             raise RuntimeError("AUTH_MODE=oidc 必须配置 OIDC_ISSUER_URL 和 OIDC_AUDIENCE")
+        dev_demo_login_enabled = _bool_setting("DEV_DEMO_LOGIN_ENABLED", False)
+        if dev_demo_login_enabled and (app_env != "development" or auth_mode != "dev"):
+            raise RuntimeError("DEV_DEMO_LOGIN_ENABLED 仅允许 development + AUTH_MODE=dev")
         rate_limit_backend = _choice_setting("RATE_LIMIT_BACKEND", "redis", {"memory", "redis"})
         redis_url = os.getenv("REDIS_URL", "").strip() or None
         revocation_mode = _choice_setting("OIDC_REVOCATION_MODE", "none", {"none", "redis"})
@@ -232,6 +253,26 @@ class Settings:
         )
         if auth_mode == "oidc" and not required_scopes:
             raise RuntimeError("AUTH_MODE=oidc 必须至少配置一个 OIDC_REQUIRED_SCOPES")
+        oidc_client_id = os.getenv("OIDC_CLIENT_ID", "").strip() or None
+        oidc_redirect_uri = os.getenv("OIDC_REDIRECT_URI", "").strip() or None
+        oidc_authorization_endpoint = os.getenv("OIDC_AUTHORIZATION_ENDPOINT", "").strip() or None
+        oidc_token_endpoint = os.getenv("OIDC_TOKEN_ENDPOINT", "").strip() or None
+        oidc_web_values = (
+            oidc_client_id,
+            oidc_redirect_uri,
+            oidc_authorization_endpoint,
+            oidc_token_endpoint,
+        )
+        if any(oidc_web_values) and not all(oidc_web_values):
+            raise RuntimeError(
+                "OIDC Web 登录必须完整配置 OIDC_CLIENT_ID/OIDC_REDIRECT_URI/"
+                "OIDC_AUTHORIZATION_ENDPOINT/OIDC_TOKEN_ENDPOINT"
+            )
+        oidc_web_scopes = frozenset(
+            scope.strip()
+            for scope in os.getenv("OIDC_WEB_SCOPES", "openid profile email").split(",")
+            if scope.strip()
+        )
         tenant_daily_budget_usd = _float_setting("TENANT_DAILY_BUDGET_USD", 0.0, 0.0)
         if tenant_daily_budget_usd > 0 and not redis_url:
             raise RuntimeError("启用 TENANT_DAILY_BUDGET_USD 时必须配置 REDIS_URL")
@@ -276,6 +317,8 @@ class Settings:
             llm_model=os.getenv("LLM_MODEL", "deepseek-chat").strip(),
             auth_mode=auth_mode,
             tenant_token_secret=tenant_token_secret,
+            dev_demo_login_enabled=dev_demo_login_enabled,
+            dev_demo_token_ttl_seconds=_int_setting("DEV_DEMO_TOKEN_TTL_SECONDS", 3600, 60),
             oidc_issuer_url=issuer,
             oidc_audience=audience,
             oidc_jwks_url=jwks_url,
@@ -286,6 +329,11 @@ class Settings:
             oidc_require_jti=oidc_require_jti,
             oidc_max_token_age_seconds=oidc_max_token_age_seconds,
             oidc_revocation_mode=revocation_mode,
+            oidc_client_id=oidc_client_id,
+            oidc_redirect_uri=oidc_redirect_uri,
+            oidc_authorization_endpoint=oidc_authorization_endpoint,
+            oidc_token_endpoint=oidc_token_endpoint,
+            oidc_web_scopes=oidc_web_scopes,
             database_url=database_url_from_env(),
             redis_url=redis_url,
             rate_limit_backend=rate_limit_backend,

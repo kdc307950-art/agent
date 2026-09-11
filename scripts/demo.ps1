@@ -118,16 +118,9 @@ if ($SkipBuild) {
 }
 Wait-DemoReady
 
-$customerToken = (& docker @compose exec -T agent python -m backend.issue_dev_token demo customer-1 --role helpdesk-customer).Trim()
-$agentToken = (& docker @compose exec -T agent python -m backend.issue_dev_token demo agent-1 --role helpdesk-agent).Trim()
-$approverToken = (& docker @compose exec -T agent python -m backend.issue_dev_token demo approver-1 --role helpdesk-approver).Trim()
-if ($LASTEXITCODE -ne 0) { throw "Development token generation failed." }
-
 Write-Host ""
 Write-Host "Demo environment ready: http://127.0.0.1:8000"
-Write-Host "Customer token: $customerToken"
-Write-Host "Agent token: $agentToken"
-Write-Host "Approver token: $approverToken"
+Write-Host "Open the workbench and choose a fixed demo persona to sign in."
 Write-Host ""
 Write-Host "Fake FMG runs only on the internal Compose network. It is a local protocol fixture, not a real FMG."
 

@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { expect } from '@playwright/test'
 import {
   baseTicket,
   mockPendingInterrupt,
@@ -7,6 +7,7 @@ import {
   mockTicketOverview,
   mockTransition,
 } from './fixtures'
+import { test } from './fixtures'
 
 test.describe('工单详情处理流程', () => {
   test('打开工单详情并执行状态流转', async ({ page }) => {

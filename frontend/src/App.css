@@ -147,38 +147,22 @@
   .modal { padding: 16px; }.assistant-message { max-width: 88%; }
 }
 
-/* Dev 演示令牌条（AUTH_MODE=dev；生产接 OIDC/BFF，不复用） */
-.dev-token-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--line);
-  background: #f7f8f9;
-  font-size: 12px;
-  color: var(--muted);
-}
-.dev-token-bar input {
-  flex: 1 1 120px;
-  min-width: 0;
-  height: 30px;
-  border: 1px solid #d5dbe0;
-  border-radius: 4px;
-  padding: 0 8px;
-  font-size: 12px;
-}
-.dev-token-bar button {
-  height: 30px;
-  padding: 0 10px;
-  border: 1px solid #c9d1d8;
-  border-radius: 4px;
-  background: white;
-  cursor: pointer;
-  font-size: 12px;
-}
-.dev-token-ok { color: #2c8a4b; }
-.dev-token-note { margin-left: auto; opacity: 0.75; }
-@media (max-width: 720px) {
-  .dev-token-note { display: none; }
-  .dev-token-bar { flex-wrap: wrap; }
-}
+.sign-out { margin-top: 8px; }
+.auth-loading { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; color: var(--muted); background: var(--soft); font-size: 14px; }
+.auth-page { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 24px; background: #e8edef; }
+.auth-panel { width: min(440px, 100%); display: grid; gap: 20px; padding: 32px; border: 1px solid #d4dde0; border-radius: 7px; background: white; box-shadow: 0 20px 50px rgba(24, 39, 46, .12); }
+.auth-panel h1 { margin: 3px 0 8px; font-size: 23px; color: var(--ink); }
+.auth-panel p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
+.auth-brand { display: flex; align-items: center; gap: 9px; color: #124f45; font-size: 18px; font-weight: 750; }
+.auth-brand svg { color: #1f8a72; }
+.auth-login-button { width: 100%; height: 42px; }
+.auth-config-warning { display: flex; align-items: center; gap: 9px; padding: 11px 12px; border: 1px solid #ead4a6; border-radius: 5px; background: #fff8e8; color: #79561c; font-size: 13px; }
+.auth-error { color: #a3373b !important; }
+.auth-back { justify-self: start; padding: 0; border: 0; background: transparent; color: #236d60; cursor: pointer; font-size: 13px; }
+.demo-personas { display: grid; gap: 9px; }
+.demo-persona { width: 100%; min-height: 70px; display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 11px 12px; border: 1px solid #d6dfe2; border-radius: 6px; background: white; color: #293640; text-align: left; cursor: pointer; }
+.demo-persona:hover { border-color: #3d9a85; background: #f3faf8; }
+.demo-persona:disabled { opacity: .6; cursor: wait; }
+.demo-persona > span:not(.demo-persona-action) { min-width: 0; display: grid; gap: 3px; }
+.demo-persona strong { font-size: 14px; }.demo-persona small { color: var(--muted); font-size: 12px; line-height: 1.35; }
+.demo-persona-action { color: #176b5b; font-size: 12px; font-weight: 700; }

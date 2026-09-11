@@ -13,20 +13,25 @@
 import { useState } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import './App.css'
+import { AuthProvider } from './auth/AuthProvider'
+import { RequireAuth } from './auth/RequireAuth'
 import Sidebar from './components/Sidebar'
 import QueueView from './views/QueueView'
 import AssistantView from './views/AssistantView'
 import AssetsView from './views/AssetsView'
 import KnowledgeView from './views/KnowledgeView'
 import ItPoliciesView from './views/ItPoliciesView'
+import { AuthCallbackView } from './views/AuthCallbackView'
+import { DemoLoginView } from './views/DemoLoginView'
+import { LoginView } from './views/LoginView'
 
-export default function App() {
+function Workbench() {
   // sidebarOpen：移动端侧栏是否展开（桌面端侧栏常驻，此状态仅在窄屏生效）
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   return (
     <div className="app-shell">
-      {/* 侧栏（含 Dev 演示令牌输入条）：mobileOpen 控制展开；onClose 由侧栏内部触发收起 */}
+      {/* 侧栏（含当前身份与退出登录）：mobileOpen 控制展开；onClose 由侧栏内部触发收起 */}
       <Sidebar mobileOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <Routes>
         {/* 根路径与未知路径都重定向到工单队列，保证任何 URL 都有可用页面 */}
@@ -46,5 +51,18 @@ export default function App() {
         <Route path="*" element={<Navigate to="/tickets" replace />} />
       </Routes>
     </div>
+  )
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <Routes>
+        <Route path="/login" element={<LoginView />} />
+        <Route path="/demo-login" element={<DemoLoginView />} />
+        <Route path="/auth/callback" element={<AuthCallbackView />} />
+        <Route path="*" element={<RequireAuth><Workbench /></RequireAuth>} />
+      </Routes>
+    </AuthProvider>
   )
 }

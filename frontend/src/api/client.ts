@@ -1,6 +1,6 @@
 /** 统一 API 客户端：JSON 请求封装 + SSE 底层读取。 */
 
-import { getDevToken } from '../lib/devToken'
+import { clearAuthSession, getAccessToken } from '../auth/session'
 
 const API_PREFIX = '/api'
 
@@ -19,7 +19,7 @@ export class ApiError extends Error {
  * 支持 options.signal 取消请求；被取消时原样抛出 AbortError，调用方可据此判断是否静默处理。
  */
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const token = getDevToken()
+  const token = getAccessToken()
   const response = await fetch(`${API_PREFIX}${path}`, {
     ...options,
     headers: {
@@ -33,6 +33,10 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   }
   const body = await response.json().catch(() => ({}))
   if (!response.ok) {
+    if (response.status === 401) {
+      clearAuthSession()
+      window.dispatchEvent(new Event('helpdesk-auth-expired'))
+    }
     const detail =
       typeof body === 'object' && body !== null && 'detail' in body
         ? String((body as { detail: unknown }).detail)
@@ -43,7 +47,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 }
 
 export function sseFetch(path: string, body: unknown, signal?: AbortSignal): Promise<Response> {
-  const token = getDevToken()
+  const token = getAccessToken()
   return fetch(`${API_PREFIX}${path}`, {
     method: 'POST',
     headers: {
@@ -58,8 +62,7 @@ export function sseFetch(path: string, body: unknown, signal?: AbortSignal): Pro
 /** 统一 HTTP 状态码 → 用户可读文案（收敛方案阶段七）。
  *
  * 401/403/409/429/5xx 有明确语义；其余回退到服务端 detail。
- * 生产环境 401 应触发登录/刷新会话（由接入 OIDC/BFF 时接入），
- * 本前端当前为 dev-token 模式，只做清晰的错误呈现。
+ * 401 会清除当前会话并触发认证状态更新；登录页负责引导用户重新登录。
  */
 const HTTP_STATUS_MESSAGES: Record<number, string> = {
   401: '登录已过期，请重新登录',

@@ -1,5 +1,5 @@
-import { test, expect } from '@playwright/test'
-import { mockTicketList } from './fixtures'
+import { expect } from '@playwright/test'
+import { mockTicketList, test } from './fixtures'
 
 function buildSseBody(events: object[]): string {
   return events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('')

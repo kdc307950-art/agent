@@ -37,11 +37,13 @@ def test_dev_scope_profiles_support_helpdesk_roles():
         raise AssertionError("unknown role must be rejected")
 
 
-def load_app(monkeypatch, rate_limit="60"):
+def load_app(monkeypatch, rate_limit="60", app_env="test", demo_login=False):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
     monkeypatch.setenv("X_API_KEY", "test-api-key")
     monkeypatch.setenv("TENANT_TOKEN_SECRET", "test-tenant-secret")
     monkeypatch.setenv("AUTH_MODE", "dev")
+    monkeypatch.setenv("APP_ENV", app_env)
+    monkeypatch.setenv("DEV_DEMO_LOGIN_ENABLED", "true" if demo_login else "false")
     monkeypatch.setenv("DATABASE_URL", "postgresql://test/test")
     monkeypatch.setenv("RATE_LIMIT_BACKEND", "memory")
     monkeypatch.setenv("RATE_LIMIT_CAPACITY", rate_limit)
@@ -60,6 +62,43 @@ def load_app(monkeypatch, rate_limit="60"):
 
     module.runtime_context = fake_runtime_context
     return module
+
+
+def test_auth_config_is_public_and_demo_session_is_disabled_by_default(monkeypatch):
+    module = load_app(monkeypatch)
+    with TestClient(module.app) as client:
+        config = client.get("/auth/config")
+        session = client.post("/auth/dev/session", json={"persona": "agent"})
+
+    assert config.status_code == 200
+    assert config.json() == {"auth_mode": "dev", "demo_login_enabled": False, "oidc": None}
+    assert session.status_code == 404
+
+
+def test_demo_session_uses_fixed_persona_and_auth_me(monkeypatch):
+    module = load_app(monkeypatch, app_env="development", demo_login=True)
+    with TestClient(module.app) as client:
+        response = client.post("/auth/dev/session", json={"persona": "agent"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["principal"]["tenant_id"] == "demo"
+        assert body["principal"]["user_id"] == "agent-1"
+        assert "ticket:agent" in body["principal"]["scopes"]
+        assert body["expires_in"] == 3600
+
+        current = client.get(
+            "/auth/me", headers={"Authorization": f"Bearer {body['access_token']}"}
+        )
+
+    assert current.status_code == 200
+    assert current.json() == body["principal"]
+
+
+def test_demo_session_rejects_unknown_persona(monkeypatch):
+    module = load_app(monkeypatch, app_env="development", demo_login=True)
+    with TestClient(module.app) as client:
+        response = client.post("/auth/dev/session", json={"persona": "owner"})
+    assert response.status_code == 422
 
 
 def test_health_is_public_and_agent_starts(monkeypatch):

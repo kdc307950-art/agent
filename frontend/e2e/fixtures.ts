@@ -1,5 +1,46 @@
-import type { Page } from '@playwright/test'
+import { test as base, type Page } from '@playwright/test'
 import type { Ticket } from '../src/types'
+
+export const test = base.extend({
+  page: async ({ page }, fixtureUse) => {
+    await page.addInitScript(() => {
+      sessionStorage.setItem(
+        'helpdesk_auth_session',
+        JSON.stringify({
+          accessToken: 'e2e-token',
+          principal: {
+            tenant_id: 'demo',
+            user_id: 'agent-1',
+            scopes: ['ticket:agent', 'asset:read', 'knowledge:read', 'it-policy:read'],
+            departments: ['it'],
+            internal: true,
+          },
+        }),
+      )
+    })
+    await page.route('**/api/auth/config', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ auth_mode: 'dev', demo_login_enabled: true, oidc: null }),
+      })
+    })
+    await page.route('**/api/auth/me', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          tenant_id: 'demo',
+          user_id: 'agent-1',
+          scopes: ['ticket:agent', 'asset:read', 'knowledge:read', 'it-policy:read'],
+          departments: ['it'],
+          internal: true,
+        }),
+      })
+    })
+    await fixtureUse(page)
+  },
+})
 
 export const baseTicket: Ticket = {
   ticket_id: 'ticket-e2e-1',

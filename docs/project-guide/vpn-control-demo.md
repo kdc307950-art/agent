@@ -9,7 +9,7 @@
 ## 8 分钟演示
 
 1. 展示架构：Web/API → 状态与审批服务 → PostgreSQL → Reconciliation Worker → FMG Gateway。
-2. 在仓库根目录执行 `./scripts/demo.ps1`；它会构建并启动本地 Compose 环境、等待 `/readyz`、生成开发令牌，并默认运行八步 Fake FMG 演练。
+2. 在仓库根目录执行 `./scripts/demo.ps1`；它会构建并启动本地 Compose 环境、等待 `/readyz`，并默认运行八步 Fake FMG 演练。打开工作台后选择固定演示身份登录。
 3. 说明 `/sys/status` 是只读探针，install 前必须先 preview。
 4. 展示成功任务：install 返回 task id，worker 轮询至 completed。
 5. 展示超时任务：保留 task id，状态进入未知/待对账，不自动重发。

@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { expect } from '@playwright/test'
 import {
   baseTicket,
   mockAssets,
@@ -7,6 +7,7 @@ import {
   mockTicketList,
   mockTicketOverview,
 } from './fixtures'
+import { test } from './fixtures'
 
 test.describe('新建工单流程', () => {
   test('填写表单提交后，列表中出现新工单', async ({ page }) => {

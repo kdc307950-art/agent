@@ -42,17 +42,20 @@ npm run test:e2e     # Playwright E2E（chromium + mobile-chromium）
 
 ## 认证边界（重要）
 
-- **开发模式**：`vite.config.js` 从父级 `.env` 读取 `DEV_TENANT_TOKEN`，
-  仅用于本地 dev server 的 `/api` 代理注入 `Authorization: Bearer ...`，
-  **不写入前端 bundle，只在本机演示有效**。
-- **生产模式：尚未接入认证。** 生产应使用 OIDC / 企业 SSO / BFF + HttpOnly Cookie；
-  **禁止**把生产 Bearer Token 存入 `localStorage`。
-- 因此本前端目前只适合本地演示与开发联调，不能宣称具备生产级认证。
+- **本地演示**：后端在 `APP_ENV=development`、`AUTH_MODE=dev` 且显式开启
+  `DEV_DEMO_LOGIN_ENABLED=true` 时提供固定的 customer / agent / admin 身份选择，
+  前端通过 `/api/auth/dev/session` 获取短期会话；不接受自定义租户、用户或角色。
+- **企业登录**：`AUTH_MODE=oidc` 时，前端使用 Authorization Code + PKCE，配置
+  `OIDC_CLIENT_ID`、`OIDC_REDIRECT_URI`、`OIDC_AUTHORIZATION_ENDPOINT`、
+  `OIDC_TOKEN_ENDPOINT` 和 `OIDC_WEB_SCOPES`。后端仍是 Bearer/OIDC JWT 资源服务器，
+  `/api/auth/me` 返回服务端校验后的租户与权限主体。
+- 访问令牌只保存在当前标签页的 `sessionStorage`，不会写入 `localStorage` 或前端构建产物。
+  若需要进一步降低浏览器令牌暴露面，可在后续增加 BFF + HttpOnly Cookie；这不是当前登录流程的前置依赖。
 
 ## 已知限制
 
-- 生产认证（OIDC/BFF）未接入；401/403/409/429/5xx 有统一错误文案（`describeApiError`），
-  但 401 不会自动跳转登录（当前无登录页）。
+- OIDC 登录依赖 IdP 允许浏览器完成 PKCE 令牌交换；若部署环境不允许跨域令牌交换，应改为 BFF。
+  401 会清除当前会话并回到登录页；401/403/409/429/5xx 仍有统一错误文案（`describeApiError`）。
 - 移动端侧栏支持 Escape 关闭与 inert 防聚焦；弹窗具备 `role="dialog"` /
   `aria-modal` / `aria-labelledby`，但焦点锁定与恢复（focus trap）尚未实现。
 - 危险操作（删除资产/废弃文档/删除策略）使用 `window.confirm` 基础确认
@@ -68,12 +71,13 @@ npm run test:e2e     # Playwright E2E（chromium + mobile-chromium）
 4. 快速切换两张工单：演示竞态防护（只显示最后选中的工单）。
 5. `/assistant`：SSE 流式回复与 interrupt 审批。
 6. `npm run test`：20+ 单元测试（竞态/幂等/SSE 分片与取消/错误文案）。
-7. 明确说明：生产认证未接入、E2E 覆盖主流程但非生产验证。
+7. 明确说明：演示使用固定开发身份；OIDC 登录需配置企业 IdP；E2E 覆盖主流程但非生产验证。
 
 ## 目录结构
 
 ```
 src/
+  auth/       # 会话存储、Demo 登录、OIDC PKCE 与登录守卫
   api/        # 统一 API 客户端（JSON 封装 + SSE 读取），无 UI 依赖
   components/ # 可复用组件（ApprovalCard、CreateTicketDialog 等）
   views/      # 路由级视图（Queue / Assistant / Assets / Knowledge / Admin）

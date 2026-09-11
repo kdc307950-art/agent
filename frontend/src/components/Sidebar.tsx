@@ -25,11 +25,12 @@ import {
   CheckCircle2,
   CircleUserRound,
   Inbox,
+  LogOut,
   SlidersHorizontal,
   UserCheck,
   type LucideIcon,
 } from 'lucide-react'
-import { clearDevToken, getDevToken, setDevToken } from '../lib/devToken'
+import { useAuth } from '../auth/AuthProvider'
 
 // 导航图标统一尺寸
 const ICON_SIZE = 18
@@ -80,41 +81,6 @@ function useMediaQuery(query: string): boolean {
   return matches
 }
 
-function DevTokenBar() {
-  const [value, setValue] = useState<string>(getDevToken() ?? '')
-  const [saved, setSaved] = useState<boolean>(Boolean(getDevToken()))
-
-  const save = () => {
-    setDevToken(value)
-    setSaved(true)
-  }
-
-  const clear = () => {
-    clearDevToken()
-    setValue('')
-    setSaved(false)
-  }
-
-  return (
-    <div className="dev-token-bar">
-      <span>演示令牌（AUTH_MODE=dev）</span>
-      <input
-        type="password"
-        value={value}
-        placeholder="粘贴 backend.issue_dev_token 输出"
-        onChange={(event) => {
-          setValue(event.target.value)
-          setSaved(false)
-        }}
-      />
-      <button onClick={save}>保存</button>
-      <button onClick={clear}>清除</button>
-      {saved && <span className="dev-token-ok">已保存到 sessionStorage</span>}
-      <span className="dev-token-note">生产接 OIDC/BFF</span>
-    </div>
-  )
-}
-
 export default function Sidebar({
   mobileOpen,
   onClose,
@@ -122,6 +88,7 @@ export default function Sidebar({
   mobileOpen: boolean
   onClose: () => void
 }) {
+  const { session, signOut } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
   // 从 URL 查询参数读取当前工单视角，缺省为 queue
@@ -224,13 +191,15 @@ export default function Sidebar({
         <div className="operator">
           <CircleUserRound size={24} />
           <div>
-            <strong>客服坐席</strong>
-            <span>在线</span>
+            <strong>{session?.principal.user_id ?? '当前用户'}</strong>
+            <span>{session?.principal.tenant_id ?? '未登录'} · {session?.principal.internal ? '内部人员' : '员工'}</span>
           </div>
         </div>
+        <button className="sign-out" onClick={() => { signOut(); onClose() }}>
+          <LogOut size={ICON_SIZE} />
+          <span>退出登录</span>
+        </button>
       </div>
-      {/* Dev 演示令牌输入：仅 AUTH_MODE=dev；令牌只存 sessionStorage */}
-      <DevTokenBar />
       </aside>
     </>
   )
