@@ -1,5 +1,14 @@
 # 企业 VPN 配置变更安全执行与对账系统
 
+
+## Project overview
+
+**Project focus:** A multi-tenant IT service desk prototype for VPN fault intake, knowledge-backed recommendations, controlled configuration preview, approval, asynchronous execution, and result reconciliation.
+
+**Engineering evidence:** LangGraph intake and recovery flows, Agentic RAG with citation gates, MCP tool governance, tenant and permission checks, idempotent writes, PostgreSQL checkpoints, Redis limits, audit trails, and Fake FMG failure-branch drills.
+
+**Current boundary:** The repository is honest about what is verified locally, in CI, with mocks, and against real external systems. The VPN control plane is a controlled demonstration and does not claim unattended production changes.
+
 > **冻结版本：`vpn-control-v1.0` · 2026-09-05**
 
 本项目的核心主线是企业 VPN 配置变更控制，不是通用客服 Demo：通过租户级目标校验、配置 preview、差异哈希审批、FortiManager 异步任务和人工对账，控制 VPN 配置变更的副作用边界。IT 服务台是业务入口，通用聊天和 Supervisor 仅保留为历史示例。
